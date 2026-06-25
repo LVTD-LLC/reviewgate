@@ -1,6 +1,8 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -416,6 +418,7 @@ fn call_openrouter_with_curl(
     prompt: &str,
 ) -> Result<String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body_path = unique_temp_path("reviewgate-openrouter-body", "json");
     let body = serde_json::json!({
         "model": model,
         "temperature": 0,
@@ -431,21 +434,33 @@ fn call_openrouter_with_curl(
             }
         ]
     });
-    let output = ProcessCommand::new("curl")
-        .arg("--fail-with-body")
-        .arg("--silent")
-        .arg("--show-error")
-        .arg("--request")
-        .arg("POST")
-        .arg("--header")
-        .arg(format!("Authorization: Bearer {api_key}"))
-        .arg("--header")
-        .arg("Content-Type: application/json")
-        .arg("--data")
-        .arg(body.to_string())
-        .arg(url)
-        .output()
+    fs::write(&body_path, body.to_string())
+        .with_context(|| format!("failed to write {}", body_path.display()))?;
+
+    let curl_config = format!(
+        "fail-with-body\nsilent\nshow-error\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\ndata-binary = \"@{}\"\n",
+        curl_config_quote(&url),
+        curl_config_quote(api_key),
+        curl_config_quote(&body_path.display().to_string()),
+    );
+    let mut child = ProcessCommand::new("curl")
+        .arg("--config")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("failed to execute curl for OpenRouter request")?;
+    let mut stdin = child.stdin.take().context("failed to open curl stdin")?;
+    stdin
+        .write_all(curl_config.as_bytes())
+        .context("failed to write curl config")?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for curl")?;
+    let _ = fs::remove_file(&body_path);
+
     if !output.status.success() {
         bail!(
             "OpenRouter request failed: {}",
@@ -459,6 +474,32 @@ fn call_openrouter_with_curl(
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned)
         .context("OpenRouter response did not include choices[0].message.content")
+}
+
+fn unique_temp_path(prefix: &str, extension: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "{prefix}-{}-{}.{}",
+        std::process::id(),
+        monotonic_nanos(),
+        extension
+    ));
+    path
+}
+
+fn monotonic_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+fn curl_config_quote(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "")
+        .replace('\r', "")
 }
 
 fn parse_model_artifact(raw: &str) -> Result<ReviewArtifact> {
@@ -558,5 +599,13 @@ mod tests {
         assert!(prompt.contains("fail_under: 4"));
         assert!(prompt.contains("Review Gate Review Output"));
         assert!(prompt.contains("diff --git"));
+    }
+
+    #[test]
+    fn curl_config_quote_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            curl_config_quote("sk-\"secret\"\\value\n"),
+            "sk-\\\"secret\\\"\\\\value"
+        );
     }
 }

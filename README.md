@@ -117,7 +117,7 @@ Review Gate is BYOK. The action reads the model key from `OPENROUTER_API_KEY` an
 
 The current Rust boundary builds deterministic chat-completion requests and is tested with a mock transport. Live HTTP transport is intentionally isolated from scoring and summary rendering.
 
-The first live action implementation uses the `curl` binary available on GitHub-hosted Ubuntu runners for the OpenRouter request. This keeps the Rust dependency graph small while the artifact, scoring, summary, and exit semantics remain owned by the Rust CLI.
+The first live action implementation uses the `curl` binary available on GitHub-hosted Ubuntu runners for the OpenRouter request. Review Gate sends curl configuration through stdin and writes the non-secret request body to a temp file, so the OpenRouter key and large prompt payload are not exposed through the process argument list.
 
 ## Current Limitations
 
