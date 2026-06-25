@@ -498,8 +498,7 @@ fn curl_config_quote(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('\n', "")
-        .replace('\r', "")
+        .replace(['\n', '\r'], "")
 }
 
 fn parse_model_artifact(raw: &str) -> Result<ReviewArtifact> {
