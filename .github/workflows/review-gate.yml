@@ -1,0 +1,39 @@
+name: Review Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review-gate:
+    runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Check OpenRouter secret
+        id: openrouter
+        shell: bash
+        run: |
+          if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Review Gate skipped: OPENROUTER_API_KEY secret is not configured."
+          fi
+      - name: Run Review Gate
+        if: steps.openrouter.outputs.configured == 'true'
+        uses: ./
+        with:
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          config: .reviewgate.yml
+          target_score: "5"
+          fail_under: "4"

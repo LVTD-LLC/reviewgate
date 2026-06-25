@@ -4,7 +4,7 @@ Open-source AI review gates for agent-written PRs.
 
 Review Gate is a GitHub Actions-first, OpenRouter/BYOK PR review tool. The goal is simple: every PR gets a visible 0-5 review score, one canonical summary comment that updates in place, and machine-readable JSON so coding agents can iterate until the score reaches the target.
 
-This repository is in an early build milestone. The current CLI can validate and render deterministic review artifacts from fixture JSON. The Rust crates also define the OpenRouter/BYOK client boundary and canonical GitHub summary upsert contract so the live action path can stay thin and testable.
+This repository is in an early build milestone. The current CLI can validate and render deterministic review artifacts from fixture JSON, and the GitHub Action can run a live pull request review from CI when `OPENROUTER_API_KEY` is configured.
 
 ## Product Contract
 
@@ -17,7 +17,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Posts inline comments only for high-confidence, line-specific findings.
 - Creates a GitHub check run based on a configurable threshold.
 
-## Planned GitHub Action
+## GitHub Action
 
 ```yaml
 name: Review Gate
@@ -30,6 +30,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
   checks: write
 
 jobs:
@@ -44,6 +45,17 @@ jobs:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
+The action:
+
+- collects the PR diff from the checked-out repository;
+- includes bounded repository context from common instruction files like `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, and `.reviewgate.yml`;
+- calls OpenRouter with the user's API key;
+- validates the model response as a Review Gate JSON artifact;
+- writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
+- appends the summary to the GitHub Actions step summary;
+- creates or updates one PR comment containing `<!-- review-gate-summary -->`;
+- exits non-zero when `score < fail_under`, unless `report_only: "true"` is set.
+
 ## Local Milestone
 
 Render the fixture summary:
@@ -57,6 +69,28 @@ Write JSON and Markdown artifacts:
 ```bash
 cargo run --locked -p reviewgate-cli -- fixture-review \
   --input fixtures/simple-review.json \
+  --json-out .reviewgate/review.json \
+  --summary-out .reviewgate/summary.md
+```
+
+Run the PR review command against the current checkout with a mock artifact:
+
+```bash
+cargo run --locked -p reviewgate-cli -- review-pr \
+  --repo . \
+  --mock-artifact fixtures/simple-review.json \
+  --json-out .reviewgate/review.json \
+  --summary-out .reviewgate/summary.md \
+  --target-score 5 \
+  --fail-under 4 \
+  --report-only
+```
+
+Run the live OpenRouter path locally:
+
+```bash
+OPENROUTER_API_KEY=sk-or-... cargo run --locked -p reviewgate-cli -- review-pr \
+  --repo . \
   --json-out .reviewgate/review.json \
   --summary-out .reviewgate/summary.md
 ```
@@ -82,6 +116,15 @@ Review Gate is BYOK. The action reads the model key from `OPENROUTER_API_KEY` an
 - `strong`: `anthropic/claude-sonnet-4`
 
 The current Rust boundary builds deterministic chat-completion requests and is tested with a mock transport. Live HTTP transport is intentionally isolated from scoring and summary rendering.
+
+The first live action implementation uses the `curl` binary available on GitHub-hosted Ubuntu runners for the OpenRouter request. This keeps the Rust dependency graph small while the artifact, scoring, summary, and exit semantics remain owned by the Rust CLI.
+
+## Current Limitations
+
+- Config parsing currently reads `target_score` and `fail_under`; richer config support comes later.
+- Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
+- Inline comments are not posted yet. The canonical summary comment is the first publishing surface.
+- The action should not be used with `pull_request_target` for untrusted code.
 
 ## Repository Layout
 

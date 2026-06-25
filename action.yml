@@ -14,6 +14,18 @@ inputs:
     description: Fail the check under this score.
     required: false
     default: "4"
+  target_score:
+    description: Score required for a fully passing review.
+    required: false
+    default: "5"
+  report_only:
+    description: Publish review results without failing the workflow when the gate fails.
+    required: false
+    default: "false"
+  mock_artifact:
+    description: Optional local Review Gate artifact path for dry-run or test workflows.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -24,7 +36,86 @@ runs:
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         REVIEWGATE_CONFIG: ${{ inputs.config }}
         REVIEWGATE_FAIL_UNDER: ${{ inputs.fail_under }}
+        REVIEWGATE_TARGET_SCORE: ${{ inputs.target_score }}
+        REVIEWGATE_REPORT_ONLY: ${{ inputs.report_only }}
+        REVIEWGATE_MOCK_ARTIFACT: ${{ inputs.mock_artifact }}
       run: |
         set -euo pipefail
-        echo "Review Gate action wrapper is scaffolded."
-        echo "OpenRouter-backed CI review will be implemented after the fixture milestone."
+        args=(
+          run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
+          -p reviewgate-cli -- review-pr
+          --repo "$GITHUB_WORKSPACE"
+          --config "$REVIEWGATE_CONFIG"
+          --json-out "$GITHUB_WORKSPACE/.reviewgate/review.json"
+          --summary-out "$GITHUB_WORKSPACE/.reviewgate/summary.md"
+          --target-score "$REVIEWGATE_TARGET_SCORE"
+          --fail-under "$REVIEWGATE_FAIL_UNDER"
+        )
+        args+=(--report-only)
+        if [ -n "$REVIEWGATE_MOCK_ARTIFACT" ]; then
+          args+=(--mock-artifact "$REVIEWGATE_MOCK_ARTIFACT")
+        fi
+        cargo "${args[@]}"
+
+    - name: Publish Review Gate summary
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        summary_path="$GITHUB_WORKSPACE/.reviewgate/summary.md"
+        if [ -f "$summary_path" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
+          echo "Review Gate summary comment skipped: not a pull_request event."
+          exit 0
+        fi
+        if [ ! -f "$summary_path" ]; then
+          echo "Review Gate summary comment skipped: missing $summary_path."
+          exit 0
+        fi
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "Review Gate summary comment skipped: GH_TOKEN is empty."
+          exit 0
+        fi
+
+        pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+        if [ -z "$pr_number" ]; then
+          echo "Review Gate summary comment skipped: no pull request number."
+          exit 0
+        fi
+
+        marker='<!-- review-gate-summary -->'
+        comment_id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+          --jq ".[] | select(.body | contains(\"$marker\")) | .id" | head -n 1)"
+
+        if [ -n "$comment_id" ]; then
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+            --field "body=$(cat "$summary_path")" >/dev/null
+          echo "Updated Review Gate summary comment $comment_id."
+        else
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+            --field "body=$(cat "$summary_path")" >/dev/null
+          echo "Created Review Gate summary comment."
+        fi
+
+    - name: Enforce Review Gate
+      shell: bash
+      env:
+        REVIEWGATE_REPORT_ONLY: ${{ inputs.report_only }}
+      run: |
+        set -euo pipefail
+        if [ "$REVIEWGATE_REPORT_ONLY" = "true" ]; then
+          echo "Review Gate report-only mode enabled; not failing workflow."
+          exit 0
+        fi
+        status="$(jq -r '.status' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
+        score="$(jq -r '.score' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
+        fail_under="$(jq -r '.fail_under' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
+        if [ "$status" = "failed" ]; then
+          echo "Review Gate failed: score $score is below fail_under $fail_under."
+          exit 1
+        fi
+        echo "Review Gate status: $status ($score/5)."

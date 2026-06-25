@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added the first live `review-pr` CLI path for PR diff/context collection, OpenRouter artifact parsing, summary/artifact output, configurable exit semantics, and mock-artifact dry runs.
+- Wired the GitHub Action to run the live CLI path, publish a step summary, and upsert one canonical PR summary comment.
+- Added a dogfood Review Gate workflow and v0.1.0 release-readiness checklist.
 - Added OpenRouter BYOK model-client boundary types with redacted secret handling, explicit model presets, and mocked transport tests.
 - Added GitHub canonical summary upsert planning with create/update/no-op behavior and mocked publisher tests.
 - Expanded the public agent-loop contract for JSON artifacts, canonical summary fallback, status handling, and stop conditions.
