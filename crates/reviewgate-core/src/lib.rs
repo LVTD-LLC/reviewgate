@@ -17,12 +17,23 @@ pub enum ReviewStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum Severity {
     P1,
     P2,
     P3,
     P4,
+}
+
+impl Severity {
+    pub fn score_ceiling(&self) -> u8 {
+        match self {
+            Severity::P1 => 2,
+            Severity::P2 => 3,
+            Severity::P3 => 4,
+            Severity::P4 => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -80,28 +91,11 @@ pub fn validate_score(score: u8) -> Result<(), ReviewGateError> {
 }
 
 pub fn compute_score(findings: &[Finding]) -> u8 {
-    if findings
+    findings
         .iter()
-        .any(|finding| finding.severity == Severity::P1)
-    {
-        return 2;
-    }
-
-    if findings
-        .iter()
-        .any(|finding| finding.severity == Severity::P2)
-    {
-        return 3;
-    }
-
-    if findings
-        .iter()
-        .any(|finding| finding.severity == Severity::P3)
-    {
-        return 4;
-    }
-
-    5
+        .map(|finding| finding.severity.score_ceiling())
+        .min()
+        .unwrap_or(5)
 }
 
 pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateError> {
@@ -165,9 +159,22 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     }
 
     output.push_str("## Agent Instructions\n\n");
-    if blocking.is_empty() {
-        output.push_str("No blocking findings remain. Re-run Review Gate if new commits land.\n");
+    if artifact.findings.is_empty() {
+        output.push_str("No findings remain. Re-run Review Gate if new commits land.\n");
     } else {
+        for (index, finding) in artifact.findings.iter().enumerate() {
+            output.push_str(&format!(
+                "{}. {:?}: {}",
+                index + 1,
+                finding.severity,
+                finding.agent_instruction
+            ));
+            if let (Some(file), Some(line)) = (&finding.file, finding.line) {
+                output.push_str(&format!(" (`{}:{}`)", file, line));
+            }
+            output.push('\n');
+        }
+        output.push('\n');
         output.push_str("Fix the blocking findings first. Re-run Review Gate after pushing.\n");
     }
 
@@ -195,6 +202,34 @@ mod tests {
     }
 
     #[test]
+    fn computes_score_without_relying_on_enum_ordering() {
+        let findings = vec![
+            Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P4,
+                confidence: 0.9,
+                file: None,
+                line: None,
+                title: "Style note".to_string(),
+                detail: None,
+                agent_instruction: "Consider simplifying this wording.".to_string(),
+            },
+            Finding {
+                id: "rg_002".to_string(),
+                severity: Severity::P1,
+                confidence: 0.9,
+                file: None,
+                line: None,
+                title: "Security issue".to_string(),
+                detail: None,
+                agent_instruction: "Fix the unsafe behavior.".to_string(),
+            },
+        ];
+
+        assert_eq!(compute_score(&findings), 2);
+    }
+
+    #[test]
     fn renders_canonical_summary_marker_and_score() {
         let artifact = ReviewArtifact {
             score: 4,
@@ -211,5 +246,35 @@ mod tests {
         let summary = render_summary(&artifact).expect("summary renders");
         assert!(summary.starts_with(SUMMARY_MARKER));
         assert!(summary.contains("# Review Gate: 4/5"));
+    }
+
+    #[test]
+    fn renders_agent_instructions_for_findings() {
+        let artifact = ReviewArtifact {
+            score: 3,
+            target_score: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "One blocking issue remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P2,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Missing regression test".to_string(),
+                detail: None,
+                agent_instruction: "Add a regression test for the missing branch.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("## Agent Instructions"));
+        assert!(summary
+            .contains("1. P2: Add a regression test for the missing branch. (`src/lib.rs:42`)"));
     }
 }
