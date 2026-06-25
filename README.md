@@ -36,7 +36,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
       - uses: LVTD-LLC/review-gate@v0
@@ -49,13 +49,13 @@ jobs:
 Render the fixture summary:
 
 ```bash
-cargo run -p reviewgate-cli -- fixture-review --input fixtures/simple-review.json
+cargo run --locked -p reviewgate-cli -- fixture-review --input fixtures/simple-review.json
 ```
 
 Write JSON and Markdown artifacts:
 
 ```bash
-cargo run -p reviewgate-cli -- fixture-review \
+cargo run --locked -p reviewgate-cli -- fixture-review \
   --input fixtures/simple-review.json \
   --json-out .reviewgate/review.json \
   --summary-out .reviewgate/summary.md
@@ -77,4 +77,3 @@ skills/reviewgate-loop/      Public agent loop skill draft
 ## Security Posture
 
 Review Gate treats model output as untrusted text. The default workflow reviews diffs and context; it does not run arbitrary PR code and should not use `pull_request_target` for untrusted forks. GitHub token permissions should stay least-privilege.
-

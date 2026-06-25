@@ -34,6 +34,15 @@ impl Severity {
             Severity::P4 => 5,
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Severity::P1 => "P1",
+            Severity::P2 => "P2",
+            Severity::P3 => "P3",
+            Severity::P4 => "P4",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -46,6 +55,12 @@ pub struct Finding {
     pub title: String,
     pub detail: Option<String>,
     pub agent_instruction: String,
+}
+
+impl Finding {
+    pub fn is_blocking(&self, fail_under: u8) -> bool {
+        self.severity.score_ceiling() < fail_under
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -109,6 +124,7 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     output.push_str(&format!("# Review Gate: {}/5\n\n", artifact.score));
     output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
     output.push_str(&format!("Target: {}/5  \n", artifact.target_score));
+    output.push_str(&format!("Fail under: {}/5  \n", artifact.fail_under));
     output.push_str(&format!("Models: {}  \n", artifact.models.join(", ")));
     if let Some(cost) = artifact.estimated_cost_usd {
         output.push_str(&format!("Estimated model cost: ${cost:.2}\n"));
@@ -121,7 +137,7 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     let blocking: Vec<&Finding> = artifact
         .findings
         .iter()
-        .filter(|finding| matches!(finding.severity, Severity::P1 | Severity::P2))
+        .filter(|finding| finding.is_blocking(artifact.fail_under))
         .collect();
     output.push_str("## Blocking Findings\n\n");
     if blocking.is_empty() {
@@ -129,9 +145,9 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     } else {
         for (index, finding) in blocking.iter().enumerate() {
             output.push_str(&format!(
-                "{}. {:?}: {}",
+                "{}. {}: {}",
                 index + 1,
-                finding.severity,
+                finding.severity.as_str(),
                 finding.title
             ));
             if let (Some(file), Some(line)) = (&finding.file, finding.line) {
@@ -145,14 +161,18 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     let non_blocking: Vec<&Finding> = artifact
         .findings
         .iter()
-        .filter(|finding| matches!(finding.severity, Severity::P3 | Severity::P4))
+        .filter(|finding| !finding.is_blocking(artifact.fail_under))
         .collect();
     output.push_str("## Non-Blocking Notes\n\n");
     if non_blocking.is_empty() && artifact.notes.is_empty() {
         output.push_str("None.\n\n");
     } else {
         for finding in non_blocking {
-            output.push_str(&format!("- {:?}: {}\n", finding.severity, finding.title));
+            output.push_str(&format!(
+                "- {}: {}\n",
+                finding.severity.as_str(),
+                finding.title
+            ));
         }
         for note in &artifact.notes {
             output.push_str(&format!("- {note}\n"));
@@ -166,9 +186,9 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     } else {
         for (index, finding) in artifact.findings.iter().enumerate() {
             output.push_str(&format!(
-                "{}. {:?}: {}",
+                "{}. {}: {}",
                 index + 1,
-                finding.severity,
+                finding.severity.as_str(),
                 finding.agent_instruction
             ));
             if let (Some(file), Some(line)) = (&finding.file, finding.line) {
@@ -349,5 +369,36 @@ mod tests {
 
         assert_eq!(artifact.score, 3);
         assert_eq!(artifact.status, ReviewStatus::Failed);
+    }
+
+    #[test]
+    fn renders_blocking_findings_from_fail_under_threshold() {
+        let artifact = ReviewArtifact {
+            score: 3,
+            target_score: 5,
+            fail_under: 3,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "One recoverable issue remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P2,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Missing regression test".to_string(),
+                detail: None,
+                agent_instruction: "Add the regression test.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("## Blocking Findings\n\nNone."));
+        assert!(summary.contains("- P2: Missing regression test"));
+        assert!(!summary.contains("Fix the blocking findings first."));
     }
 }

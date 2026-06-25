@@ -4,8 +4,8 @@ Review Gate is a Rust workspace with a thin composite GitHub Action wrapper.
 
 ## Stack
 
-- Rust edition: `2021`.
-- Minimum Rust version: `1.82`.
+- Rust edition: `2024`.
+- Minimum Rust version: `1.96`.
 - Workspace crates:
   - `crates/reviewgate-core`: review artifact types, scoring, validation, and summary rendering.
   - `crates/reviewgate-cli`: local and CI entrypoints.
@@ -25,19 +25,19 @@ cargo fmt --all --check
 Lint:
 
 ```bash
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
 Tests:
 
 ```bash
-cargo test --workspace
+cargo test --locked --workspace
 ```
 
 Fixture milestone:
 
 ```bash
-cargo run -p reviewgate-cli -- fixture-review \
+cargo run --locked -p reviewgate-cli -- fixture-review \
   --input fixtures/simple-review.json \
   --json-out .reviewgate/review.json \
   --summary-out .reviewgate/summary.md
@@ -52,8 +52,8 @@ This is the CI-required artifact-writing form. The shorter stdout-only form is u
 Required CI steps:
 
 - `cargo fmt --all --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`
+- `cargo test --locked --workspace`
 - fixture render command with `.reviewgate/review.json` and `.reviewgate/summary.md` outputs
 
 ## Integration Boundaries
