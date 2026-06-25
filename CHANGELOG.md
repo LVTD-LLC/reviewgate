@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added configurable summary/inline severity floors, a `reviewgate recheck` helper, and hidden summary state for bounded cumulative PR cost/run history.
 - Added Review UX and Control v1 dogfood notes and design guidance for review-only semantics, trigger/recheck choices, model defaults, cost display, severity visibility, and secure workflow behavior.
 - Added `P0` severity support, structured cost summary metadata, and cost rendering in canonical summaries.
 - Updated OpenRouter preset defaults to prefer price-to-value models: `qwen/qwen3-coder` for cheap and `deepseek/deepseek-v4-flash` for balanced.

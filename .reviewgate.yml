@@ -1,6 +1,8 @@
 review:
   target_score: 5
   fail_under: 4
+  summary_min_severity: P4
+  inline_min_severity: P2
   update_existing_summary: true
   post_inline_comments: true
   max_inline_comments: 12

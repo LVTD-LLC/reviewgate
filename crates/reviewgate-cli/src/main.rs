@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     ModelPreset, OPENROUTER_API_KEY_ENV, OPENROUTER_DEFAULT_BASE_URL, ReviewArtifact, ReviewStatus,
-    render_summary,
+    Severity, SummaryOptions, extract_summary_state, render_summary, render_summary_with_options,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -66,6 +66,30 @@ enum Command {
         mock_artifact: Option<PathBuf>,
         #[arg(long)]
         report_only: bool,
+        #[arg(long)]
+        summary_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_severity: Option<String>,
+    },
+    /// Render a summary from an existing artifact, optionally carrying forward hidden state.
+    RenderSummary {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        previous_summary: Option<PathBuf>,
+        #[arg(long)]
+        summary_out: Option<PathBuf>,
+        #[arg(long)]
+        summary_min_severity: Option<String>,
+    },
+    /// Re-run the latest Review Gate workflow run for a pull request branch.
+    Recheck {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        pr: Option<String>,
+        #[arg(long, default_value = "Review Gate")]
+        workflow: String,
     },
 }
 
@@ -90,6 +114,8 @@ fn main() -> Result<()> {
             openrouter_base_url,
             mock_artifact,
             report_only,
+            summary_min_severity,
+            inline_min_severity,
         } => review_pr(ReviewPrOptions {
             repo,
             config,
@@ -102,7 +128,16 @@ fn main() -> Result<()> {
             openrouter_base_url,
             mock_artifact,
             report_only,
+            summary_min_severity,
+            inline_min_severity,
         }),
+        Command::RenderSummary {
+            input,
+            previous_summary,
+            summary_out,
+            summary_min_severity,
+        } => render_summary_command(input, previous_summary, summary_out, summary_min_severity),
+        Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
     }
 }
 
@@ -179,12 +214,16 @@ struct ReviewPrOptions {
     openrouter_base_url: Option<String>,
     mock_artifact: Option<PathBuf>,
     report_only: bool,
+    summary_min_severity: Option<String>,
+    inline_min_severity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ReviewConfigValues {
     target_score: Option<u8>,
     fail_under: Option<u8>,
+    summary_min_severity: Option<Severity>,
+    inline_min_severity: Option<Severity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +249,18 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
         .or(config_values.target_score)
         .unwrap_or(5);
     let fail_under = options.fail_under.or(config_values.fail_under).unwrap_or(4);
+    let summary_min_severity = parse_optional_severity(
+        options.summary_min_severity.as_deref(),
+        "summary_min_severity",
+    )?
+    .or(config_values.summary_min_severity)
+    .unwrap_or(Severity::P4);
+    let _inline_min_severity = parse_optional_severity(
+        options.inline_min_severity.as_deref(),
+        "inline_min_severity",
+    )?
+    .or(config_values.inline_min_severity)
+    .unwrap_or(Severity::P2);
     let context = collect_review_context(&repo)?;
     let model = options
         .model
@@ -238,7 +289,14 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
         artifact.models = vec![model];
     }
     let artifact = artifact.with_computed_score()?;
-    let summary = render_summary(&artifact)?;
+    let summary = render_summary_with_options(
+        &artifact,
+        SummaryOptions {
+            summary_min_severity,
+            ..SummaryOptions::default()
+        },
+        None,
+    )?;
     let pretty_json = serde_json::to_string_pretty(&artifact)?;
 
     write_or_print(options.json_out, &pretty_json, "review JSON")?;
@@ -252,6 +310,121 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+fn render_summary_command(
+    input: PathBuf,
+    previous_summary: Option<PathBuf>,
+    summary_out: Option<PathBuf>,
+    summary_min_severity: Option<String>,
+) -> Result<()> {
+    let raw = fs::read_to_string(&input)
+        .with_context(|| format!("failed to read artifact {}", input.display()))?;
+    let artifact: ReviewArtifact = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse artifact {}", input.display()))?;
+    let artifact = artifact.with_computed_score()?;
+    let previous_state = if let Some(path) = previous_summary {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read previous summary {}", path.display()))?;
+        extract_summary_state(&raw)?
+    } else {
+        None
+    };
+    let summary_min_severity =
+        parse_optional_severity(summary_min_severity.as_deref(), "summary_min_severity")?
+            .unwrap_or(Severity::P4);
+    let summary = render_summary_with_options(
+        &artifact,
+        SummaryOptions {
+            summary_min_severity,
+            ..SummaryOptions::default()
+        },
+        previous_state.as_ref(),
+    )?;
+
+    write_or_print(summary_out, &summary, "review summary")?;
+    Ok(())
+}
+
+fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> Result<()> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let pr_ref = pr.unwrap_or_else(|| "current branch".to_string());
+    let pr_json = if pr_ref == "current branch" {
+        gh(
+            &repo,
+            [
+                "pr",
+                "view",
+                "--json",
+                "number,headRefName,url",
+                "--jq",
+                "{number:.number,headRefName:.headRefName,url:.url}",
+            ],
+        )?
+    } else {
+        gh(
+            &repo,
+            [
+                "pr",
+                "view",
+                &pr_ref,
+                "--json",
+                "number,headRefName,url",
+                "--jq",
+                "{number:.number,headRefName:.headRefName,url:.url}",
+            ],
+        )?
+    };
+    let pr_value: serde_json::Value =
+        serde_json::from_str(&pr_json).context("failed to parse gh pr view output")?;
+    let head_ref = pr_value
+        .get("headRefName")
+        .and_then(serde_json::Value::as_str)
+        .context("gh pr view did not return headRefName")?;
+    let pr_number = pr_value
+        .get("number")
+        .and_then(serde_json::Value::as_u64)
+        .context("gh pr view did not return PR number")?;
+    let pr_url = pr_value
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+
+    let runs_json = gh(
+        &repo,
+        [
+            "run",
+            "list",
+            "--workflow",
+            &workflow,
+            "--branch",
+            head_ref,
+            "--limit",
+            "1",
+            "--json",
+            "databaseId,url,status,conclusion,headBranch",
+        ],
+    )?;
+    let runs: Vec<serde_json::Value> =
+        serde_json::from_str(&runs_json).context("failed to parse gh run list output")?;
+    let Some(run) = runs.first() else {
+        bail!("no {workflow:?} workflow runs found for PR #{pr_number} branch {head_ref:?}");
+    };
+    let run_id = run
+        .get("databaseId")
+        .and_then(serde_json::Value::as_u64)
+        .context("workflow run did not include databaseId")?;
+    let run_id = run_id.to_string();
+    gh(&repo, ["run", "rerun", &run_id])?;
+    let run_url = run
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    println!("Triggered Review Gate recheck for PR #{pr_number} {pr_url}");
+    if !run_url.is_empty() {
+        println!("Rerun: {run_url}");
+    }
     Ok(())
 }
 
@@ -285,6 +458,12 @@ fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
         match key {
             "target_score" => values.target_score = Some(parse_score(value, "target_score")?),
             "fail_under" => values.fail_under = Some(parse_score(value, "fail_under")?),
+            "summary_min_severity" => {
+                values.summary_min_severity = Some(parse_severity(value, "summary_min_severity")?)
+            }
+            "inline_min_severity" => {
+                values.inline_min_severity = Some(parse_severity(value, "inline_min_severity")?)
+            }
             _ => {}
         }
     }
@@ -300,6 +479,17 @@ fn parse_score(value: &str, field: &str) -> Result<u8> {
     } else {
         bail!("{field} must be between 0 and 5, got {parsed}")
     }
+}
+
+fn parse_optional_severity(value: Option<&str>, field: &str) -> Result<Option<Severity>> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| parse_severity(value, field))
+        .transpose()
+}
+
+fn parse_severity(value: &str, field: &str) -> Result<Severity> {
+    Severity::parse(value).with_context(|| format!("{field} must be one of P0, P1, P2, P3, P4"))
 }
 
 fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
@@ -352,6 +542,21 @@ fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
     if !output.status.success() {
         bail!(
             "git command failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn gh<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
+    let output = ProcessCommand::new("gh")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run gh in {}", repo.display()))?;
+    if !output.status.success() {
+        bail!(
+            "gh command failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -567,7 +772,7 @@ mod tests {
 
     #[test]
     fn parses_simple_review_config_values() {
-        let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n";
+        let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n  summary_min_severity: P2\n  inline_min_severity: P1\n";
         let path =
             std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
@@ -579,9 +784,20 @@ mod tests {
             values,
             ReviewConfigValues {
                 target_score: Some(5),
-                fail_under: Some(4)
+                fail_under: Some(4),
+                summary_min_severity: Some(Severity::P2),
+                inline_min_severity: Some(Severity::P1),
             }
         );
+    }
+
+    #[test]
+    fn parses_severity_case_insensitively() {
+        assert_eq!(
+            parse_severity("p3", "summary_min_severity").expect("valid severity"),
+            Severity::P3
+        );
+        assert!(parse_severity("medium", "summary_min_severity").is_err());
     }
 
     #[test]

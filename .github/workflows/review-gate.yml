@@ -4,6 +4,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      summary_min_severity:
+        description: Lowest severity shown in the canonical summary.
+        required: false
+        default: P4
+      inline_min_severity:
+        description: Lowest severity eligible for future inline comments.
+        required: false
+        default: P2
 
 permissions:
   contents: read
@@ -37,3 +46,5 @@ jobs:
           config: .reviewgate.yml
           target_score: "5"
           fail_under: "4"
+          summary_min_severity: ${{ inputs.summary_min_severity || 'P4' }}
+          inline_min_severity: ${{ inputs.inline_min_severity || 'P2' }}

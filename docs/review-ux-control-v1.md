@@ -18,7 +18,8 @@ Default installation should remain low-headache:
 
 - Run on `pull_request` events for `opened`, `synchronize`, `reopened`, and `ready_for_review`.
 - Support `workflow_dispatch` for manual reruns.
-- Add an explicit recheck mechanic next, either through a PR comment command such as `review-gate recheck`, a label, or a CLI helper that dispatches the workflow.
+- Use the `reviewgate recheck` CLI helper to rerun the latest Review Gate workflow run for a PR branch when GitHub CLI auth is available.
+- Add PR comment or label-based recheck commands later if users want an in-GitHub control surface.
 
 Running on every push is acceptable as the simplest default while the project is early. It should remain configurable because some repos will prefer explicit reruns to control cost and noise.
 
@@ -38,15 +39,15 @@ The review summary should always include `target_score`, `fail_under`, and the r
 
 Users need separate controls for what is visible and what blocks:
 
-- `summary_severity_floor`: lowest severity shown in the summary.
-- `inline_severity_floor`: lowest severity posted as inline PR review comments.
+- `summary_min_severity`: lowest severity shown in the summary.
+- `inline_min_severity`: lowest severity posted as inline PR review comments.
 - `blocking_severity_floor` or `fail_under`: policy used to compute check/job status.
 
 Defaults should avoid noise:
 
-- Show P1-P3 findings in the summary.
+- Show P0-P4 findings in the summary by default, with `summary_min_severity` available for quieter installs.
 - Post inline comments only for high-confidence P0-P2 line-specific findings.
-- Keep P4 advisory items in the JSON artifact unless explicitly enabled.
+- Keep all findings in the JSON artifact even when the visible summary filters lower-severity items.
 
 ## Cost Direction
 
@@ -57,6 +58,8 @@ The canonical summary should show:
 - Compact component history by stage/model.
 
 Review Gate has no external database in the action-first architecture, so cumulative state should be stored in the canonical summary's hidden metadata and preserved on update.
+
+The summary now stores versioned hidden state with reviewed SHAs, run count, cumulative estimated cost, and bounded cost history. The visible summary remains human-readable; the hidden payload is for robust rerendering on later runs.
 
 ## Model Defaults
 
@@ -76,4 +79,3 @@ Default docs must avoid unsafe `pull_request_target` patterns. The recommended w
 - Avoid running arbitrary PR code.
 - Avoid exposing `OPENROUTER_API_KEY` to untrusted fork PRs.
 - Treat model output as untrusted text.
-

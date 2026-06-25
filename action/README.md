@@ -40,6 +40,8 @@ The action must update the existing PR summary comment containing `<!-- review-g
 - `preset`: OpenRouter model preset used when `model` is not pinned. Defaults to `balanced`.
 - `model`: Exact OpenRouter model id. Defaults to the selected preset model.
 - `mock_artifact`: Optional artifact path for dry-run workflows.
+- `summary_min_severity`: Lowest severity shown in the canonical summary. Defaults to `P4`.
+- `inline_min_severity`: Lowest severity eligible for future inline comments. Defaults to `P2`.
 
 `fail_under` controls workflow/check behavior. It is not required for teams using Review Gate only as a report; set `report_only: "true"` for that mode.
 
@@ -47,6 +49,8 @@ The action must update the existing PR summary comment containing `<!-- review-g
 
 The composite action runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, and upserts one canonical PR summary comment when running on a pull request.
 
+When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
+
 ## Trigger Guidance
 
-The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch now and add an explicit recheck command or CLI helper as that surface matures.
+The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `reviewgate recheck` helper to rerun the latest Review Gate workflow run for a PR branch.

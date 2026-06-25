@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const SUMMARY_MARKER: &str = "<!-- review-gate-summary -->";
+pub const SUMMARY_STATE_PREFIX: &str = "<!-- review-gate-state ";
+pub const SUMMARY_STATE_SUFFIX: &str = " -->";
+pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
 pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -20,6 +23,10 @@ pub enum ReviewGateError {
         "fail_under must be less than or equal to target_score, got fail_under={fail_under} target_score={target_score}"
     )]
     InvalidThreshold { fail_under: u8, target_score: u8 },
+    #[error("invalid severity {0:?}; expected P0, P1, P2, P3, or P4")]
+    InvalidSeverity(String),
+    #[error("summary state is invalid: {0}")]
+    InvalidSummaryState(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -40,7 +47,7 @@ impl ReviewStatus {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     P0,
     P1,
@@ -50,6 +57,17 @@ pub enum Severity {
 }
 
 impl Severity {
+    pub fn parse(value: &str) -> Result<Self, ReviewGateError> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "P0" => Ok(Severity::P0),
+            "P1" => Ok(Severity::P1),
+            "P2" => Ok(Severity::P2),
+            "P3" => Ok(Severity::P3),
+            "P4" => Ok(Severity::P4),
+            _ => Err(ReviewGateError::InvalidSeverity(value.to_string())),
+        }
+    }
+
     pub fn score_ceiling(&self) -> u8 {
         match self {
             Severity::P0 => 1,
@@ -68,6 +86,10 @@ impl Severity {
             Severity::P3 => "P3",
             Severity::P4 => "P4",
         }
+    }
+
+    pub fn is_at_or_above(&self, floor: Severity) -> bool {
+        *self <= floor
     }
 }
 
@@ -209,6 +231,123 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
         .map(|finding| finding.severity.score_ceiling())
         .min()
         .unwrap_or(5)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct SummaryCostRun {
+    pub reviewed_sha: String,
+    pub cost_usd: f64,
+}
+
+impl SummaryCostRun {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.reviewed_sha.trim().is_empty() {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "cost run reviewed_sha must not be empty".to_string(),
+            ));
+        }
+        validate_estimated_cost(self.cost_usd)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct SummaryState {
+    pub version: u8,
+    pub last_reviewed_sha: String,
+    pub reviewed_shas: Vec<String>,
+    pub run_count: u32,
+    pub cumulative_cost_usd: f64,
+    pub cost_history: Vec<SummaryCostRun>,
+}
+
+impl SummaryState {
+    pub fn for_artifact(
+        artifact: &ReviewArtifact,
+        previous: Option<&SummaryState>,
+        history_limit: usize,
+    ) -> Result<Self, ReviewGateError> {
+        let current_cost = artifact
+            .cost_summary
+            .as_ref()
+            .map(|cost| cost.current_run_usd)
+            .or(artifact.estimated_cost_usd)
+            .unwrap_or(0.0);
+        validate_estimated_cost(current_cost)?;
+
+        let mut reviewed_shas = previous
+            .map(|state| state.reviewed_shas.clone())
+            .unwrap_or_default();
+        if !reviewed_shas.contains(&artifact.reviewed_sha) {
+            reviewed_shas.push(artifact.reviewed_sha.clone());
+        }
+
+        let mut cost_history = previous
+            .map(|state| state.cost_history.clone())
+            .unwrap_or_default();
+        cost_history.push(SummaryCostRun {
+            reviewed_sha: artifact.reviewed_sha.clone(),
+            cost_usd: current_cost,
+        });
+        let limit = history_limit.max(1);
+        if cost_history.len() > limit {
+            cost_history.drain(0..cost_history.len() - limit);
+        }
+
+        let mut state = SummaryState {
+            version: 1,
+            last_reviewed_sha: artifact.reviewed_sha.clone(),
+            reviewed_shas,
+            run_count: previous
+                .map(|state| state.run_count.saturating_add(1))
+                .unwrap_or(1),
+            cumulative_cost_usd: previous
+                .map(|state| state.cumulative_cost_usd)
+                .unwrap_or(0.0)
+                + current_cost,
+            cost_history,
+        };
+        if state.reviewed_shas.len() > limit {
+            state
+                .reviewed_shas
+                .drain(0..state.reviewed_shas.len() - limit);
+        }
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.version != 1 {
+            return Err(ReviewGateError::InvalidSummaryState(format!(
+                "unsupported version {}",
+                self.version
+            )));
+        }
+        if self.last_reviewed_sha.trim().is_empty() {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "last_reviewed_sha must not be empty".to_string(),
+            ));
+        }
+        validate_estimated_cost(self.cumulative_cost_usd)?;
+        for run in &self.cost_history {
+            run.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SummaryOptions {
+    pub summary_min_severity: Severity,
+    pub cost_history_limit: usize,
+}
+
+impl Default for SummaryOptions {
+    fn default() -> Self {
+        Self {
+            summary_min_severity: Severity::P4,
+            cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,17 +500,54 @@ impl<T: OpenRouterTransport> OpenRouterClient<T> {
     }
 }
 
+pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, ReviewGateError> {
+    let Some(start) = summary.find(SUMMARY_STATE_PREFIX) else {
+        return Ok(None);
+    };
+    let state_start = start + SUMMARY_STATE_PREFIX.len();
+    let Some(relative_end) = summary[state_start..].find(SUMMARY_STATE_SUFFIX) else {
+        return Err(ReviewGateError::InvalidSummaryState(
+            "missing state comment suffix".to_string(),
+        ));
+    };
+    let state_end = state_start + relative_end;
+    let raw = &summary[state_start..state_end];
+    let state: SummaryState = serde_json::from_str(raw)
+        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
+    state.validate()?;
+    Ok(Some(state))
+}
+
 pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateError> {
+    render_summary_with_options(artifact, SummaryOptions::default(), None)
+}
+
+pub fn render_summary_with_options(
+    artifact: &ReviewArtifact,
+    options: SummaryOptions,
+    previous_state: Option<&SummaryState>,
+) -> Result<String, ReviewGateError> {
     artifact.validate()?;
+    let state = SummaryState::for_artifact(artifact, previous_state, options.cost_history_limit)?;
+    let state_json = serde_json::to_string(&state)
+        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
 
     let mut output = String::new();
     output.push_str(SUMMARY_MARKER);
+    output.push_str("\n\n");
+    output.push_str(SUMMARY_STATE_PREFIX);
+    output.push_str(&state_json);
+    output.push_str(SUMMARY_STATE_SUFFIX);
     output.push_str("\n\n");
     output.push_str(&format!("# Review Gate: {}/5\n\n", artifact.score));
     output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
     output.push_str(&format!("Status: `{}`  \n", artifact.status.as_str()));
     output.push_str(&format!("Target: {}/5  \n", artifact.target_score));
     output.push_str(&format!("Fail under: {}/5  \n", artifact.fail_under));
+    output.push_str(&format!(
+        "Summary visibility: {} and above  \n",
+        options.summary_min_severity.as_str()
+    ));
     output.push_str(&format!("Models: {}  \n", artifact.models.join(", ")));
     if let Some(cost_summary) = &artifact.cost_summary {
         output.push_str(&format!(
@@ -391,6 +567,10 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
         output.push_str(&format!(
             "- Current run: ${:.4}\n",
             cost_summary.current_run_usd
+        ));
+        output.push_str(&format!(
+            "- Cumulative PR review cost: ${:.4} across {} run(s)\n",
+            state.cumulative_cost_usd, state.run_count
         ));
         if !cost_summary.components.is_empty() {
             output.push_str("- Components:\n");
@@ -439,6 +619,11 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     let non_blocking: Vec<&Finding> = artifact
         .findings
         .iter()
+        .filter(|finding| {
+            finding
+                .severity
+                .is_at_or_above(options.summary_min_severity)
+        })
         .filter(|finding| !finding.is_blocking(artifact.fail_under))
         .collect();
     output.push_str("## Non-Blocking Notes\n\n");
@@ -459,10 +644,23 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
     }
 
     output.push_str("## Agent Instructions\n\n");
-    if artifact.findings.is_empty() {
-        output.push_str("No findings remain. Re-run Review Gate if new commits land.\n");
+    let visible_findings: Vec<&Finding> = artifact
+        .findings
+        .iter()
+        .filter(|finding| {
+            let is_blocking = finding.is_blocking(artifact.fail_under);
+            let is_visible = finding
+                .severity
+                .is_at_or_above(options.summary_min_severity);
+            is_blocking || is_visible
+        })
+        .collect();
+    if visible_findings.is_empty() {
+        output.push_str(
+            "No visible findings remain at the configured summary severity floor. Re-run Review Gate if new commits land.\n",
+        );
     } else {
-        for (index, finding) in artifact.findings.iter().enumerate() {
+        for (index, finding) in visible_findings.iter().enumerate() {
             output.push_str(&format!(
                 "{}. {}: {}",
                 index + 1,
@@ -599,6 +797,144 @@ mod tests {
 
         assert!(summary.contains("Current run cost: $0.0123"));
         assert!(summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
+    }
+
+    #[test]
+    fn extracts_and_carries_hidden_summary_state() {
+        let artifact = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            fail_under: 4,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "Clean review.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: Some(CostSummary {
+                current_run_usd: 0.0100,
+                components: vec![],
+            }),
+            findings: vec![],
+            notes: vec![],
+        };
+        let first = render_summary(&artifact).expect("summary renders");
+        let previous = extract_summary_state(&first)
+            .expect("state parses")
+            .expect("state exists");
+        let mut rerun_artifact = artifact.clone();
+        rerun_artifact.reviewed_sha = "def456".to_string();
+        rerun_artifact.cost_summary = Some(CostSummary {
+            current_run_usd: 0.0200,
+            components: vec![],
+        });
+
+        let second = render_summary_with_options(
+            &rerun_artifact,
+            SummaryOptions::default(),
+            Some(&previous),
+        )
+        .expect("summary renders");
+        let state = extract_summary_state(&second)
+            .expect("state parses")
+            .expect("state exists");
+
+        assert_eq!(state.run_count, 2);
+        assert_eq!(state.last_reviewed_sha, "def456");
+        assert_eq!(state.reviewed_shas, vec!["abc123", "def456"]);
+        assert!((state.cumulative_cost_usd - 0.03).abs() < f64::EPSILON);
+        assert!(second.contains("Cumulative PR review cost: $0.0300 across 2 run(s)"));
+    }
+
+    #[test]
+    fn summary_visibility_floor_hides_lower_severity_findings() {
+        let artifact = ReviewArtifact {
+            score: 4,
+            target_score: 5,
+            fail_under: 4,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "One visible issue remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            findings: vec![
+                Finding {
+                    id: "rg_001".to_string(),
+                    severity: Severity::P2,
+                    confidence: 0.9,
+                    file: None,
+                    line: None,
+                    title: "Visible reliability issue".to_string(),
+                    detail: None,
+                    agent_instruction: "Fix the reliability issue.".to_string(),
+                },
+                Finding {
+                    id: "rg_002".to_string(),
+                    severity: Severity::P4,
+                    confidence: 0.9,
+                    file: None,
+                    line: None,
+                    title: "Hidden style note".to_string(),
+                    detail: None,
+                    agent_instruction: "Consider a style tweak.".to_string(),
+                },
+            ],
+            notes: vec![],
+        };
+
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_min_severity: Severity::P2,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
+
+        assert!(summary.contains("Summary visibility: P2 and above"));
+        assert!(summary.contains("Visible reliability issue"));
+        assert!(!summary.contains("Hidden style note"));
+    }
+
+    #[test]
+    fn summary_visibility_floor_never_hides_blocking_findings() {
+        let artifact = ReviewArtifact {
+            score: 4,
+            target_score: 5,
+            fail_under: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Failed,
+            verdict: "A lower-severity issue still fails the configured gate.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P3,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Gate-failing advisory finding".to_string(),
+                detail: None,
+                agent_instruction: "Fix or lower the configured gate policy.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_min_severity: Severity::P2,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
+
+        assert!(summary.contains("## Blocking Findings"));
+        assert!(summary.contains("P3: Gate-failing advisory finding"));
+        assert!(summary.contains("P3: Fix or lower the configured gate policy."));
     }
 
     #[test]

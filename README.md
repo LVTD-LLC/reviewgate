@@ -101,6 +101,22 @@ OPENROUTER_API_KEY=sk-or-... cargo run --locked -p reviewgate-cli -- review-pr \
   --summary-out .reviewgate/summary.md
 ```
 
+Render a summary from an existing artifact while carrying forward hidden state from the previous canonical summary:
+
+```bash
+cargo run --locked -p reviewgate-cli -- render-summary \
+  --input .reviewgate/review.json \
+  --previous-summary .reviewgate/previous-summary.md \
+  --summary-out .reviewgate/summary.md \
+  --summary-min-severity P2
+```
+
+Re-run the latest Review Gate workflow run for the current PR branch:
+
+```bash
+cargo run --locked -p reviewgate-cli -- recheck
+```
+
 ## External Agent Contract
 
 Agents should consume the JSON artifact first and use the canonical PR summary as the human-readable fallback. The optional external loop is:
@@ -108,7 +124,7 @@ Agents should consume the JSON artifact first and use the canonical PR summary a
 1. Read `.reviewgate/review.json` or the latest summary comment containing `<!-- review-gate-summary -->`.
 2. Treat any finding with a score ceiling below `fail_under` as blocking.
 3. Apply focused fixes, commit, and push.
-4. Trigger or wait for Review Gate to rerun and update the same summary comment.
+4. Trigger or wait for Review Gate to rerun and update the same summary comment. The `reviewgate recheck` helper reruns the latest Review Gate workflow run for a PR branch when GitHub CLI auth is available.
 5. Stop when `score >= target_score` and `status == "passed"`, or when human judgment is needed.
 
 `status == "failed"` means the gate should fail CI. `status == "needs_changes"` means non-blocking work remains but the hard floor has not been crossed.
@@ -127,12 +143,23 @@ The current Rust boundary builds deterministic chat-completion requests and is t
 
 The first live action implementation uses the `curl` binary available on GitHub-hosted Ubuntu runners for the OpenRouter request. Review Gate sends curl configuration through stdin and writes the non-secret request body to a temp file, so the OpenRouter key and large prompt payload are not exposed through the process argument list.
 
+## Configuration
+
+`.reviewgate.yml` and action inputs currently support:
+
+- `target_score`: score required for a fully passing review.
+- `fail_under`: hard floor that fails CI unless `report_only` is enabled.
+- `summary_min_severity`: lowest severity shown in the canonical summary (`P0` through `P4`).
+- `inline_min_severity`: lowest severity eligible for future inline comments (`P0` through `P4`).
+
+The canonical summary stores a versioned hidden state payload next to `<!-- review-gate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing.
+
 ## Current Limitations
 
-- Config parsing currently reads `target_score` and `fail_under`; richer config support comes later.
+- Config parsing intentionally supports the stable scalar fields above; richer nested config support comes later.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
 - Inline comments are not posted yet. The canonical summary comment is the first publishing surface.
-- Current-run cost rendering is modeled in the artifact and summary. Cumulative PR cost needs hidden summary metadata and is tracked as follow-up work.
+- Current-run and cumulative PR cost rendering are modeled in the summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
 
 ## Repository Layout
