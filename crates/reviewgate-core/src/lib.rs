@@ -404,7 +404,9 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
                 if let (Some(prompt), Some(completion)) =
                     (component.prompt_tokens, component.completion_tokens)
                 {
-                    output.push_str(&format!(" ({prompt} prompt, {completion} completion tokens)"));
+                    output.push_str(&format!(
+                        " ({prompt} prompt, {completion} completion tokens)"
+                    ));
                 }
                 output.push('\n');
             }
@@ -600,9 +602,7 @@ mod tests {
 
         assert!(summary.contains("Current run cost: $0.0123"));
         assert!(summary.contains("Cumulative PR cost: $0.0456"));
-        assert!(
-            summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123")
-        );
+        assert!(summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
     }
 
     #[test]
