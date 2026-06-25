@@ -175,7 +175,12 @@ pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateErr
             output.push('\n');
         }
         output.push('\n');
-        output.push_str("Fix the blocking findings first. Re-run Review Gate after pushing.\n");
+        if blocking.is_empty() {
+            output
+                .push_str("No blocking findings remain. Re-run Review Gate if new commits land.\n");
+        } else {
+            output.push_str("Fix the blocking findings first. Re-run Review Gate after pushing.\n");
+        }
     }
 
     Ok(output)
@@ -276,5 +281,35 @@ mod tests {
         assert!(summary.contains("## Agent Instructions"));
         assert!(summary
             .contains("1. P2: Add a regression test for the missing branch. (`src/lib.rs:42`)"));
+    }
+
+    #[test]
+    fn renders_non_blocking_instruction_footer_without_blocking_language() {
+        let artifact = ReviewArtifact {
+            score: 4,
+            target_score: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "One advisory issue remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P3,
+                confidence: 0.9,
+                file: None,
+                line: None,
+                title: "Consider clearer docs".to_string(),
+                detail: None,
+                agent_instruction: "Clarify the README example.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("1. P3: Clarify the README example."));
+        assert!(summary.contains("No blocking findings remain."));
+        assert!(!summary.contains("Fix the blocking findings first."));
     }
 }
