@@ -93,11 +93,11 @@ runs:
 
         if [ -n "$comment_id" ]; then
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
-            --field "body=$(cat "$summary_path")" >/dev/null
+            --field body=@"$summary_path" >/dev/null
           echo "Updated Review Gate summary comment $comment_id."
         else
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
-            --field "body=$(cat "$summary_path")" >/dev/null
+            --field body=@"$summary_path" >/dev/null
           echo "Created Review Gate summary comment."
         fi
 
