@@ -1,0 +1,28 @@
+review:
+  target_score: 5
+  fail_under: 4
+  update_existing_summary: true
+  post_inline_comments: true
+  max_inline_comments: 12
+  context_files:
+    - AGENTS.md
+    - README.md
+    - TECH.md
+    - PRODUCT.md
+    - STRUCTURE.md
+    - docs/**/*.md
+
+models:
+  preset: balanced
+
+stages:
+  - id: general
+    prompt: builtin:general
+    model: preset:balanced
+  - id: tests
+    prompt: builtin:testability
+    model: preset:cheap
+  - id: security
+    prompt: builtin:security
+    model: preset:strong
+    severity_floor: P1

@@ -1,0 +1,30 @@
+name: Review Gate
+description: Open-source AI review gates for agent-written PRs
+author: LVTD
+
+inputs:
+  openrouter_api_key:
+    description: OpenRouter API key used for model-backed review stages.
+    required: false
+  config:
+    description: Path to Review Gate config.
+    required: false
+    default: .reviewgate.yml
+  fail_under:
+    description: Fail the check under this score.
+    required: false
+    default: "4"
+
+runs:
+  using: composite
+  steps:
+    - name: Run Review Gate
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        REVIEWGATE_CONFIG: ${{ inputs.config }}
+        REVIEWGATE_FAIL_UNDER: ${{ inputs.fail_under }}
+      run: |
+        set -euo pipefail
+        echo "Review Gate action wrapper is scaffolded."
+        echo "OpenRouter-backed CI review will be implemented after the fixture milestone."

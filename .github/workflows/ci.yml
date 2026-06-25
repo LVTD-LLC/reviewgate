@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo run --locked -p reviewgate-cli -- fixture-review --input fixtures/simple-review.json --json-out .reviewgate/review.json --summary-out .reviewgate/summary.md
