@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use reviewgate_core::{ReviewArtifact, render_summary};
+use reviewgate_core::{ReviewArtifact, ReviewStatus, render_summary};
 
 #[derive(Debug, Parser)]
 #[command(name = "reviewgate")]
@@ -68,6 +68,14 @@ fn fixture_review(
         fs::write(&path, summary).with_context(|| format!("failed to write {}", path.display()))?;
     } else {
         println!("\n{summary}");
+    }
+
+    if artifact.status == ReviewStatus::Failed {
+        bail!(
+            "review score {} is below fail_under {}",
+            artifact.score,
+            artifact.fail_under
+        );
     }
 
     Ok(())
