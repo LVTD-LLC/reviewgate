@@ -7,10 +7,10 @@ members = [
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/LVTD-LLC/review-gate"
-rust-version = "1.82"
+rust-version = "1.96"
 
 [workspace.dependencies]
 anyhow = "1.0"

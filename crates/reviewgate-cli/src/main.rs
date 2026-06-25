@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use reviewgate_core::{render_summary, ReviewArtifact};
+use reviewgate_core::{ReviewArtifact, render_summary};
 
 #[derive(Debug, Parser)]
 #[command(name = "reviewgate")]

@@ -3,11 +3,12 @@
   "$id": "https://reviewgate.dev/schemas/review-output.schema.json",
   "title": "Review Gate Review Output",
   "type": "object",
-  "required": ["score", "target_score", "reviewed_sha", "status", "verdict", "models", "findings", "notes"],
+  "required": ["score", "target_score", "fail_under", "reviewed_sha", "status", "verdict", "models", "findings", "notes"],
   "additionalProperties": false,
   "properties": {
     "score": { "type": "integer", "minimum": 0, "maximum": 5 },
     "target_score": { "type": "integer", "minimum": 0, "maximum": 5 },
+    "fail_under": { "type": "integer", "minimum": 0, "maximum": 5 },
     "reviewed_sha": { "type": "string", "minLength": 1 },
     "status": { "type": "string", "enum": ["passed", "needs_changes", "failed"] },
     "verdict": { "type": "string", "minLength": 1 },
@@ -43,4 +44,3 @@
     }
   }
 }
-

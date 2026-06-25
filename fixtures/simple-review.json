@@ -1,6 +1,7 @@
 {
   "score": 5,
   "target_score": 5,
+  "fail_under": 4,
   "reviewed_sha": "abc123",
   "status": "passed",
   "verdict": "Good structure, but not ready for merge because one test gap remains.",
@@ -30,4 +31,3 @@
   ],
   "notes": ["Fixture intentionally starts with score 5 so the CLI can prove deterministic recomputation."]
 }
-

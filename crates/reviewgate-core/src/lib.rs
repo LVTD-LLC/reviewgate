@@ -52,6 +52,7 @@ pub struct Finding {
 pub struct ReviewArtifact {
     pub score: u8,
     pub target_score: u8,
+    pub fail_under: u8,
     pub reviewed_sha: String,
     pub status: ReviewStatus,
     pub verdict: String,
@@ -65,6 +66,7 @@ impl ReviewArtifact {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         validate_score(self.score)?;
         validate_score(self.target_score)?;
+        validate_score(self.fail_under)?;
         Ok(())
     }
 
@@ -72,10 +74,10 @@ impl ReviewArtifact {
         self.score = compute_score(&self.findings);
         self.status = if self.score >= self.target_score {
             ReviewStatus::Passed
-        } else if self.score >= 2 {
-            ReviewStatus::NeedsChanges
-        } else {
+        } else if self.score < self.fail_under {
             ReviewStatus::Failed
+        } else {
+            ReviewStatus::NeedsChanges
         };
         self.validate()?;
         Ok(self)
@@ -238,6 +240,7 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
+            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
             verdict: "Good shape, one minor issue remains.".to_string(),
@@ -257,6 +260,7 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 3,
             target_score: 5,
+            fail_under: 3,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
             verdict: "One blocking issue remains.".to_string(),
@@ -278,8 +282,10 @@ mod tests {
         let summary = render_summary(&artifact).expect("summary renders");
 
         assert!(summary.contains("## Agent Instructions"));
-        assert!(summary
-            .contains("1. P2: Add a regression test for the missing branch. (`src/lib.rs:42`)"));
+        assert!(
+            summary
+                .contains("1. P2: Add a regression test for the missing branch. (`src/lib.rs:42`)")
+        );
     }
 
     #[test]
@@ -287,6 +293,7 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
+            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
             verdict: "One advisory issue remains.".to_string(),
@@ -310,5 +317,37 @@ mod tests {
         assert!(summary.contains("1. P3: Clarify the README example."));
         assert!(summary.contains("Re-run Review Gate after pushing if new commits land."));
         assert!(!summary.contains("Fix the blocking findings first."));
+    }
+
+    #[test]
+    fn computed_status_uses_fail_under_threshold() {
+        let artifact = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            fail_under: 4,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "One blocking issue remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P2,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Missing regression test".to_string(),
+                detail: None,
+                agent_instruction: "Add the regression test.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let artifact = artifact
+            .with_computed_score()
+            .expect("computed artifact is valid");
+
+        assert_eq!(artifact.score, 3);
+        assert_eq!(artifact.status, ReviewStatus::Failed);
     }
 }
