@@ -595,11 +595,6 @@ pub fn render_summary_with_options(
     let blocking: Vec<&Finding> = artifact
         .findings
         .iter()
-        .filter(|finding| {
-            finding
-                .severity
-                .is_at_or_above(options.summary_min_severity)
-        })
         .filter(|finding| finding.is_blocking(artifact.fail_under))
         .collect();
     output.push_str("## Blocking Findings\n\n");
@@ -653,9 +648,11 @@ pub fn render_summary_with_options(
         .findings
         .iter()
         .filter(|finding| {
-            finding
+            let is_blocking = finding.is_blocking(artifact.fail_under);
+            let is_visible = finding
                 .severity
-                .is_at_or_above(options.summary_min_severity)
+                .is_at_or_above(options.summary_min_severity);
+            is_blocking || is_visible
         })
         .collect();
     if visible_findings.is_empty() {
@@ -898,6 +895,46 @@ mod tests {
         assert!(summary.contains("Summary visibility: P2 and above"));
         assert!(summary.contains("Visible reliability issue"));
         assert!(!summary.contains("Hidden style note"));
+    }
+
+    #[test]
+    fn summary_visibility_floor_never_hides_blocking_findings() {
+        let artifact = ReviewArtifact {
+            score: 4,
+            target_score: 5,
+            fail_under: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Failed,
+            verdict: "A lower-severity issue still fails the configured gate.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P3,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Gate-failing advisory finding".to_string(),
+                detail: None,
+                agent_instruction: "Fix or lower the configured gate policy.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_min_severity: Severity::P2,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
+
+        assert!(summary.contains("## Blocking Findings"));
+        assert!(summary.contains("P3: Gate-failing advisory finding"));
+        assert!(summary.contains("P3: Fix or lower the configured gate policy."));
     }
 
     #[test]

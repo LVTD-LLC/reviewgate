@@ -121,12 +121,19 @@ runs:
         if [ -n "$comment_id" ]; then
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
             --jq .body > "$previous_summary_path"
-          cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
+          if ! cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
             -p reviewgate-cli -- render-summary \
             --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
             --previous-summary "$previous_summary_path" \
             --summary-out "$summary_path" \
-            --summary-min-severity "${{ inputs.summary_min_severity }}"
+            --summary-min-severity "${{ inputs.summary_min_severity }}"; then
+            echo "Previous Review Gate summary state could not be reused; rendering without prior state." >&2
+            cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
+              -p reviewgate-cli -- render-summary \
+              --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
+              --summary-out "$summary_path" \
+              --summary-min-severity "${{ inputs.summary_min_severity }}"
+          fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
             --field body=@"$summary_path" >/dev/null
           echo "Updated Review Gate summary comment $comment_id."
