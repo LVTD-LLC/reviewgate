@@ -276,7 +276,12 @@ fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
             continue;
         };
         let key = key.trim();
-        let value = value.trim().trim_matches('"');
+        let value = value
+            .split('#')
+            .next()
+            .unwrap_or(value)
+            .trim()
+            .trim_matches('"');
         match key {
             "target_score" => values.target_score = Some(parse_score(value, "target_score")?),
             "fail_under" => values.fail_under = Some(parse_score(value, "fail_under")?),
@@ -552,7 +557,7 @@ mod tests {
 
     #[test]
     fn parses_simple_review_config_values() {
-        let raw = "review:\n  target_score: 5\n  fail_under: 4\n";
+        let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n";
         let path =
             std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
