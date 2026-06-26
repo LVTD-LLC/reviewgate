@@ -1,5 +1,5 @@
 [package]
-name = "reviewgate-cli"
+name = "shipcheck-cli"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,12 +7,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "reviewgate"
+name = "shipcheck"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-reviewgate-core = { path = "../reviewgate-core" }
+shipcheck-core = { path = "../shipcheck-core" }
 serde_json.workspace = true
 

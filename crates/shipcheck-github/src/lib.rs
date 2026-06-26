@@ -1,7 +1,7 @@
-use reviewgate_core::{Finding, SUMMARY_MARKER, SecretString, Severity};
+use shipcheck_core::{Finding, SUMMARY_MARKER, SecretString, Severity};
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
-pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- review-gate-finding:";
+pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- shipcheck-finding:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingSummaryComment {
@@ -181,7 +181,7 @@ mod tests {
     fn finds_canonical_summary_comment_by_marker() {
         let comments = vec![ExistingSummaryComment {
             id: 1,
-            body: format!("{}\n# Review Gate: 4/5", SUMMARY_MARKER),
+            body: format!("{}\n# Shipcheck: 4/5", SUMMARY_MARKER),
         }];
 
         assert_eq!(
@@ -192,12 +192,12 @@ mod tests {
 
     #[test]
     fn plans_create_when_summary_comment_is_missing() {
-        let action = plan_summary_comment_upsert(&[], format!("{SUMMARY_MARKER}\n# Review Gate"));
+        let action = plan_summary_comment_upsert(&[], format!("{SUMMARY_MARKER}\n# Shipcheck"));
 
         assert_eq!(
             action,
             SummaryCommentAction::Create {
-                body: format!("{SUMMARY_MARKER}\n# Review Gate")
+                body: format!("{SUMMARY_MARKER}\n# Shipcheck")
             }
         );
     }
@@ -206,24 +206,24 @@ mod tests {
     fn plans_update_when_summary_comment_exists_with_old_body() {
         let comments = vec![ExistingSummaryComment {
             id: 42,
-            body: format!("{SUMMARY_MARKER}\n# Review Gate: 3/5"),
+            body: format!("{SUMMARY_MARKER}\n# Shipcheck: 3/5"),
         }];
 
         let action =
-            plan_summary_comment_upsert(&comments, format!("{SUMMARY_MARKER}\n# Review Gate: 5/5"));
+            plan_summary_comment_upsert(&comments, format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5"));
 
         assert_eq!(
             action,
             SummaryCommentAction::Update {
                 id: 42,
-                body: format!("{SUMMARY_MARKER}\n# Review Gate: 5/5")
+                body: format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5")
             }
         );
     }
 
     #[test]
     fn plans_noop_when_summary_comment_body_matches() {
-        let body = format!("{SUMMARY_MARKER}\n# Review Gate: 5/5");
+        let body = format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5");
         let comments = vec![ExistingSummaryComment {
             id: 42,
             body: body.clone(),
@@ -260,20 +260,20 @@ mod tests {
         let mut client = MockSummaryCommentClient::default();
         let comments = vec![ExistingSummaryComment {
             id: 42,
-            body: format!("{SUMMARY_MARKER}\n# Review Gate: 4/5"),
+            body: format!("{SUMMARY_MARKER}\n# Shipcheck: 4/5"),
         }];
 
         let id = upsert_summary_comment(
             &mut client,
             &comments,
-            format!("{SUMMARY_MARKER}\n# Review Gate: 5/5"),
+            format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5"),
         )
         .expect("mock update succeeds");
 
         assert_eq!(id, 42);
         assert_eq!(
             client.updated,
-            Some((42, format!("{SUMMARY_MARKER}\n# Review Gate: 5/5")))
+            Some((42, format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5")))
         );
         assert_eq!(client.created_body, None);
     }
@@ -354,11 +354,11 @@ mod tests {
     fn inline_marker_payload_round_trips_schema_valid_ids() {
         assert_eq!(
             inline_comment_marker("missing auth check"),
-            "<!-- review-gate-finding:missing%20auth%20check -->"
+            "<!-- shipcheck-finding:missing%20auth%20check -->"
         );
         assert_eq!(
             inline_comment_marker("A-->B\nC"),
-            "<!-- review-gate-finding:A--%3EB%0AC -->"
+            "<!-- shipcheck-finding:A--%3EB%0AC -->"
         );
     }
 

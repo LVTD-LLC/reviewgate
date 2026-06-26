@@ -1,5 +1,5 @@
-name: Review Gate AI
-description: Open-source AI review gates for agent-written PRs
+name: Shipcheck
+description: Open-source AI pre-merge checks for agent-written PRs
 author: LVTD
 
 branding:
@@ -11,9 +11,9 @@ inputs:
     description: OpenRouter API key used for model-backed review stages.
     required: false
   config:
-    description: Path to Review Gate config.
+    description: Path to Shipcheck config.
     required: false
-    default: .reviewgate.yml
+    default: .shipcheck.yml
   fail_under:
     description: Fail the check under this score.
     required: false
@@ -23,7 +23,7 @@ inputs:
     required: false
     default: "5"
   report_only:
-    description: Publish review results without failing the workflow when the gate fails. Use this when Review Gate is advisory-only.
+    description: Publish review results without failing the workflow when the gate fails. Use this when Shipcheck is advisory-only.
     required: false
     default: "false"
   gate_mode:
@@ -39,7 +39,7 @@ inputs:
     required: false
     default: ""
   mock_artifact:
-    description: Optional local Review Gate artifact path for dry-run or test workflows.
+    description: Optional local Shipcheck artifact path for dry-run or test workflows.
     required: false
     default: ""
   summary_min_severity:
@@ -62,153 +62,153 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Run Review Gate
+    - name: Run Shipcheck
       shell: bash
       env:
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
-        REVIEWGATE_CONFIG: ${{ inputs.config }}
-        REVIEWGATE_FAIL_UNDER: ${{ inputs.fail_under }}
-        REVIEWGATE_TARGET_SCORE: ${{ inputs.target_score }}
-        REVIEWGATE_MOCK_ARTIFACT: ${{ inputs.mock_artifact }}
-        REVIEWGATE_PRESET: ${{ inputs.preset }}
-        REVIEWGATE_MODEL: ${{ inputs.model }}
-        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
-        REVIEWGATE_SUMMARY_MIN_SEVERITY: ${{ inputs.summary_min_severity }}
-        REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
+        SHIPCHECK_CONFIG: ${{ inputs.config }}
+        SHIPCHECK_FAIL_UNDER: ${{ inputs.fail_under }}
+        SHIPCHECK_TARGET_SCORE: ${{ inputs.target_score }}
+        SHIPCHECK_MOCK_ARTIFACT: ${{ inputs.mock_artifact }}
+        SHIPCHECK_PRESET: ${{ inputs.preset }}
+        SHIPCHECK_MODEL: ${{ inputs.model }}
+        SHIPCHECK_GATE_MODE: ${{ inputs.gate_mode }}
+        SHIPCHECK_SUMMARY_MIN_SEVERITY: ${{ inputs.summary_min_severity }}
+        SHIPCHECK_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
       run: |
         set -euo pipefail
         args=(
           run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
-          -p reviewgate-cli -- review-pr
+          -p shipcheck-cli -- review-pr
           --repo "$GITHUB_WORKSPACE"
-          --config "$REVIEWGATE_CONFIG"
-          --json-out "$GITHUB_WORKSPACE/.reviewgate/review.json"
-          --summary-out "$GITHUB_WORKSPACE/.reviewgate/summary.md"
-          --target-score "$REVIEWGATE_TARGET_SCORE"
-          --fail-under "$REVIEWGATE_FAIL_UNDER"
-          --preset "$REVIEWGATE_PRESET"
-          --gate-mode "$REVIEWGATE_GATE_MODE"
-          --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY"
-          --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY"
+          --config "$SHIPCHECK_CONFIG"
+          --json-out "$GITHUB_WORKSPACE/.shipcheck/review.json"
+          --summary-out "$GITHUB_WORKSPACE/.shipcheck/summary.md"
+          --target-score "$SHIPCHECK_TARGET_SCORE"
+          --fail-under "$SHIPCHECK_FAIL_UNDER"
+          --preset "$SHIPCHECK_PRESET"
+          --gate-mode "$SHIPCHECK_GATE_MODE"
+          --summary-min-severity "$SHIPCHECK_SUMMARY_MIN_SEVERITY"
+          --inline-min-severity "$SHIPCHECK_INLINE_MIN_SEVERITY"
         )
         args+=(--report-only)
-        if [ -n "$REVIEWGATE_MODEL" ]; then
-          args+=(--model "$REVIEWGATE_MODEL")
+        if [ -n "$SHIPCHECK_MODEL" ]; then
+          args+=(--model "$SHIPCHECK_MODEL")
         fi
-        if [ -n "$REVIEWGATE_MOCK_ARTIFACT" ]; then
-          args+=(--mock-artifact "$REVIEWGATE_MOCK_ARTIFACT")
+        if [ -n "$SHIPCHECK_MOCK_ARTIFACT" ]; then
+          args+=(--mock-artifact "$SHIPCHECK_MOCK_ARTIFACT")
         fi
         cargo "${args[@]}"
 
-    - name: Publish Review Gate summary
+    - name: Publish Shipcheck summary
       shell: bash
       continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        summary_path="$GITHUB_WORKSPACE/.reviewgate/summary.md"
+        summary_path="$GITHUB_WORKSPACE/.shipcheck/summary.md"
         if [ -f "$summary_path" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
           cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
         fi
 
         if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
-          echo "Review Gate summary comment skipped: not a pull_request event."
+          echo "Shipcheck summary comment skipped: not a pull_request event."
           exit 0
         fi
         if [ ! -f "$summary_path" ]; then
-          echo "Review Gate summary comment skipped: missing $summary_path."
+          echo "Shipcheck summary comment skipped: missing $summary_path."
           exit 0
         fi
         if [ -z "${GH_TOKEN:-}" ]; then
-          echo "Review Gate summary comment skipped: GH_TOKEN is empty."
+          echo "Shipcheck summary comment skipped: GH_TOKEN is empty."
           exit 0
         fi
 
         pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
         if [ -z "$pr_number" ]; then
-          echo "Review Gate summary comment skipped: no pull request number."
+          echo "Shipcheck summary comment skipped: no pull request number."
           exit 0
         fi
 
-        marker='<!-- review-gate-summary -->'
+        marker='<!-- shipcheck-summary -->'
         comment_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
           --jq ".[] | select(.body | contains(\"$marker\")) | .id" | head -n 1)"
-        previous_summary_path="$GITHUB_WORKSPACE/.reviewgate/previous-summary.md"
+        previous_summary_path="$GITHUB_WORKSPACE/.shipcheck/previous-summary.md"
 
         if [ -n "$comment_id" ]; then
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
             --jq .body > "$previous_summary_path"
           if ! cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-            -p reviewgate-cli -- render-summary \
-            --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
+            -p shipcheck-cli -- render-summary \
+            --input "$GITHUB_WORKSPACE/.shipcheck/review.json" \
             --previous-summary "$previous_summary_path" \
             --summary-out "$summary_path" \
             --summary-min-severity "${{ inputs.summary_min_severity }}" \
             --inline-min-severity "${{ inputs.inline_min_severity }}"; then
-            echo "Previous Review Gate summary state could not be reused; rendering without prior state." >&2
+            echo "Previous Shipcheck summary state could not be reused; rendering without prior state." >&2
             cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-              -p reviewgate-cli -- render-summary \
-              --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
+              -p shipcheck-cli -- render-summary \
+              --input "$GITHUB_WORKSPACE/.shipcheck/review.json" \
               --summary-out "$summary_path" \
               --summary-min-severity "${{ inputs.summary_min_severity }}" \
               --inline-min-severity "${{ inputs.inline_min_severity }}"
           fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
             --field body=@"$summary_path" >/dev/null
-          echo "Updated Review Gate summary comment $comment_id."
+          echo "Updated Shipcheck summary comment $comment_id."
         else
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
             --field body=@"$summary_path" >/dev/null
-          echo "Created Review Gate summary comment."
+          echo "Created Shipcheck summary comment."
         fi
 
-    - name: Publish Review Gate inline comments
+    - name: Publish Shipcheck inline comments
       shell: bash
       continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
-        REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
-        REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
-        REVIEWGATE_PUBLISH_INLINE_COMMENTS: ${{ inputs.publish_inline_comments }}
+        SHIPCHECK_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
+        SHIPCHECK_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
+        SHIPCHECK_PUBLISH_INLINE_COMMENTS: ${{ inputs.publish_inline_comments }}
       run: |
         set -euo pipefail
-        if [ "$REVIEWGATE_PUBLISH_INLINE_COMMENTS" != "true" ]; then
-          echo "Review Gate inline comments skipped: publish_inline_comments=false."
+        if [ "$SHIPCHECK_PUBLISH_INLINE_COMMENTS" != "true" ]; then
+          echo "Shipcheck inline comments skipped: publish_inline_comments=false."
           exit 0
         fi
         if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
-          echo "Review Gate inline comments skipped: not a pull_request event."
+          echo "Shipcheck inline comments skipped: not a pull_request event."
           exit 0
         fi
-        artifact_path="$GITHUB_WORKSPACE/.reviewgate/review.json"
+        artifact_path="$GITHUB_WORKSPACE/.shipcheck/review.json"
         if [ ! -f "$artifact_path" ]; then
-          echo "Review Gate inline comments skipped: missing $artifact_path."
+          echo "Shipcheck inline comments skipped: missing $artifact_path."
           exit 0
         fi
         if [ -z "${GH_TOKEN:-}" ]; then
-          echo "Review Gate inline comments skipped: GH_TOKEN is empty."
+          echo "Shipcheck inline comments skipped: GH_TOKEN is empty."
           exit 0
         fi
 
         pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
         commit_id="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
         if [ -z "$pr_number" ] || [ -z "$commit_id" ]; then
-          echo "Review Gate inline comments skipped: missing PR number or head SHA."
+          echo "Shipcheck inline comments skipped: missing PR number or head SHA."
           exit 0
         fi
 
-        existing_markers_path="$GITHUB_WORKSPACE/.reviewgate/existing-inline-markers.json"
+        existing_markers_path="$GITHUB_WORKSPACE/.shipcheck/existing-inline-markers.json"
         gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
-          --jq '[.[].body | scan("<!-- review-gate-finding:.*? -->")]' > "$existing_markers_path"
+          --jq '[.[].body | scan("<!-- shipcheck-finding:.*? -->")]' > "$existing_markers_path"
 
-        drafts_path="$GITHUB_WORKSPACE/.reviewgate/inline-comments.jsonl"
+        drafts_path="$GITHUB_WORKSPACE/.shipcheck/inline-comments.jsonl"
         jq -c \
-          --arg floor "$REVIEWGATE_INLINE_MIN_SEVERITY" \
-          --argjson min_confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
+          --arg floor "$SHIPCHECK_INLINE_MIN_SEVERITY" \
+          --argjson min_confidence "$SHIPCHECK_INLINE_MIN_CONFIDENCE" \
           --slurpfile existing "$existing_markers_path" '
           def rank: {"P0":0,"P1":1,"P2":2,"P3":3,"P4":4};
-          def marker($id): "<!-- review-gate-finding:" + ($id | @uri) + " -->";
+          def marker($id): "<!-- shipcheck-finding:" + ($id | @uri) + " -->";
           .findings[]
           | select(.file != null and .line != null)
           | select((.confidence // 0) >= $min_confidence)
@@ -229,14 +229,14 @@ runs:
         ' "$artifact_path" > "$drafts_path"
 
         if [ ! -s "$drafts_path" ]; then
-          echo "Review Gate inline comments: no new eligible findings."
+          echo "Shipcheck inline comments: no new eligible findings."
           exit 0
         fi
 
         posted=0
         failed=0
         while IFS= read -r draft; do
-          body_path="$GITHUB_WORKSPACE/.reviewgate/inline-comment-body.json"
+          body_path="$GITHUB_WORKSPACE/.shipcheck/inline-comment-body.json"
           jq -n --argjson draft "$draft" --arg commit_id "$commit_id" \
             '$draft + {commit_id: $commit_id}' > "$body_path"
           if gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
@@ -244,43 +244,43 @@ runs:
             posted=$((posted + 1))
           else
             failed=$((failed + 1))
-            echo "Review Gate inline comment could not be posted for $(jq -r '.path + \":\" + (.line|tostring)' "$body_path"). Keeping it in the summary." >&2
+            echo "Shipcheck inline comment could not be posted for $(jq -r '.path + \":\" + (.line|tostring)' "$body_path"). Keeping it in the summary." >&2
           fi
         done < "$drafts_path"
-        echo "Review Gate inline comments posted: $posted; skipped/failed: $failed."
+        echo "Shipcheck inline comments posted: $posted; skipped/failed: $failed."
 
-    - name: Enforce Review Gate
+    - name: Enforce Shipcheck
       shell: bash
       env:
-        REVIEWGATE_REPORT_ONLY: ${{ inputs.report_only }}
-        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
+        SHIPCHECK_REPORT_ONLY: ${{ inputs.report_only }}
+        SHIPCHECK_GATE_MODE: ${{ inputs.gate_mode }}
       run: |
         set -euo pipefail
-        if [ "$REVIEWGATE_REPORT_ONLY" = "true" ]; then
-          echo "Review Gate report-only mode enabled; not failing workflow."
+        if [ "$SHIPCHECK_REPORT_ONLY" = "true" ]; then
+          echo "Shipcheck report-only mode enabled; not failing workflow."
           exit 0
         fi
-        case "$REVIEWGATE_GATE_MODE" in
+        case "$SHIPCHECK_GATE_MODE" in
           report)
-            echo "Review Gate gate_mode=report; not failing workflow."
+            echo "Shipcheck gate_mode=report; not failing workflow."
             exit 0
             ;;
           job)
             ;;
           check)
-            echo "Review Gate gate_mode=check is not implemented yet; use job or report." >&2
+            echo "Shipcheck gate_mode=check is not implemented yet; use job or report." >&2
             exit 2
             ;;
           *)
-            echo "Invalid Review Gate gate_mode: $REVIEWGATE_GATE_MODE. Expected job, report, or check." >&2
+            echo "Invalid Shipcheck gate_mode: $SHIPCHECK_GATE_MODE. Expected job, report, or check." >&2
             exit 2
             ;;
         esac
-        status="$(jq -r '.status' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
-        score="$(jq -r '.score' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
-        fail_under="$(jq -r '.fail_under' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
+        status="$(jq -r '.status' "$GITHUB_WORKSPACE/.shipcheck/review.json")"
+        score="$(jq -r '.score' "$GITHUB_WORKSPACE/.shipcheck/review.json")"
+        fail_under="$(jq -r '.fail_under' "$GITHUB_WORKSPACE/.shipcheck/review.json")"
         if [ "$status" = "failed" ]; then
-          echo "Review Gate failed: score $score is below fail_under $fail_under."
+          echo "Shipcheck failed: score $score is below fail_under $fail_under."
           exit 1
         fi
-        echo "Review Gate status: $status ($score/5)."
+        echo "Shipcheck status: $status ($score/5)."

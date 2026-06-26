@@ -1,4 +1,4 @@
-# Review Gate v0.1.0 Release Checklist
+# Shipcheck v0.1.0 Release Checklist
 
 Do not publish to GitHub Marketplace until this checklist is complete.
 
@@ -8,7 +8,7 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings` passes.
 - `cargo test --locked --workspace` passes.
 - `cargo audit` passes.
-- The Review Gate dogfood workflow runs on a real PR with `OPENROUTER_API_KEY` configured.
+- The Shipcheck dogfood workflow runs on a real PR with `OPENROUTER_API_KEY` configured.
 - The action updates one canonical PR summary comment on rerun instead of creating duplicates.
 - A failing review exits non-zero by default and report-only mode does not block CI.
 
@@ -29,6 +29,6 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 ## Marketplace Gate
 
 - Create a GitHub release first.
-- Install Review Gate in one small external test repository.
+- Install Shipcheck in one small external test repository.
 - Confirm summary/comment behavior, failure behavior, and artifact output.
 - Only then evaluate Marketplace publishing.

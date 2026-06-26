@@ -6,7 +6,7 @@ use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use reviewgate_core::{
+use shipcheck_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
     OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
     Severity, SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
@@ -21,14 +21,14 @@ const DEFAULT_CONTEXT_FILES: &[&str] = &[
     "TECH.md",
     "PRODUCT.md",
     "STRUCTURE.md",
-    ".reviewgate.yml",
+    ".shipcheck.yml",
 ];
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
 
 #[derive(Debug, Parser)]
-#[command(name = "reviewgate")]
-#[command(about = "Open-source AI review gates for agent-written PRs")]
+#[command(name = "shipcheck")]
+#[command(about = "Open-source AI pre-merge checks for agent-written PRs")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -45,11 +45,11 @@ enum Command {
         #[arg(long)]
         summary_out: Option<PathBuf>,
     },
-    /// Review the current pull request checkout and write Review Gate artifacts.
+    /// Review the current pull request checkout and write Shipcheck artifacts.
     ReviewPr {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        #[arg(long, default_value = ".reviewgate.yml")]
+        #[arg(long, default_value = ".shipcheck.yml")]
         config: PathBuf,
         #[arg(long)]
         json_out: Option<PathBuf>,
@@ -89,13 +89,13 @@ enum Command {
         #[arg(long)]
         inline_min_severity: Option<String>,
     },
-    /// Re-run the latest Review Gate workflow run for a pull request branch.
+    /// Re-run the latest Shipcheck workflow run for a pull request branch.
     Recheck {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         pr: Option<String>,
-        #[arg(long, default_value = "Review Gate")]
+        #[arg(long, default_value = "Shipcheck")]
         workflow: String,
     },
     /// Evaluate committed review artifact fixtures without publishing anything.
@@ -558,7 +558,7 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> Result<()> {
         .get("url")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    println!("Triggered Review Gate recheck for PR #{pr_number} {pr_url}");
+    println!("Triggered Shipcheck recheck for PR #{pr_number} {pr_url}");
     if !run_url.is_empty() {
         println!("Rerun: {run_url}");
     }
@@ -807,7 +807,7 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
 }
 
 fn build_review_prompt(context: &ReviewContext, target_score: u8, fail_under: u8) -> String {
-    let schema = include_str!("../../../schemas/review-output.schema.json");
+    let schema = include_str!("../../../schemas/shipcheck-review-output.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
@@ -854,7 +854,7 @@ fn call_openrouter_with_curl(
     prompt: &str,
 ) -> Result<OpenRouterCompletion> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body_path = unique_temp_path("reviewgate-openrouter-body", "json");
+    let body_path = unique_temp_path("shipcheck-openrouter-body", "json");
     let body = serde_json::json!({
         "model": model,
         "temperature": 0,
@@ -862,7 +862,7 @@ fn call_openrouter_with_curl(
         "messages": [
             {
                 "role": "system",
-                "content": "You are Review Gate. Return concise, high-confidence PR review findings as strict JSON."
+                "content": "You are Shipcheck. Return concise, high-confidence PR review findings as strict JSON."
             },
             {
                 "role": "user",
@@ -992,7 +992,7 @@ fn apply_usage_cost_summary(
         cost
     } else {
         artifact.notes.push(format!(
-            "OpenRouter returned token usage for `{model}`, but Review Gate has no pricing fallback for that model."
+            "OpenRouter returned token usage for `{model}`, but Shipcheck has no pricing fallback for that model."
         ));
         return;
     };
@@ -1039,7 +1039,7 @@ fn parse_model_artifact(raw: &str) -> Result<ReviewArtifact> {
     let trimmed = strip_json_fence(raw.trim());
     serde_json::from_str(trimmed)
         .or_else(|_| extract_review_artifact_json(trimmed))
-        .context("model response was not a valid Review Gate artifact")
+        .context("model response was not a valid Shipcheck artifact")
 }
 
 fn strip_json_fence(raw: &str) -> &str {
@@ -1119,7 +1119,7 @@ mod tests {
     fn parses_simple_review_config_values() {
         let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n  summary_min_severity: P2\n  inline_min_severity: P1\n";
         let path =
-            std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
+            std::env::temp_dir().join(format!("shipcheck-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
 
         let values = read_config_values(&path).expect("parse config");
@@ -1304,7 +1304,7 @@ Thanks {also not json}."#;
         assert!(prompt.contains("reviewed_sha: abc123"));
         assert!(prompt.contains("target_score: 5"));
         assert!(prompt.contains("fail_under: 4"));
-        assert!(prompt.contains("Review Gate Review Output"));
+        assert!(prompt.contains("Shipcheck Review Output"));
         assert!(prompt.contains("diff --git"));
     }
 

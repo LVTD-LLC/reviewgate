@@ -153,17 +153,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "reviewgate-cli"
+name = "shipcheck-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "reviewgate-core",
+ "shipcheck-core",
  "serde_json",
 ]
 
 [[package]]
-name = "reviewgate-core"
+name = "shipcheck-core"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -172,10 +172,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "reviewgate-github"
+name = "shipcheck-github"
 version = "0.1.0"
 dependencies = [
- "reviewgate-core",
+ "shipcheck-core",
 ]
 
 [[package]]

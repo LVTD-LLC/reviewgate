@@ -1,15 +1,15 @@
 # Technical Context
 
-Review Gate is a Rust workspace with a thin composite GitHub Action wrapper.
+Shipcheck is a Rust workspace with a thin composite GitHub Action wrapper.
 
 ## Stack
 
 - Rust edition: `2024`.
 - Minimum Rust version: `1.96`.
 - Workspace crates:
-  - `crates/reviewgate-core`: review artifact types, scoring, validation, and summary rendering.
-  - `crates/reviewgate-cli`: local and CI entrypoints.
-  - `crates/reviewgate-github`: GitHub publishing primitives.
+  - `crates/shipcheck-core`: review artifact types, scoring, validation, and summary rendering.
+  - `crates/shipcheck-cli`: local and CI entrypoints.
+  - `crates/shipcheck-github`: GitHub publishing primitives.
 - Action wrapper:
   - `action.yml`: composite action entrypoint.
   - `action/`: action documentation and wrapper support files.
@@ -37,10 +37,10 @@ cargo test --locked --workspace
 Fixture milestone:
 
 ```bash
-cargo run --locked -p reviewgate-cli -- fixture-review \
+cargo run --locked -p shipcheck-cli -- fixture-review \
   --input fixtures/simple-review.json \
-  --json-out .reviewgate/review.json \
-  --summary-out .reviewgate/summary.md
+  --json-out .shipcheck/review.json \
+  --summary-out .shipcheck/summary.md
 ```
 
 This is the CI-required artifact-writing form. The shorter stdout-only form is useful for manual inspection, but it does not verify artifact output paths.
@@ -54,15 +54,15 @@ Required CI steps:
 - `cargo fmt --all --check`
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`
 - `cargo test --locked --workspace`
-- fixture render command with `.reviewgate/review.json` and `.reviewgate/summary.md` outputs
+- fixture render command with `.shipcheck/review.json` and `.shipcheck/summary.md` outputs
 - `cargo audit`
 
 ## Integration Boundaries
 
 - OpenRouter calls should be isolated behind explicit client/config boundaries.
-- GitHub API publishing should live in `crates/reviewgate-github`.
-- Summary rendering and score/status computation should remain deterministic and testable in `crates/reviewgate-core`.
-- CLI orchestration belongs in `crates/reviewgate-cli`.
+- GitHub API publishing should live in `crates/shipcheck-github`.
+- Summary rendering and score/status computation should remain deterministic and testable in `crates/shipcheck-core`.
+- CLI orchestration belongs in `crates/shipcheck-cli`.
 - The composite action should stay thin and delegate to the Rust binary.
 
 ## Security Constraints
@@ -75,4 +75,4 @@ Required CI steps:
 
 ## Generated Files
 
-Local fixture output under `.reviewgate/` is generated. It is useful for manual verification, but should not be committed unless the task explicitly adds committed examples.
+Local fixture output under `.shipcheck/` is generated. It is useful for manual verification, but should not be committed unless the task explicitly adds committed examples.
