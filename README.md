@@ -58,7 +58,7 @@ The action:
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
 - creates or updates one PR comment containing `<!-- review-gate-summary -->`;
-- exits non-zero when `score < fail_under`, unless `report_only: "true"` is set.
+- exits non-zero when `score < fail_under` and `gate_mode: job`, unless `report_only: "true"` or `gate_mode: report` is set.
 
 The default workflow runs on PR updates because that is the lowest-friction install path. For teams that want tighter cost control, the next control surface is an explicit recheck path such as `workflow_dispatch`, a PR comment command, or a CLI helper.
 
@@ -149,8 +149,11 @@ The first live action implementation uses the `curl` binary available on GitHub-
 
 - `target_score`: score required for a fully passing review.
 - `fail_under`: hard floor that fails CI unless `report_only` is enabled.
+- `gate_mode`: failed-review behavior. `job` fails the workflow; `report` publishes only. `check` is reserved for a future dedicated Check Run publisher.
 - `summary_min_severity`: lowest severity shown in the canonical summary (`P0` through `P4`).
 - `inline_min_severity`: lowest severity eligible for future inline comments (`P0` through `P4`).
+
+`report_only: "true"` remains supported as a compatibility alias for `gate_mode: report`.
 
 The canonical summary stores a versioned hidden state payload next to `<!-- review-gate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing.
 

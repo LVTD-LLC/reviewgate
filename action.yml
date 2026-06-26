@@ -22,6 +22,10 @@ inputs:
     description: Publish review results without failing the workflow when the gate fails. Use this when Review Gate is advisory-only.
     required: false
     default: "false"
+  gate_mode:
+    description: Gate behavior for failed reviews. Use job to fail the workflow or report to publish only. The check mode is reserved for a future dedicated Check Run publisher.
+    required: false
+    default: job
   preset:
     description: OpenRouter model preset to use when model is not pinned. One of cheap, balanced, strong.
     required: false
@@ -56,6 +60,7 @@ runs:
         REVIEWGATE_MOCK_ARTIFACT: ${{ inputs.mock_artifact }}
         REVIEWGATE_PRESET: ${{ inputs.preset }}
         REVIEWGATE_MODEL: ${{ inputs.model }}
+        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
         REVIEWGATE_SUMMARY_MIN_SEVERITY: ${{ inputs.summary_min_severity }}
         REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
       run: |
@@ -70,6 +75,7 @@ runs:
           --target-score "$REVIEWGATE_TARGET_SCORE"
           --fail-under "$REVIEWGATE_FAIL_UNDER"
           --preset "$REVIEWGATE_PRESET"
+          --gate-mode "$REVIEWGATE_GATE_MODE"
           --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY"
           --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY"
         )
@@ -126,13 +132,15 @@ runs:
             --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
             --previous-summary "$previous_summary_path" \
             --summary-out "$summary_path" \
-            --summary-min-severity "${{ inputs.summary_min_severity }}"; then
+            --summary-min-severity "${{ inputs.summary_min_severity }}" \
+            --inline-min-severity "${{ inputs.inline_min_severity }}"; then
             echo "Previous Review Gate summary state could not be reused; rendering without prior state." >&2
             cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
               -p reviewgate-cli -- render-summary \
               --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
               --summary-out "$summary_path" \
-              --summary-min-severity "${{ inputs.summary_min_severity }}"
+              --summary-min-severity "${{ inputs.summary_min_severity }}" \
+              --inline-min-severity "${{ inputs.inline_min_severity }}"
           fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
             --field body=@"$summary_path" >/dev/null
@@ -147,12 +155,29 @@ runs:
       shell: bash
       env:
         REVIEWGATE_REPORT_ONLY: ${{ inputs.report_only }}
+        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
       run: |
         set -euo pipefail
         if [ "$REVIEWGATE_REPORT_ONLY" = "true" ]; then
           echo "Review Gate report-only mode enabled; not failing workflow."
           exit 0
         fi
+        case "$REVIEWGATE_GATE_MODE" in
+          report)
+            echo "Review Gate gate_mode=report; not failing workflow."
+            exit 0
+            ;;
+          job)
+            ;;
+          check)
+            echo "Review Gate gate_mode=check is not implemented yet; use job or report." >&2
+            exit 2
+            ;;
+          *)
+            echo "Invalid Review Gate gate_mode: $REVIEWGATE_GATE_MODE. Expected job, report, or check." >&2
+            exit 2
+            ;;
+        esac
         status="$(jq -r '.status' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
         score="$(jq -r '.score' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
         fail_under="$(jq -r '.fail_under' "$GITHUB_WORKSPACE/.reviewgate/review.json")"

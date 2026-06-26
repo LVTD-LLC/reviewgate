@@ -30,10 +30,38 @@
       "required": ["current_run_usd", "components"],
       "properties": {
         "current_run_usd": { "type": "number", "minimum": 0 },
+        "source": { "type": ["string", "null"], "enum": ["open_router_usage", "fallback_pricing", "unknown", null] },
         "components": {
           "type": "array",
           "items": { "$ref": "#/$defs/cost_component" }
         }
+      }
+    },
+    "metrics": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "finding_count",
+        "blocking_finding_count",
+        "inline_eligible_count",
+        "p0_count",
+        "p1_count",
+        "p2_count",
+        "p3_count",
+        "p4_count",
+        "cost_source"
+      ],
+      "properties": {
+        "finding_count": { "type": "integer", "minimum": 0 },
+        "blocking_finding_count": { "type": "integer", "minimum": 0 },
+        "inline_eligible_count": { "type": "integer", "minimum": 0 },
+        "p0_count": { "type": "integer", "minimum": 0 },
+        "p1_count": { "type": "integer", "minimum": 0 },
+        "p2_count": { "type": "integer", "minimum": 0 },
+        "p3_count": { "type": "integer", "minimum": 0 },
+        "p4_count": { "type": "integer", "minimum": 0 },
+        "current_run_cost_usd": { "type": ["number", "null"], "minimum": 0 },
+        "cost_source": { "type": "string", "enum": ["open_router_usage", "fallback_pricing", "unknown"] }
       }
     },
     "findings": {

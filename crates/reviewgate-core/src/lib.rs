@@ -8,6 +8,7 @@ pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
 pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const OPENROUTER_MODELS_PATH: &str = "/models";
 
 #[derive(Debug, Error)]
 pub enum ReviewGateError {
@@ -27,6 +28,8 @@ pub enum ReviewGateError {
     InvalidSeverity(String),
     #[error("summary state is invalid: {0}")]
     InvalidSummaryState(String),
+    #[error("model pricing is invalid: {0}")]
+    InvalidModelPricing(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -140,10 +143,53 @@ impl CostComponent {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CostSource {
+    OpenRouterUsage,
+    FallbackPricing,
+    Unknown,
+}
+
+impl CostSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CostSource::OpenRouterUsage => "open_router_usage",
+            CostSource::FallbackPricing => "fallback_pricing",
+            CostSource::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ReviewMetrics {
+    pub finding_count: u32,
+    pub blocking_finding_count: u32,
+    pub inline_eligible_count: u32,
+    pub p0_count: u32,
+    pub p1_count: u32,
+    pub p2_count: u32,
+    pub p3_count: u32,
+    pub p4_count: u32,
+    pub current_run_cost_usd: Option<f64>,
+    pub cost_source: CostSource,
+}
+
+impl ReviewMetrics {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if let Some(cost) = self.current_run_cost_usd {
+            validate_estimated_cost(cost)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct CostSummary {
     pub current_run_usd: f64,
     pub components: Vec<CostComponent>,
+    #[serde(default)]
+    pub source: Option<CostSource>,
 }
 
 impl CostSummary {
@@ -168,6 +214,8 @@ pub struct ReviewArtifact {
     pub estimated_cost_usd: Option<f64>,
     #[serde(default)]
     pub cost_summary: Option<CostSummary>,
+    #[serde(default)]
+    pub metrics: Option<ReviewMetrics>,
     pub findings: Vec<Finding>,
     pub notes: Vec<String>,
 }
@@ -188,6 +236,9 @@ impl ReviewArtifact {
         }
         if let Some(cost_summary) = &self.cost_summary {
             cost_summary.validate()?;
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.validate()?;
         }
         for finding in &self.findings {
             finding.validate()?;
@@ -231,6 +282,158 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
         .map(|finding| finding.severity.score_ceiling())
         .min()
         .unwrap_or(5)
+}
+
+pub fn compute_metrics(artifact: &ReviewArtifact, inline_min_severity: Severity) -> ReviewMetrics {
+    let mut metrics = ReviewMetrics {
+        finding_count: artifact.findings.len() as u32,
+        blocking_finding_count: 0,
+        inline_eligible_count: 0,
+        p0_count: 0,
+        p1_count: 0,
+        p2_count: 0,
+        p3_count: 0,
+        p4_count: 0,
+        current_run_cost_usd: artifact
+            .cost_summary
+            .as_ref()
+            .map(|summary| summary.current_run_usd)
+            .or(artifact.estimated_cost_usd),
+        cost_source: artifact
+            .cost_summary
+            .as_ref()
+            .and_then(|summary| summary.source)
+            .unwrap_or(CostSource::Unknown),
+    };
+
+    for finding in &artifact.findings {
+        if finding.is_blocking(artifact.fail_under) {
+            metrics.blocking_finding_count += 1;
+        }
+        if finding.file.is_some()
+            && finding.line.is_some()
+            && finding.severity.is_at_or_above(inline_min_severity)
+        {
+            metrics.inline_eligible_count += 1;
+        }
+        match finding.severity {
+            Severity::P0 => metrics.p0_count += 1,
+            Severity::P1 => metrics.p1_count += 1,
+            Severity::P2 => metrics.p2_count += 1,
+            Severity::P3 => metrics.p3_count += 1,
+            Severity::P4 => metrics.p4_count += 1,
+        }
+    }
+
+    metrics
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelPricing {
+    pub prompt_usd_per_million: f64,
+    pub completion_usd_per_million: f64,
+}
+
+impl ModelPricing {
+    pub fn estimate_cost_usd(
+        &self,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    ) -> Result<f64, ReviewGateError> {
+        validate_estimated_cost(self.prompt_usd_per_million)?;
+        validate_estimated_cost(self.completion_usd_per_million)?;
+        Ok(
+            (prompt_tokens as f64 / 1_000_000.0) * self.prompt_usd_per_million
+                + (completion_tokens as f64 / 1_000_000.0) * self.completion_usd_per_million,
+        )
+    }
+}
+
+pub fn fallback_model_pricing(model: &str) -> Option<ModelPricing> {
+    match model {
+        "deepseek/deepseek-v4-flash" => Some(ModelPricing {
+            prompt_usd_per_million: 0.09,
+            completion_usd_per_million: 0.18,
+        }),
+        "qwen/qwen3-coder" => Some(ModelPricing {
+            prompt_usd_per_million: 0.20,
+            completion_usd_per_million: 0.80,
+        }),
+        "anthropic/claude-sonnet-4" => Some(ModelPricing {
+            prompt_usd_per_million: 3.00,
+            completion_usd_per_million: 15.00,
+        }),
+        _ => None,
+    }
+}
+
+pub fn estimate_model_cost_usd(
+    model: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> Result<Option<f64>, ReviewGateError> {
+    fallback_model_pricing(model)
+        .map(|pricing| pricing.estimate_cost_usd(prompt_tokens, completion_tokens))
+        .transpose()
+}
+
+pub fn parse_openrouter_model_pricing(
+    models_response: &serde_json::Value,
+    model: &str,
+) -> Result<Option<ModelPricing>, ReviewGateError> {
+    let Some(models) = models_response
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(None);
+    };
+
+    for entry in models {
+        let Some(id) = entry.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if id != model {
+            continue;
+        }
+        let Some(pricing) = entry.get("pricing") else {
+            return Ok(None);
+        };
+        let prompt = parse_openrouter_price(pricing.get("prompt"))?;
+        let completion = parse_openrouter_price(pricing.get("completion"))?;
+        return Ok(Some(ModelPricing {
+            prompt_usd_per_million: prompt,
+            completion_usd_per_million: completion,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn parse_openrouter_price(value: Option<&serde_json::Value>) -> Result<f64, ReviewGateError> {
+    let Some(value) = value else {
+        return Err(ReviewGateError::InvalidModelPricing(
+            "missing pricing field".to_string(),
+        ));
+    };
+    let price = if let Some(raw) = value.as_str() {
+        raw.parse::<f64>()
+            .map_err(|error| ReviewGateError::InvalidModelPricing(error.to_string()))?
+    } else if let Some(raw) = value.as_f64() {
+        raw
+    } else {
+        return Err(ReviewGateError::InvalidModelPricing(
+            "pricing field must be a string or number".to_string(),
+        ));
+    };
+    validate_estimated_cost(price)?;
+    // OpenRouter's models API returns per-token USD prices as tiny values
+    // such as 0.00000009. Checked-in fallback pricing is stored per 1M tokens,
+    // so values at normal per-million scale are left unchanged.
+    if price < 0.001 {
+        Ok(price * 1_000_000.0)
+    } else {
+        Ok(price)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -338,6 +541,7 @@ impl SummaryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SummaryOptions {
     pub summary_min_severity: Severity,
+    pub inline_min_severity: Severity,
     pub cost_history_limit: usize,
 }
 
@@ -345,6 +549,7 @@ impl Default for SummaryOptions {
     fn default() -> Self {
         Self {
             summary_min_severity: Severity::P4,
+            inline_min_severity: Severity::P2,
             cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
         }
     }
@@ -589,6 +794,28 @@ pub fn render_summary_with_options(
                 output.push('\n');
             }
         }
+        if let Some(source) = cost_summary.source {
+            output.push_str(&format!("- Source: `{}`\n", source.as_str()));
+        }
+        output.push('\n');
+    }
+
+    let computed_metrics = compute_metrics(artifact, options.inline_min_severity);
+    let metrics = &computed_metrics;
+    {
+        output.push_str("## Metrics\n\n");
+        output.push_str(&format!(
+            "- Findings: {} total, {} blocking, {} inline-eligible\n",
+            metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
+        ));
+        output.push_str(&format!(
+            "- Severity mix: P0 {}, P1 {}, P2 {}, P3 {}, P4 {}\n",
+            metrics.p0_count,
+            metrics.p1_count,
+            metrics.p2_count,
+            metrics.p3_count,
+            metrics.p4_count
+        ));
         output.push('\n');
     }
 
@@ -759,6 +986,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: Some(0.08),
             cost_summary: None,
+            metrics: None,
             findings: vec![],
             notes: vec![],
         };
@@ -781,6 +1009,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: Some(CostSummary {
                 current_run_usd: 0.0123,
+                source: None,
                 components: vec![CostComponent {
                     label: "general".to_string(),
                     model: "deepseek/deepseek-v4-flash".to_string(),
@@ -789,6 +1018,7 @@ mod tests {
                     estimated_cost_usd: 0.0123,
                 }],
             }),
+            metrics: None,
             findings: vec![],
             notes: vec![],
         };
@@ -812,8 +1042,10 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: Some(CostSummary {
                 current_run_usd: 0.0100,
+                source: None,
                 components: vec![],
             }),
+            metrics: None,
             findings: vec![],
             notes: vec![],
         };
@@ -825,6 +1057,7 @@ mod tests {
         rerun_artifact.reviewed_sha = "def456".to_string();
         rerun_artifact.cost_summary = Some(CostSummary {
             current_run_usd: 0.0200,
+            source: None,
             components: vec![],
         });
 
@@ -857,6 +1090,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
@@ -909,6 +1143,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P3,
@@ -950,6 +1185,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: Some(CostSummary {
                 current_run_usd: 0.0123,
+                source: None,
                 components: vec![CostComponent {
                     label: "general".to_string(),
                     model: "".to_string(),
@@ -958,6 +1194,7 @@ mod tests {
                     estimated_cost_usd: 0.0123,
                 }],
             }),
+            metrics: None,
             findings: vec![],
             notes: vec![],
         };
@@ -980,6 +1217,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,
@@ -1014,6 +1252,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P3,
@@ -1046,6 +1285,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,
@@ -1079,6 +1319,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P1,
@@ -1112,6 +1353,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![],
             notes: vec![],
         };
@@ -1137,6 +1379,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P4,
@@ -1168,6 +1411,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: Some(-0.01),
             cost_summary: None,
+            metrics: None,
             findings: vec![],
             notes: vec![],
         };
@@ -1190,6 +1434,7 @@ mod tests {
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
+            metrics: None,
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,
@@ -1222,6 +1467,172 @@ mod tests {
             ModelPreset::Strong.default_model(),
             "anthropic/claude-sonnet-4"
         );
+    }
+
+    #[test]
+    fn estimates_cost_from_fallback_model_pricing() {
+        let cost = estimate_model_cost_usd("deepseek/deepseek-v4-flash", 1_000_000, 500_000)
+            .expect("pricing is valid")
+            .expect("fallback pricing exists");
+
+        assert!((cost - 0.18).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parses_openrouter_model_pricing_response() {
+        let response = serde_json::json!({
+            "data": [
+                {
+                    "id": "deepseek/deepseek-v4-flash",
+                    "pricing": {
+                        "prompt": "0.00000009",
+                        "completion": "0.00000018"
+                    }
+                }
+            ]
+        });
+
+        let pricing = parse_openrouter_model_pricing(&response, "deepseek/deepseek-v4-flash")
+            .expect("pricing parses")
+            .expect("model exists");
+
+        assert_eq!(
+            pricing,
+            ModelPricing {
+                prompt_usd_per_million: 0.09,
+                completion_usd_per_million: 0.18,
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_per_million_model_pricing_values() {
+        let response = serde_json::json!({
+            "data": [
+                {
+                    "id": "custom/model",
+                    "pricing": {
+                        "prompt": 0.09,
+                        "completion": 0.18
+                    }
+                }
+            ]
+        });
+
+        let pricing = parse_openrouter_model_pricing(&response, "custom/model")
+            .expect("pricing parses")
+            .expect("model exists");
+
+        assert_eq!(
+            pricing,
+            ModelPricing {
+                prompt_usd_per_million: 0.09,
+                completion_usd_per_million: 0.18,
+            }
+        );
+    }
+
+    #[test]
+    fn computes_metrics_from_findings_and_cost() {
+        let artifact = ReviewArtifact {
+            score: 3,
+            target_score: 5,
+            fail_under: 4,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Failed,
+            verdict: "One issue remains.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: Some(CostSummary {
+                current_run_usd: 0.02,
+                source: Some(CostSource::FallbackPricing),
+                components: vec![],
+            }),
+            metrics: None,
+            findings: vec![
+                Finding {
+                    id: "rg_001".to_string(),
+                    severity: Severity::P2,
+                    confidence: 0.9,
+                    file: Some("src/lib.rs".to_string()),
+                    line: Some(42),
+                    title: "Missing test".to_string(),
+                    detail: None,
+                    agent_instruction: "Add the missing test.".to_string(),
+                },
+                Finding {
+                    id: "rg_002".to_string(),
+                    severity: Severity::P4,
+                    confidence: 0.8,
+                    file: None,
+                    line: None,
+                    title: "Style note".to_string(),
+                    detail: None,
+                    agent_instruction: "Consider a rename later.".to_string(),
+                },
+            ],
+            notes: vec![],
+        };
+
+        let metrics = compute_metrics(&artifact, Severity::P2);
+
+        assert_eq!(metrics.finding_count, 2);
+        assert_eq!(metrics.blocking_finding_count, 1);
+        assert_eq!(metrics.inline_eligible_count, 1);
+        assert_eq!(metrics.p2_count, 1);
+        assert_eq!(metrics.p4_count, 1);
+        assert_eq!(metrics.current_run_cost_usd, Some(0.02));
+        assert_eq!(metrics.cost_source, CostSource::FallbackPricing);
+    }
+
+    #[test]
+    fn summary_metrics_are_recomputed_from_render_options() {
+        let artifact = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            fail_under: 3,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "Clean.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: Some(ReviewMetrics {
+                finding_count: 1,
+                blocking_finding_count: 0,
+                inline_eligible_count: 1,
+                p0_count: 0,
+                p1_count: 0,
+                p2_count: 1,
+                p3_count: 0,
+                p4_count: 0,
+                current_run_cost_usd: None,
+                cost_source: CostSource::Unknown,
+            }),
+            findings: vec![Finding {
+                id: "rg_001".to_string(),
+                severity: Severity::P2,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Lower severity finding".to_string(),
+                detail: None,
+                agent_instruction: "Review when convenient.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                inline_min_severity: Severity::P1,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
+
+        assert!(summary.contains("Findings: 1 total, 0 blocking, 0 inline-eligible"));
     }
 
     #[test]

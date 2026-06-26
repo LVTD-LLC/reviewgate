@@ -37,13 +37,14 @@ The action must update the existing PR summary comment containing `<!-- review-g
 - `target_score`: Score required for a fully passing review. Defaults to `5`.
 - `fail_under`: Score floor that fails CI. Defaults to `4`.
 - `report_only`: Publish results without failing CI. Defaults to `false`.
+- `gate_mode`: Failed-review behavior. `job` fails the workflow; `report` publishes only. `check` is reserved for a future dedicated Check Run publisher.
 - `preset`: OpenRouter model preset used when `model` is not pinned. Defaults to `balanced`.
 - `model`: Exact OpenRouter model id. Defaults to the selected preset model.
 - `mock_artifact`: Optional artifact path for dry-run workflows.
 - `summary_min_severity`: Lowest severity shown in the canonical summary. Defaults to `P4`.
 - `inline_min_severity`: Lowest severity eligible for future inline comments. Defaults to `P2`.
 
-`fail_under` controls workflow/check behavior. It is not required for teams using Review Gate only as a report; set `report_only: "true"` for that mode.
+`fail_under` controls gate behavior. It is not required for teams using Review Gate only as a report; set `gate_mode: report` or the compatibility alias `report_only: "true"` for that mode.
 
 ## Runtime
 

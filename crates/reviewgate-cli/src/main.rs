@@ -7,8 +7,11 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
-    ModelPreset, OPENROUTER_API_KEY_ENV, OPENROUTER_DEFAULT_BASE_URL, ReviewArtifact, ReviewStatus,
-    Severity, SummaryOptions, extract_summary_state, render_summary, render_summary_with_options,
+    CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
+    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStatus, Severity,
+    SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
+    fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
+    render_summary_with_options,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -66,6 +69,8 @@ enum Command {
         mock_artifact: Option<PathBuf>,
         #[arg(long)]
         report_only: bool,
+        #[arg(long, value_enum, default_value = "job")]
+        gate_mode: GateModeArg,
         #[arg(long)]
         summary_min_severity: Option<String>,
         #[arg(long)]
@@ -81,6 +86,8 @@ enum Command {
         summary_out: Option<PathBuf>,
         #[arg(long)]
         summary_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_severity: Option<String>,
     },
     /// Re-run the latest Review Gate workflow run for a pull request branch.
     Recheck {
@@ -114,6 +121,7 @@ fn main() -> Result<()> {
             openrouter_base_url,
             mock_artifact,
             report_only,
+            gate_mode,
             summary_min_severity,
             inline_min_severity,
         } => review_pr(ReviewPrOptions {
@@ -128,6 +136,7 @@ fn main() -> Result<()> {
             openrouter_base_url,
             mock_artifact,
             report_only,
+            gate_mode: gate_mode.into(),
             summary_min_severity,
             inline_min_severity,
         }),
@@ -136,7 +145,14 @@ fn main() -> Result<()> {
             previous_summary,
             summary_out,
             summary_min_severity,
-        } => render_summary_command(input, previous_summary, summary_out, summary_min_severity),
+            inline_min_severity,
+        } => render_summary_command(
+            input,
+            previous_summary,
+            summary_out,
+            summary_min_severity,
+            inline_min_severity,
+        ),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
     }
 }
@@ -146,6 +162,27 @@ enum PresetArg {
     Cheap,
     Balanced,
     Strong,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum GateModeArg {
+    Job,
+    Report,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateMode {
+    Job,
+    Report,
+}
+
+impl From<GateModeArg> for GateMode {
+    fn from(value: GateModeArg) -> Self {
+        match value {
+            GateModeArg::Job => GateMode::Job,
+            GateModeArg::Report => GateMode::Report,
+        }
+    }
 }
 
 impl From<PresetArg> for ModelPreset {
@@ -214,6 +251,7 @@ struct ReviewPrOptions {
     openrouter_base_url: Option<String>,
     mock_artifact: Option<PathBuf>,
     report_only: bool,
+    gate_mode: GateMode,
     summary_min_severity: Option<String>,
     inline_min_severity: Option<String>,
 }
@@ -255,7 +293,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     )?
     .or(config_values.summary_min_severity)
     .unwrap_or(Severity::P4);
-    let _inline_min_severity = parse_optional_severity(
+    let inline_min_severity = parse_optional_severity(
         options.inline_min_severity.as_deref(),
         "inline_min_severity",
     )?
@@ -278,7 +316,25 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
             .unwrap_or_else(|| OPENROUTER_DEFAULT_BASE_URL.to_string());
         let prompt = build_review_prompt(&context, target_score, fail_under);
         let response = call_openrouter_with_curl(&base_url, &api_key, &model, &prompt)?;
-        parse_model_artifact(&response)?
+        let mut artifact = parse_model_artifact(&response.content)?;
+        let (model_pricing, cost_source) = if let Ok(Some(pricing)) =
+            fetch_openrouter_model_pricing_with_curl(&base_url, &api_key, &model)
+        {
+            (Some(pricing), Some(CostSource::OpenRouterUsage))
+        } else {
+            (
+                fallback_model_pricing(&model),
+                Some(CostSource::FallbackPricing),
+            )
+        };
+        apply_usage_cost_summary(
+            &mut artifact,
+            &model,
+            response.usage,
+            model_pricing,
+            cost_source,
+        );
+        artifact
     };
 
     let mut artifact = artifact;
@@ -288,11 +344,13 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     if artifact.models.is_empty() {
         artifact.models = vec![model];
     }
-    let artifact = artifact.with_computed_score()?;
+    let mut artifact = artifact.with_computed_score()?;
+    artifact.metrics = Some(compute_metrics(&artifact, inline_min_severity));
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
             summary_min_severity,
+            inline_min_severity,
             ..SummaryOptions::default()
         },
         None,
@@ -302,7 +360,11 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     write_or_print(options.json_out, &pretty_json, "review JSON")?;
     write_or_print(options.summary_out, &summary, "review summary")?;
 
-    if artifact.status == ReviewStatus::Failed && !options.report_only {
+    if should_fail_review(
+        artifact.status.clone(),
+        options.report_only,
+        options.gate_mode,
+    ) {
         bail!(
             "review score {} is below fail_under {}",
             artifact.score,
@@ -313,11 +375,16 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     Ok(())
 }
 
+fn should_fail_review(status: ReviewStatus, report_only: bool, gate_mode: GateMode) -> bool {
+    status == ReviewStatus::Failed && !report_only && gate_mode == GateMode::Job
+}
+
 fn render_summary_command(
     input: PathBuf,
     previous_summary: Option<PathBuf>,
     summary_out: Option<PathBuf>,
     summary_min_severity: Option<String>,
+    inline_min_severity: Option<String>,
 ) -> Result<()> {
     let raw = fs::read_to_string(&input)
         .with_context(|| format!("failed to read artifact {}", input.display()))?;
@@ -334,10 +401,14 @@ fn render_summary_command(
     let summary_min_severity =
         parse_optional_severity(summary_min_severity.as_deref(), "summary_min_severity")?
             .unwrap_or(Severity::P4);
+    let inline_min_severity =
+        parse_optional_severity(inline_min_severity.as_deref(), "inline_min_severity")?
+            .unwrap_or(Severity::P2);
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
             summary_min_severity,
+            inline_min_severity,
             ..SummaryOptions::default()
         },
         previous_state.as_ref(),
@@ -639,12 +710,24 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8, fail_under: u8
     prompt
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenRouterUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenRouterCompletion {
+    content: String,
+    usage: Option<OpenRouterUsage>,
+}
+
 fn call_openrouter_with_curl(
     base_url: &str,
     api_key: &str,
     model: &str,
     prompt: &str,
-) -> Result<String> {
+) -> Result<OpenRouterCompletion> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body_path = unique_temp_path("reviewgate-openrouter-body", "json");
     let body = serde_json::json!({
@@ -697,11 +780,109 @@ fn call_openrouter_with_curl(
     }
     let response: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("OpenRouter response was not valid JSON")?;
-    response
+    let content = response
         .pointer("/choices/0/message/content")
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned)
-        .context("OpenRouter response did not include choices[0].message.content")
+        .context("OpenRouter response did not include choices[0].message.content")?;
+    let usage = parse_openrouter_usage(&response);
+    Ok(OpenRouterCompletion { content, usage })
+}
+
+fn fetch_openrouter_model_pricing_with_curl(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<Option<ModelPricing>> {
+    let url = format!(
+        "{}{}",
+        base_url.trim_end_matches('/'),
+        OPENROUTER_MODELS_PATH
+    );
+    let curl_config = format!(
+        "fail-with-body\nsilent\nshow-error\nrequest = \"GET\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\n",
+        curl_config_quote(&url),
+        curl_config_quote(api_key),
+    );
+    let mut child = ProcessCommand::new("curl")
+        .arg("--config")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to execute curl for OpenRouter models request")?;
+    let mut stdin = child.stdin.take().context("failed to open curl stdin")?;
+    stdin
+        .write_all(curl_config.as_bytes())
+        .context("failed to write curl config")?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for curl")?;
+    if !output.status.success() {
+        bail!(
+            "OpenRouter models request failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("OpenRouter models response was not valid JSON")?;
+    parse_openrouter_model_pricing(&response, model)
+        .context("OpenRouter models response had invalid pricing")
+}
+
+fn parse_openrouter_usage(response: &serde_json::Value) -> Option<OpenRouterUsage> {
+    Some(OpenRouterUsage {
+        prompt_tokens: response
+            .pointer("/usage/prompt_tokens")
+            .and_then(serde_json::Value::as_u64)?,
+        completion_tokens: response
+            .pointer("/usage/completion_tokens")
+            .and_then(serde_json::Value::as_u64)?,
+    })
+}
+
+fn apply_usage_cost_summary(
+    artifact: &mut ReviewArtifact,
+    model: &str,
+    usage: Option<OpenRouterUsage>,
+    pricing: Option<ModelPricing>,
+    source: Option<CostSource>,
+) {
+    if artifact.cost_summary.is_some() {
+        return;
+    }
+    let Some(usage) = usage else {
+        return;
+    };
+    let cost = if let Some(pricing) = pricing {
+        match pricing.estimate_cost_usd(usage.prompt_tokens, usage.completion_tokens) {
+            Ok(cost) => cost,
+            Err(_) => return,
+        }
+    } else if let Ok(Some(cost)) =
+        estimate_model_cost_usd(model, usage.prompt_tokens, usage.completion_tokens)
+    {
+        cost
+    } else {
+        artifact.notes.push(format!(
+            "OpenRouter returned token usage for `{model}`, but Review Gate has no pricing fallback for that model."
+        ));
+        return;
+    };
+    artifact.estimated_cost_usd = Some(cost);
+    artifact.cost_summary = Some(CostSummary {
+        current_run_usd: cost,
+        source,
+        components: vec![CostComponent {
+            label: "openrouter_review".to_string(),
+            model: model.to_string(),
+            prompt_tokens: Some(usage.prompt_tokens),
+            completion_tokens: Some(usage.completion_tokens),
+            estimated_cost_usd: cost,
+        }],
+    });
 }
 
 fn unique_temp_path(prefix: &str, extension: &str) -> PathBuf {
@@ -731,7 +912,9 @@ fn curl_config_quote(value: &str) -> String {
 
 fn parse_model_artifact(raw: &str) -> Result<ReviewArtifact> {
     let trimmed = strip_json_fence(raw.trim());
-    serde_json::from_str(trimmed).context("model response was not a valid Review Gate artifact")
+    serde_json::from_str(trimmed)
+        .or_else(|_| extract_review_artifact_json(trimmed))
+        .context("model response was not a valid Review Gate artifact")
 }
 
 fn strip_json_fence(raw: &str) -> &str {
@@ -744,6 +927,43 @@ fn strip_json_fence(raw: &str) -> &str {
         .strip_suffix("```")
         .unwrap_or(stripped)
         .trim()
+}
+
+fn extract_review_artifact_json(raw: &str) -> serde_json::Result<ReviewArtifact> {
+    for (start, _) in raw.match_indices('{') {
+        let mut depth = 0u32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (offset, ch) in raw[start..].char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let end = start + offset + ch.len_utf8();
+                        let candidate = &raw[start..end];
+                        if let Ok(artifact) = serde_json::from_str(candidate) {
+                            return Ok(artifact);
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    serde_json::from_str(raw)
 }
 
 fn read_mock_artifact(path: &Path) -> Result<ReviewArtifact> {
@@ -806,6 +1026,106 @@ mod tests {
             strip_json_fence("```json\n{\"score\":5}\n```"),
             "{\"score\":5}"
         );
+    }
+
+    #[test]
+    fn repairs_model_artifact_wrapped_in_text_with_extra_braces() {
+        let raw = r#"Here is the review with prose {not json} before it:
+{
+  "score": 5,
+  "target_score": 5,
+  "fail_under": 4,
+  "reviewed_sha": "abc123",
+  "status": "passed",
+  "verdict": "Clean.",
+  "models": ["deepseek/deepseek-v4-flash"],
+  "findings": [],
+  "notes": []
+}
+Thanks {also not json}."#;
+
+        let artifact = parse_model_artifact(raw).expect("wrapped artifact repairs");
+
+        assert_eq!(artifact.score, 5);
+        assert_eq!(artifact.verdict, "Clean.");
+    }
+
+    #[test]
+    fn parses_openrouter_usage_from_response() {
+        let response = serde_json::json!({
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 300
+            }
+        });
+
+        let usage = parse_openrouter_usage(&response).expect("usage exists");
+
+        assert_eq!(
+            usage,
+            OpenRouterUsage {
+                prompt_tokens: 1200,
+                completion_tokens: 300,
+            }
+        );
+    }
+
+    #[test]
+    fn applies_usage_cost_summary_from_fallback_pricing() {
+        let mut artifact = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            fail_under: 4,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "Clean.".to_string(),
+            models: vec![],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            findings: vec![],
+            notes: vec![],
+        };
+
+        apply_usage_cost_summary(
+            &mut artifact,
+            "deepseek/deepseek-v4-flash",
+            Some(OpenRouterUsage {
+                prompt_tokens: 1_000_000,
+                completion_tokens: 500_000,
+            }),
+            None,
+            Some(CostSource::FallbackPricing),
+        );
+
+        let summary = artifact.cost_summary.expect("cost summary added");
+        assert!((summary.current_run_usd - 0.18).abs() < f64::EPSILON);
+        assert_eq!(summary.source, Some(CostSource::FallbackPricing));
+    }
+
+    #[test]
+    fn gate_mode_controls_failed_review_exit_decision() {
+        assert!(should_fail_review(
+            ReviewStatus::Failed,
+            false,
+            GateMode::Job
+        ));
+        assert!(!should_fail_review(
+            ReviewStatus::Failed,
+            false,
+            GateMode::Report
+        ));
+        assert!(!should_fail_review(
+            ReviewStatus::Failed,
+            true,
+            GateMode::Job
+        ));
+        assert!(!should_fail_review(
+            ReviewStatus::NeedsChanges,
+            false,
+            GateMode::Job
+        ));
     }
 
     #[test]

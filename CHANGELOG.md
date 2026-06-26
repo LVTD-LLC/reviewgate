@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added usage-derived OpenRouter cost estimation with live model pricing lookup and fallback pricing.
+- Added review metrics to artifacts, schemas, and canonical summaries.
+- Added bounded model-output JSON repair for prose-wrapped review artifacts.
+- Added explicit gate mode semantics for report-only versus job-failing reviews.
 - Added configurable summary/inline severity floors, a `reviewgate recheck` helper, and hidden summary state for bounded cumulative PR cost/run history.
 - Added Review UX and Control v1 dogfood notes and design guidance for review-only semantics, trigger/recheck choices, model defaults, cost display, severity visibility, and secure workflow behavior.
 - Added `P0` severity support, structured cost summary metadata, and cost rendering in canonical summaries.
