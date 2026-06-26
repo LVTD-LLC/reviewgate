@@ -8,9 +8,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
-    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStatus, Severity,
-    ReviewStage, SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
-    fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
+    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage,
+    ReviewStatus, Severity, SummaryOptions, compute_metrics, estimate_model_cost_usd,
+    extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
 };
 
@@ -409,7 +409,10 @@ fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage
     if changed.contains("migration") || changed.contains("schema") {
         add_stage("migrations", "Changed paths touch migrations or schemas.");
     }
-    if changed.contains("security") || changed.contains("auth") || changed.contains("token") {
+    if changed.contains("security")
+        || changed.contains("auth")
+        || changed.contains("token")
+    {
         add_stage("security", "Changed paths touch security-sensitive code or docs.");
     }
     if changed.contains("readme") || changed.contains("/docs/") || changed.ends_with(".md") {
@@ -418,7 +421,10 @@ fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage
     if changed.contains("frontend") || changed.contains(".tsx") || changed.contains(".css") {
         add_stage("frontend", "Changed paths look frontend-facing.");
     }
-    if changed.contains("action.yml") || changed.contains("cargo.toml") || changed.contains("api") {
+    if changed.contains("action.yml")
+        || changed.contains("cargo.toml")
+        || changed.contains("api")
+    {
         add_stage("compatibility", "Changed paths affect public integration surfaces.");
     }
 
@@ -601,7 +607,8 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
                 "blocking_finding_count": metrics.blocking_finding_count,
                 "estimated_cost_usd": metrics.current_run_cost_usd
             })
-        }).collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

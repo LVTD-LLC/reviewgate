@@ -289,7 +289,11 @@ mod tests {
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].path, "src/lib.rs");
         assert_eq!(drafts[0].line, 42);
-        assert!(drafts[0].body.contains("<!-- review-gate-finding:rg_001 -->"));
+        assert!(
+            drafts[0]
+                .body
+                .contains("<!-- review-gate-finding:rg_001 -->")
+        );
         assert!(drafts[0].body.contains("Agent instruction: Handle and test"));
     }
 

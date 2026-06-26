@@ -214,16 +214,24 @@ pub struct ReviewStage {
 impl ReviewStage {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.name.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent { field: "stage.name" });
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.name",
+            });
         }
         if self.model.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent { field: "stage.model" });
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.model",
+            });
         }
         if self.status.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent { field: "stage.status" });
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.status",
+            });
         }
         if self.reason.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent { field: "stage.reason" });
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.reason",
+            });
         }
         if let Some(cost) = self.estimated_cost_usd {
             validate_estimated_cost(cost)?;
