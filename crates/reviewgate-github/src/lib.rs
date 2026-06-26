@@ -103,8 +103,24 @@ pub struct InlineCommentDraft {
     pub body: String,
 }
 
+fn encode_marker_payload(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 pub fn inline_comment_marker(finding_id: &str) -> String {
-    format!("{INLINE_COMMENT_MARKER_PREFIX}{finding_id} -->")
+    format!(
+        "{INLINE_COMMENT_MARKER_PREFIX}{} -->",
+        encode_marker_payload(finding_id)
+    )
 }
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
@@ -289,11 +305,7 @@ mod tests {
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].path, "src/lib.rs");
         assert_eq!(drafts[0].line, 42);
-        assert!(
-            drafts[0]
-                .body
-                .contains("<!-- review-gate-finding:rg_001 -->")
-        );
+        assert!(drafts[0].body.contains(&inline_comment_marker("rg_001")));
         assert!(
             drafts[0]
                 .body
@@ -334,6 +346,40 @@ mod tests {
             Severity::P2,
             0.8,
         );
+
+        assert!(drafts.is_empty());
+    }
+
+    #[test]
+    fn inline_marker_payload_round_trips_schema_valid_ids() {
+        assert_eq!(
+            inline_comment_marker("missing auth check"),
+            "<!-- review-gate-finding:missing%20auth%20check -->"
+        );
+        assert_eq!(
+            inline_comment_marker("A-->B\nC"),
+            "<!-- review-gate-finding:A--%3EB%0AC -->"
+        );
+    }
+
+    #[test]
+    fn dedupes_inline_comments_with_encoded_markers() {
+        let finding = Finding {
+            id: "A-->B\nC".to_string(),
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "Already posted".to_string(),
+            detail: None,
+            agent_instruction: "No duplicate.".to_string(),
+        };
+        let existing = ExistingInlineComment {
+            id: 9,
+            body: inline_comment_marker(&finding.id),
+        };
+
+        let drafts = plan_inline_comment_drafts(&[finding], &[existing], Severity::P2, 0.8);
 
         assert!(drafts.is_empty());
     }

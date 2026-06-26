@@ -204,7 +204,7 @@ runs:
           --argjson min_confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
           --slurpfile existing "$existing_markers_path" '
           def rank: {"P0":0,"P1":1,"P2":2,"P3":3,"P4":4};
-          def marker($id): "<!-- review-gate-finding:" + $id + " -->";
+          def marker($id): "<!-- review-gate-finding:" + ($id | @uri) + " -->";
           .findings[]
           | select(.file != null and .line != null)
           | select((.confidence // 0) >= $min_confidence)
