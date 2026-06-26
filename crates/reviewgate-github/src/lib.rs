@@ -116,11 +116,11 @@ pub fn render_inline_comment_body(finding: &Finding) -> String {
         finding.severity.as_str(),
         finding.title
     ));
-    if let Some(detail) = &finding.detail {
-        if !detail.trim().is_empty() {
-            body.push_str(detail.trim());
-            body.push_str("\n\n");
-        }
+    if let Some(detail) = &finding.detail
+        && !detail.trim().is_empty()
+    {
+        body.push_str(detail.trim());
+        body.push_str("\n\n");
     }
     body.push_str("Agent instruction: ");
     body.push_str(finding.agent_instruction.trim());
