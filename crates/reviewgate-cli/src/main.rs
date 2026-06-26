@@ -344,7 +344,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     };
 
     let mut artifact = artifact;
-    artifact.reviewed_sha = context.reviewed_sha;
+    artifact.reviewed_sha = context.reviewed_sha.clone();
     artifact.target_score = target_score;
     artifact.fail_under = fail_under;
     if artifact.models.is_empty() {
