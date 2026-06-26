@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
-    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStatus, Severity,
-    SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
+    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
+    Severity, SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
     fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
 };
@@ -98,6 +98,11 @@ enum Command {
         #[arg(long, default_value = "Review Gate")]
         workflow: String,
     },
+    /// Evaluate committed review artifact fixtures without publishing anything.
+    EvalFixtures {
+        #[arg(long, default_value = "fixtures")]
+        dir: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -154,6 +159,7 @@ fn main() -> Result<()> {
             inline_min_severity,
         ),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
+        Command::EvalFixtures { dir } => eval_fixtures(dir),
     }
 }
 
@@ -338,12 +344,13 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     };
 
     let mut artifact = artifact;
-    artifact.reviewed_sha = context.reviewed_sha;
+    artifact.reviewed_sha = context.reviewed_sha.clone();
     artifact.target_score = target_score;
     artifact.fail_under = fail_under;
     if artifact.models.is_empty() {
         artifact.models = vec![model];
     }
+    artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
     let mut artifact = artifact.with_computed_score()?;
     artifact.metrics = Some(compute_metrics(&artifact, inline_min_severity));
     let summary = render_summary_with_options(
@@ -373,6 +380,65 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage> {
+    let mut stages = vec![ReviewStage {
+        name: "general".to_string(),
+        model: model.to_string(),
+        status: "ran".to_string(),
+        reason: "Always run a general correctness review.".to_string(),
+        estimated_cost_usd: None,
+    }];
+
+    let changed = context.changed_files.join("\n").to_ascii_lowercase();
+    let changed_path_matches = |predicate: fn(&str) -> bool| {
+        context
+            .changed_files
+            .iter()
+            .map(|path| path.to_ascii_lowercase())
+            .any(|path| predicate(&path))
+    };
+    let mut add_stage = |name: &str, reason: &str| {
+        stages.push(ReviewStage {
+            name: name.to_string(),
+            model: model.to_string(),
+            status: "selected".to_string(),
+            reason: reason.to_string(),
+            estimated_cost_usd: None,
+        });
+    };
+    if changed.contains("test") || changed.contains("fixture") {
+        add_stage("testability", "Changed paths touch tests or fixtures.");
+    }
+    if changed.contains("migration") || changed.contains("schema") {
+        add_stage("migrations", "Changed paths touch migrations or schemas.");
+    }
+    if changed.contains("security") || changed.contains("auth") || changed.contains("token") {
+        add_stage(
+            "security",
+            "Changed paths touch security-sensitive code or docs.",
+        );
+    }
+    if changed_path_matches(|path| {
+        path.contains("readme")
+            || path.starts_with("docs/")
+            || path.contains("/docs/")
+            || path.ends_with(".md")
+    }) {
+        add_stage("docs", "Changed paths include documentation.");
+    }
+    if changed.contains("frontend") || changed.contains(".tsx") || changed.contains(".css") {
+        add_stage("frontend", "Changed paths look frontend-facing.");
+    }
+    if changed.contains("action.yml") || changed.contains("cargo.toml") || changed.contains("api") {
+        add_stage(
+            "compatibility",
+            "Changed paths affect public integration surfaces.",
+        );
+    }
+
+    stages
 }
 
 fn should_fail_review(status: ReviewStatus, report_only: bool, gate_mode: GateMode) -> bool {
@@ -496,6 +562,65 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> Result<()> {
     if !run_url.is_empty() {
         println!("Rerun: {run_url}");
     }
+    Ok(())
+}
+
+fn eval_fixtures(dir: PathBuf) -> Result<()> {
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read fixture {}", path.display()))?;
+        let artifact: ReviewArtifact = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse fixture {}", path.display()))?;
+        artifacts.push((path, artifact.with_computed_score()?));
+    }
+
+    let total = artifacts.len();
+    let mut total_cost = 0.0;
+    let mut finding_count = 0usize;
+    let mut blocking_count = 0usize;
+    let mut score_sum = 0u64;
+    for (_, artifact) in &artifacts {
+        score_sum += u64::from(artifact.score);
+        let metrics = compute_metrics(artifact, Severity::P2);
+        finding_count += metrics.finding_count as usize;
+        blocking_count += metrics.blocking_finding_count as usize;
+        if let Some(cost) = metrics.current_run_cost_usd {
+            total_cost += cost;
+        }
+    }
+    let average_score = if total == 0 {
+        0.0
+    } else {
+        score_sum as f64 / total as f64
+    };
+
+    let report = serde_json::json!({
+        "fixture_count": total,
+        "average_score": average_score,
+        "finding_count": finding_count,
+        "blocking_finding_count": blocking_count,
+        "estimated_cost_usd": total_cost,
+        "fixtures": artifacts.iter().map(|(path, artifact)| {
+            let metrics = compute_metrics(artifact, Severity::P2);
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "reviewed_sha": &artifact.reviewed_sha,
+                "score": artifact.score,
+                "status": artifact.status.as_str(),
+                "finding_count": metrics.finding_count,
+                "blocking_finding_count": metrics.blocking_finding_count,
+                "estimated_cost_usd": metrics.current_run_cost_usd
+            })
+        })
+        .collect::<Vec<_>>()
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
@@ -1084,6 +1209,7 @@ Thanks {also not json}."#;
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1126,6 +1252,20 @@ Thanks {also not json}."#;
             false,
             GateMode::Job
         ));
+    }
+
+    #[test]
+    fn selects_docs_stage_for_root_markdown_paths() {
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            changed_files: vec!["CHANGELOG.md".to_string(), "src/lib.rs".to_string()],
+            diff: String::new(),
+            context_files: vec![],
+        };
+
+        let stages = select_review_stages(&context, "deepseek/deepseek-v4-flash");
+
+        assert!(stages.iter().any(|stage| stage.name == "docs"));
     }
 
     #[test]

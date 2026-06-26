@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Encoded inline finding marker payloads so every schema-valid finding ID dedupes safely across reruns.
+- Added best-effort inline PR comment publishing with stable finding markers, dedupe, configurable severity/confidence floors, and unmappable-line fallback.
+- Added review-stage metadata, stage selection, and offline fixture evaluation support.
+- Added external-agent workflow, evaluation, and v0.1.0 release readiness docs.
 - Added usage-derived OpenRouter cost estimation with live model pricing lookup and fallback pricing.
 - Added review metrics to artifacts, schemas, and canonical summaries.
 - Added bounded model-output JSON repair for prose-wrapped review artifacts.

@@ -43,14 +43,18 @@ The action must update the existing PR summary comment containing `<!-- review-g
 - `mock_artifact`: Optional artifact path for dry-run workflows.
 - `summary_min_severity`: Lowest severity shown in the canonical summary. Defaults to `P4`.
 - `inline_min_severity`: Lowest severity eligible for future inline comments. Defaults to `P2`.
+- `inline_min_confidence`: Minimum model confidence required for inline comments. Defaults to `0.80`.
+- `publish_inline_comments`: Whether eligible line-specific findings are posted as PR review comments. Defaults to `true`.
 
 `fail_under` controls gate behavior. It is not required for teams using Review Gate only as a report; set `gate_mode: report` or the compatibility alias `report_only: "true"` for that mode.
 
 ## Runtime
 
-The composite action runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, and upserts one canonical PR summary comment when running on a pull request.
+The composite action runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, upserts one canonical PR summary comment, and posts eligible inline comments when running on a pull request.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
+
+Inline comments are best-effort and deduped by hidden `<!-- review-gate-finding:... -->` markers. If GitHub rejects a line comment because the line is no longer in the diff, the finding remains visible in the canonical summary and publishing continues.
 
 ## Trigger Guidance
 

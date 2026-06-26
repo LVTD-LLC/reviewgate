@@ -3,21 +3,64 @@
   "$id": "https://reviewgate.dev/schemas/review-output.schema.json",
   "title": "Review Gate Review Output",
   "type": "object",
-  "required": ["score", "target_score", "fail_under", "reviewed_sha", "status", "verdict", "models", "findings", "notes"],
+  "required": [
+    "score",
+    "target_score",
+    "fail_under",
+    "reviewed_sha",
+    "status",
+    "verdict",
+    "models",
+    "findings",
+    "notes"
+  ],
   "additionalProperties": false,
   "allOf": [
-    { "if": { "properties": { "fail_under": { "const": 1 } }, "required": ["fail_under"] }, "then": { "properties": { "target_score": { "minimum": 1 } } } },
-    { "if": { "properties": { "fail_under": { "const": 2 } }, "required": ["fail_under"] }, "then": { "properties": { "target_score": { "minimum": 2 } } } },
-    { "if": { "properties": { "fail_under": { "const": 3 } }, "required": ["fail_under"] }, "then": { "properties": { "target_score": { "minimum": 3 } } } },
-    { "if": { "properties": { "fail_under": { "const": 4 } }, "required": ["fail_under"] }, "then": { "properties": { "target_score": { "minimum": 4 } } } },
-    { "if": { "properties": { "fail_under": { "const": 5 } }, "required": ["fail_under"] }, "then": { "properties": { "target_score": { "minimum": 5 } } } }
+    {
+      "if": {
+        "properties": { "fail_under": { "const": 1 } },
+        "required": ["fail_under"]
+      },
+      "then": { "properties": { "target_score": { "minimum": 1 } } }
+    },
+    {
+      "if": {
+        "properties": { "fail_under": { "const": 2 } },
+        "required": ["fail_under"]
+      },
+      "then": { "properties": { "target_score": { "minimum": 2 } } }
+    },
+    {
+      "if": {
+        "properties": { "fail_under": { "const": 3 } },
+        "required": ["fail_under"]
+      },
+      "then": { "properties": { "target_score": { "minimum": 3 } } }
+    },
+    {
+      "if": {
+        "properties": { "fail_under": { "const": 4 } },
+        "required": ["fail_under"]
+      },
+      "then": { "properties": { "target_score": { "minimum": 4 } } }
+    },
+    {
+      "if": {
+        "properties": { "fail_under": { "const": 5 } },
+        "required": ["fail_under"]
+      },
+      "then": { "properties": { "target_score": { "minimum": 5 } } }
+    }
   ],
   "properties": {
     "score": { "type": "integer", "minimum": 0, "maximum": 5 },
     "target_score": { "type": "integer", "minimum": 0, "maximum": 5 },
     "fail_under": { "type": "integer", "minimum": 0, "maximum": 5 },
     "reviewed_sha": { "type": "string", "minLength": 1 },
-    "status": { "type": "string", "enum": ["passed", "needs_changes", "failed"] },
+    "status": {
+      "type": "string",
+      "enum": ["passed", "needs_changes", "failed"]
+    },
     "verdict": { "type": "string", "minLength": 1 },
     "models": {
       "type": "array",
@@ -30,7 +73,10 @@
       "required": ["current_run_usd", "components"],
       "properties": {
         "current_run_usd": { "type": "number", "minimum": 0 },
-        "source": { "type": ["string", "null"], "enum": ["open_router_usage", "fallback_pricing", "unknown", null] },
+        "source": {
+          "type": ["string", "null"],
+          "enum": ["open_router_usage", "fallback_pricing", "unknown", null]
+        },
         "components": {
           "type": "array",
           "items": { "$ref": "#/$defs/cost_component" }
@@ -61,8 +107,15 @@
         "p3_count": { "type": "integer", "minimum": 0 },
         "p4_count": { "type": "integer", "minimum": 0 },
         "current_run_cost_usd": { "type": ["number", "null"], "minimum": 0 },
-        "cost_source": { "type": "string", "enum": ["open_router_usage", "fallback_pricing", "unknown"] }
+        "cost_source": {
+          "type": "string",
+          "enum": ["open_router_usage", "fallback_pricing", "unknown"]
+        }
       }
+    },
+    "review_stages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/review_stage" }
     },
     "findings": {
       "type": "array",
@@ -86,13 +139,37 @@
         "estimated_cost_usd": { "type": "number", "minimum": 0 }
       }
     },
+    "review_stage": {
+      "type": "object",
+      "required": ["name", "model", "status", "reason", "estimated_cost_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "estimated_cost_usd": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
     "finding": {
       "type": "object",
-      "required": ["id", "severity", "confidence", "file", "line", "title", "detail", "agent_instruction"],
+      "required": [
+        "id",
+        "severity",
+        "confidence",
+        "file",
+        "line",
+        "title",
+        "detail",
+        "agent_instruction"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "minLength": 1 },
-        "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3", "P4"] },
+        "severity": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3", "P4"]
+        },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "file": { "type": ["string", "null"] },
         "line": { "type": ["integer", "null"], "minimum": 1 },

@@ -203,6 +203,44 @@ impl CostSummary {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ReviewStage {
+    pub name: String,
+    pub model: String,
+    pub status: String,
+    pub reason: String,
+    pub estimated_cost_usd: Option<f64>,
+}
+
+impl ReviewStage {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.name.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.name",
+            });
+        }
+        if self.model.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.model",
+            });
+        }
+        if self.status.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.status",
+            });
+        }
+        if self.reason.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "stage.reason",
+            });
+        }
+        if let Some(cost) = self.estimated_cost_usd {
+            validate_estimated_cost(cost)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReviewArtifact {
     pub score: u8,
     pub target_score: u8,
@@ -216,6 +254,8 @@ pub struct ReviewArtifact {
     pub cost_summary: Option<CostSummary>,
     #[serde(default)]
     pub metrics: Option<ReviewMetrics>,
+    #[serde(default)]
+    pub review_stages: Vec<ReviewStage>,
     pub findings: Vec<Finding>,
     pub notes: Vec<String>,
 }
@@ -239,6 +279,9 @@ impl ReviewArtifact {
         }
         if let Some(metrics) = &self.metrics {
             metrics.validate()?;
+        }
+        for stage in &self.review_stages {
+            stage.validate()?;
         }
         for finding in &self.findings {
             finding.validate()?;
@@ -987,6 +1030,7 @@ mod tests {
             estimated_cost_usd: Some(0.08),
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1019,6 +1063,7 @@ mod tests {
                 }],
             }),
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1046,6 +1091,7 @@ mod tests {
                 components: vec![],
             }),
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1091,6 +1137,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
@@ -1144,6 +1191,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P3,
@@ -1195,6 +1243,7 @@ mod tests {
                 }],
             }),
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1218,6 +1267,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,
@@ -1253,6 +1303,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P3,
@@ -1286,6 +1337,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,
@@ -1320,6 +1372,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P1,
@@ -1354,6 +1407,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1380,6 +1434,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P4,
@@ -1412,6 +1467,7 @@ mod tests {
             estimated_cost_usd: Some(-0.01),
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1435,6 +1491,7 @@ mod tests {
             estimated_cost_usd: None,
             cost_summary: None,
             metrics: None,
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,
@@ -1549,6 +1606,7 @@ mod tests {
                 components: vec![],
             }),
             metrics: None,
+            review_stages: vec![],
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
@@ -1609,6 +1667,7 @@ mod tests {
                 current_run_cost_usd: None,
                 cost_source: CostSource::Unknown,
             }),
+            review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 severity: Severity::P2,

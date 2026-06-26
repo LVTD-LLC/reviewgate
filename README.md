@@ -16,7 +16,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Keeps one PR summary comment updated with `<!-- review-gate-summary -->`.
 - Emits a visible score like `Review Gate: 4/5`.
 - Produces a JSON artifact for humans and external agent loops.
-- Posts inline comments only for high-confidence, line-specific findings.
+- Posts inline comments only for high-confidence, line-specific findings, deduped by stable Review Gate finding markers.
 - Creates a GitHub check run based on a configurable threshold.
 - Shows model cost in the review artifact and summary.
 
@@ -58,6 +58,7 @@ The action:
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
 - creates or updates one PR comment containing `<!-- review-gate-summary -->`;
+- posts eligible line-specific findings as best-effort PR review comments;
 - exits non-zero when `score < fail_under` and `gate_mode: job`, unless `report_only: "true"` or `gate_mode: report` is set.
 
 The default workflow runs on PR updates because that is the lowest-friction install path. For teams that want tighter cost control, the next control surface is an explicit recheck path such as `workflow_dispatch`, a PR comment command, or a CLI helper.
@@ -117,6 +118,12 @@ Re-run the latest Review Gate workflow run for the current PR branch:
 cargo run --locked -p reviewgate-cli -- recheck
 ```
 
+Evaluate committed artifacts without publishing:
+
+```bash
+cargo run --locked -p reviewgate-cli -- eval-fixtures --dir fixtures
+```
+
 ## External Agent Contract
 
 Agents should consume the JSON artifact first and use the canonical PR summary as the human-readable fallback. The optional external loop is:
@@ -152,6 +159,8 @@ The first live action implementation uses the `curl` binary available on GitHub-
 - `gate_mode`: failed-review behavior. `job` fails the workflow; `report` publishes only. `check` is reserved for a future dedicated Check Run publisher.
 - `summary_min_severity`: lowest severity shown in the canonical summary (`P0` through `P4`).
 - `inline_min_severity`: lowest severity eligible for future inline comments (`P0` through `P4`).
+- `inline_min_confidence`: minimum confidence required before posting an inline PR comment.
+- `publish_inline_comments`: whether eligible line-specific findings should become PR review comments.
 
 `report_only: "true"` remains supported as a compatibility alias for `gate_mode: report`.
 
@@ -161,7 +170,7 @@ The canonical summary stores a versioned hidden state payload next to `<!-- revi
 
 - Config parsing intentionally supports the stable scalar fields above; richer nested config support comes later.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
-- Inline comments are not posted yet. The canonical summary comment is the first publishing surface.
+- Inline comments are best-effort: unmappable findings stay in the canonical summary and do not fail publishing.
 - Current-run and cumulative PR cost rendering are modeled in the summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
 
@@ -173,6 +182,9 @@ crates/reviewgate-cli/       Local and CI CLI entrypoints
 crates/reviewgate-github/    GitHub publishing primitives
 action/                      GitHub Action wrapper
 prompts/                     Built-in review stage prompts
+docs/evaluation.md           Offline fixture evaluation workflow
+docs/external-agent-workflow.md Optional repair-agent workflow
+docs/release-v0.1.0.md       Release readiness checklist
 schemas/                     JSON artifact schema
 fixtures/                    Golden review fixtures
 skills/reviewgate-loop/      Public agent loop skill draft
