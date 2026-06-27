@@ -133,10 +133,10 @@ runs:
 
         marker='<!-- shipcheck-summary -->'
         legacy_marker='<!-- review-gate-summary -->'
-        comment_ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
-          --jq ".[] | select(.body | contains(\"$marker\") or contains(\"$legacy_marker\")) | .id")"
-        comment_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
-          --jq "([.[] | select(.body | contains(\"$marker\") or contains(\"$legacy_marker\")) | {id, state: (try (.body | capture(\"<!-- (?:shipcheck|review-gate)-state (?<state>\\\\{.*\\\\}) -->\").state | fromjson) catch null)} | select(.state != null) | {id, run_count: (.state.run_count // 0), reviewed_count: ((.state.reviewed_shas // []) | length)}] | max_by(.run_count, .reviewed_count).id) // ([.[] | select(.body | contains(\"$marker\") or contains(\"$legacy_marker\")) | .id] | last) // empty")"
+        comment_ids="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+          --jq "map(.[]) | .[] | select(.body | contains(\"$marker\") or contains(\"$legacy_marker\")) | .id")"
+        comment_id="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+          --jq "map(.[]) as \$comments | ([\$comments[] | select(.body | contains(\"$marker\") or contains(\"$legacy_marker\")) | {id, state: (try (.body | capture(\"<!-- (?:shipcheck|review-gate)-state (?<state>\\\\{.*\\\\}) -->\").state | fromjson) catch null)} | select(.state != null) | {id, run_count: (.state.run_count // 0), reviewed_count: ((.state.reviewed_shas // []) | length)}] | max_by(.run_count, .reviewed_count).id) // ([\$comments[] | select(.body | contains(\"$marker\") or contains(\"$legacy_marker\")) | .id] | last) // empty")"
         previous_summary_path="$GITHUB_WORKSPACE/.shipcheck/previous-summary.md"
 
         if [ -n "$comment_id" ]; then
