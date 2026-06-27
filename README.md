@@ -164,6 +164,8 @@ The first live action implementation uses the `curl` binary available on GitHub-
 
 `report_only: "true"` remains supported as a compatibility alias for `gate_mode: report`.
 
+During the rename migration, ReviewGate falls back to an existing `.shipcheck.yml` when the default `.reviewgate.yml` is absent. Explicit `config:` input paths are respected as-is.
+
 The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing.
 
 ## Current Limitations

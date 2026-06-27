@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Renamed the product, action, CLI, Rust crates, config/artifact paths, workflow, schema, docs, and public agent-loop skill from Shipcheck to ReviewGate.
+- Added fallback support for existing `.shipcheck.yml` configs when the new default `.reviewgate.yml` is absent.
 - Preserved legacy `shipcheck` and `review-gate` summary/state/inline marker recognition so existing PR comments continue to update in place during migration.
 - Added blue Marketplace branding with a shield icon for the GitHub Action listing.
 - Renamed the GitHub Action display name to `ReviewGate` for Marketplace uniqueness.

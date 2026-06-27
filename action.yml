@@ -11,7 +11,7 @@ inputs:
     description: OpenRouter API key used for model-backed review stages.
     required: false
   config:
-    description: Path to ReviewGate config.
+    description: Path to ReviewGate config. The default falls back to .shipcheck.yml when .reviewgate.yml is absent.
     required: false
     default: .reviewgate.yml
   fail_under:
