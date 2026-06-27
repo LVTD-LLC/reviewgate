@@ -11,7 +11,7 @@ inputs:
     description: OpenRouter API key used for model-backed review stages.
     required: false
   config:
-    description: Path to ReviewGate config. The default falls back to .shipcheck.yml when .reviewgate.yml is absent.
+    description: Path to ReviewGate config.
     required: false
     default: .reviewgate.yml
   fail_under:
@@ -132,12 +132,10 @@ runs:
         fi
 
         marker='<!-- reviewgate-summary -->'
-        legacy_shipcheck_marker='<!-- shipcheck-summary -->'
-        legacy_review_gate_marker='<!-- review-gate-summary -->'
         comment_ids="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
-          --jq "map(.[]) | .[] | select(.body | contains(\"$marker\") or contains(\"$legacy_shipcheck_marker\") or contains(\"$legacy_review_gate_marker\")) | .id")"
+          --jq "map(.[]) | .[] | select(.body | contains(\"$marker\")) | .id")"
         comment_id="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
-          --jq "map(.[]) as \$comments | ([\$comments[] | select(.body | contains(\"$marker\") or contains(\"$legacy_shipcheck_marker\") or contains(\"$legacy_review_gate_marker\")) | {id, state: (try (.body | capture(\"<!-- (?:reviewgate|shipcheck|review-gate)-state (?<state>\\\\{.*\\\\}) -->\").state | fromjson) catch null)} | select(.state != null) | {id, run_count: (.state.run_count // 0), reviewed_count: ((.state.reviewed_shas // []) | length)}] | max_by([.run_count, .reviewed_count]).id) // ([\$comments[] | select(.body | contains(\"$marker\") or contains(\"$legacy_shipcheck_marker\") or contains(\"$legacy_review_gate_marker\")) | .id] | last) // empty")"
+          --jq "map(.[]) as \$comments | ([\$comments[] | select(.body | contains(\"$marker\")) | {id, state: (try (.body | capture(\"<!-- reviewgate-state (?<state>\\\\{.*\\\\}) -->\").state | fromjson) catch null)} | select(.state != null) | {id, run_count: (.state.run_count // 0), reviewed_count: ((.state.reviewed_shas // []) | length)}] | max_by([.run_count, .reviewed_count]).id) // ([\$comments[] | select(.body | contains(\"$marker\")) | .id] | last) // empty")"
         previous_summary_path="$GITHUB_WORKSPACE/.reviewgate/previous-summary.md"
 
         if [ -n "$comment_id" ]; then
@@ -210,7 +208,7 @@ runs:
 
         existing_markers_path="$GITHUB_WORKSPACE/.reviewgate/existing-inline-markers.json"
         gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
-          --jq '[.[].body | scan("<!-- (?:reviewgate|shipcheck|review-gate)-finding:.*? -->")]' > "$existing_markers_path"
+          --jq '[.[].body | scan("<!-- reviewgate-finding:.*? -->")]' > "$existing_markers_path"
 
         drafts_path="$GITHUB_WORKSPACE/.reviewgate/inline-comments.jsonl"
         jq -c \
@@ -219,19 +217,13 @@ runs:
           --slurpfile existing "$existing_markers_path" '
           def rank: {"P0":0,"P1":1,"P2":2,"P3":3,"P4":4};
           def marker($id): "<!-- reviewgate-finding:" + ($id | @uri) + " -->";
-          def legacy_shipcheck_marker($id): "<!-- shipcheck-finding:" + ($id | @uri) + " -->";
-          def legacy_review_gate_marker($id): "<!-- review-gate-finding:" + ($id | @uri) + " -->";
           .findings[]
           | select(.file != null and .line != null)
           | select((.confidence // 0) >= $min_confidence)
           | select((rank[.severity] // 99) <= (rank[$floor] // 2))
           | marker(.id) as $marker
-          | legacy_shipcheck_marker(.id) as $legacy_shipcheck_marker
-          | legacy_review_gate_marker(.id) as $legacy_review_gate_marker
           | select(
               ((($existing | add) // []) | index($marker)) == null
-              and (((($existing | add) // []) | index($legacy_shipcheck_marker)) == null)
-              and (((($existing | add) // []) | index($legacy_review_gate_marker)) == null)
             )
           | {
               path: .file,

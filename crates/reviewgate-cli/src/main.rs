@@ -22,10 +22,8 @@ const DEFAULT_CONTEXT_FILES: &[&str] = &[
     "PRODUCT.md",
     "STRUCTURE.md",
     ".reviewgate.yml",
-    ".shipcheck.yml",
 ];
 const DEFAULT_CONFIG_PATH: &str = ".reviewgate.yml";
-const LEGACY_CONFIG_PATH: &str = ".shipcheck.yml";
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
 
@@ -289,7 +287,7 @@ struct ReviewContext {
 
 fn review_pr(options: ReviewPrOptions) -> Result<()> {
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
-    let config_path = resolve_config_path(&repo, &options.config);
+    let config_path = resolve_repo_path(&repo, &options.config);
     let config_values = read_config_values(&config_path)?;
     let target_score = options
         .target_score
@@ -633,17 +631,6 @@ fn resolve_repo_path(repo: &Path, path: &Path) -> PathBuf {
     } else {
         repo.join(path)
     }
-}
-
-fn resolve_config_path(repo: &Path, config: &Path) -> PathBuf {
-    let config_path = resolve_repo_path(repo, config);
-    if config == Path::new(DEFAULT_CONFIG_PATH) && !config_path.exists() {
-        let legacy_config_path = repo.join(LEGACY_CONFIG_PATH);
-        if legacy_config_path.exists() {
-            return legacy_config_path;
-        }
-    }
-    config_path
 }
 
 fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
@@ -1148,41 +1135,6 @@ mod tests {
                 inline_min_severity: Some(Severity::P1),
             }
         );
-    }
-
-    #[test]
-    fn default_config_path_falls_back_to_legacy_shipcheck_config() {
-        let repo = std::env::temp_dir().join(format!(
-            "reviewgate-config-repo-{}-{}",
-            std::process::id(),
-            monotonic_nanos()
-        ));
-        fs::create_dir_all(&repo).expect("create temp repo");
-        let legacy_path = repo.join(LEGACY_CONFIG_PATH);
-        fs::write(&legacy_path, "review:\n  fail_under: 3\n").expect("write legacy config");
-
-        let resolved = resolve_config_path(&repo, Path::new(DEFAULT_CONFIG_PATH));
-        fs::remove_dir_all(&repo).ok();
-
-        assert_eq!(resolved, legacy_path);
-    }
-
-    #[test]
-    fn explicit_config_path_does_not_fall_back_to_legacy_shipcheck_config() {
-        let repo = std::env::temp_dir().join(format!(
-            "reviewgate-config-repo-explicit-{}-{}",
-            std::process::id(),
-            monotonic_nanos()
-        ));
-        fs::create_dir_all(&repo).expect("create temp repo");
-        let legacy_path = repo.join(LEGACY_CONFIG_PATH);
-        fs::write(&legacy_path, "review:\n  fail_under: 3\n").expect("write legacy config");
-
-        let explicit = Path::new("custom-reviewgate.yml");
-        let resolved = resolve_config_path(&repo, explicit);
-        fs::remove_dir_all(&repo).ok();
-
-        assert_eq!(resolved, repo.join(explicit));
     }
 
     #[test]

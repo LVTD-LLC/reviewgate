@@ -33,7 +33,7 @@ The action must update the existing PR summary comment containing `<!-- reviewga
 ## Inputs
 
 - `openrouter_api_key`: OpenRouter API key. Required for live review.
-- `config`: ReviewGate config path. Defaults to `.reviewgate.yml`; falls back to `.shipcheck.yml` during migration when the new default file is absent.
+- `config`: ReviewGate config path. Defaults to `.reviewgate.yml`.
 - `target_score`: Score required for a fully passing review. Defaults to `5`.
 - `fail_under`: Score floor that fails CI. Defaults to `4`.
 - `report_only`: Publish results without failing CI. Defaults to `false`.
