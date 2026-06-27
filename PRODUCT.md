@@ -1,16 +1,16 @@
 # Product Context
 
-Shipcheck is a free, fully open-source credibility project. The initial goal is adoption and trust among AI builders, open-source maintainers, solo builders, and small teams, not paid conversion.
+ReviewGate is a free, fully open-source credibility project. The initial goal is adoption and trust among AI builders, open-source maintainers, solo builders, and small teams, not paid conversion.
 
 ## Core User Story
 
 1. A maintainer installs the GitHub Action.
 2. They add `OPENROUTER_API_KEY` to GitHub Actions secrets.
-3. They optionally add `.shipcheck.yml`.
+3. They optionally add `.reviewgate.yml`.
 4. A PR opens or updates.
-5. Shipcheck posts one top-level summary comment with a clear `0-5` score.
-6. Shipcheck emits structured JSON for humans or external agent loops.
-7. Shipcheck posts inline comments only for specific, high-confidence issues.
+5. ReviewGate posts one top-level summary comment with a clear `0-5` score.
+6. ReviewGate emits structured JSON for humans or external agent loops.
+7. ReviewGate posts inline comments only for specific, high-confidence issues.
 8. A human or external agent fixes findings and pushes again until the review reaches the target score, ideally `5/5`.
 
 ## Durable Product Constraints
@@ -28,7 +28,7 @@ Shipcheck is a free, fully open-source credibility project. The initial goal is 
 
 ## Positioning
 
-Do not position Shipcheck as a generic open-source PR reviewer. The sharper wedge is score-gated review for agent-written PRs: score, rubric, canonical summary, check-run status, machine-readable findings, and agent-loop compatibility.
+Do not position ReviewGate as a generic open-source PR reviewer. The sharper wedge is score-gated review for agent-written PRs: score, rubric, canonical summary, check-run status, machine-readable findings, and agent-loop compatibility.
 
 ## Non-Goals For v0
 

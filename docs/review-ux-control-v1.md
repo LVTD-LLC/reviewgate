@@ -1,14 +1,14 @@
 # Review UX and Control v1
 
-Shipcheck's GitHub Action reviews pull requests and reports results. It must not run an autonomous repair loop inside CI.
+ReviewGate's GitHub Action reviews pull requests and reports results. It must not run an autonomous repair loop inside CI.
 
 The intended workflow is:
 
-1. Shipcheck reviews the PR diff and context.
-2. Shipcheck updates one canonical PR summary comment and writes a JSON artifact.
+1. ReviewGate reviews the PR diff and context.
+2. ReviewGate updates one canonical PR summary comment and writes a JSON artifact.
 3. A human or external coding agent reads the findings.
 4. The human or agent ships fixes.
-5. Shipcheck is rerun and updates the same summary.
+5. ReviewGate is rerun and updates the same summary.
 
 External agent loops can be documented and supported, but they are separate from the action's responsibility.
 
@@ -18,7 +18,7 @@ Default installation should remain low-headache:
 
 - Run on `pull_request` events for `opened`, `synchronize`, `reopened`, and `ready_for_review`.
 - Support `workflow_dispatch` for manual reruns.
-- Use the `shipcheck recheck` CLI helper to rerun the latest Shipcheck workflow run for a PR branch when GitHub CLI auth is available.
+- Use the `reviewgate recheck` CLI helper to rerun the latest ReviewGate workflow run for a PR branch when GitHub CLI auth is available.
 - Add PR comment or label-based recheck commands later if users want an in-GitHub control surface.
 
 Running on every push is acceptable as the simplest default while the project is early. It should remain configurable because some repos will prefer explicit reruns to control cost and noise.
@@ -57,7 +57,7 @@ The canonical summary should show:
 - Cumulative PR estimated cost.
 - Compact component history by stage/model.
 
-Shipcheck has no external database in the action-first architecture, so cumulative state should be stored in the canonical summary's hidden metadata and preserved on update.
+ReviewGate has no external database in the action-first architecture, so cumulative state should be stored in the canonical summary's hidden metadata and preserved on update.
 
 The summary now stores versioned hidden state with reviewed SHAs, run count, cumulative estimated cost, and bounded cost history. The visible summary remains human-readable; the hidden payload is for robust rerendering on later runs.
 

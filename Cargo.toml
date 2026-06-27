@@ -1,15 +1,15 @@
 [workspace]
 members = [
-  "crates/shipcheck-core",
-  "crates/shipcheck-cli",
-  "crates/shipcheck-github",
+  "crates/reviewgate-core",
+  "crates/reviewgate-cli",
+  "crates/reviewgate-github",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/LVTD-LLC/shipcheck"
+repository = "https://github.com/LVTD-LLC/reviewgate"
 rust-version = "1.96"
 
 [workspace.dependencies]

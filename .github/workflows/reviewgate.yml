@@ -1,4 +1,4 @@
-name: Shipcheck
+name: ReviewGate
 
 on:
   pull_request:
@@ -20,7 +20,7 @@ permissions:
   issues: write
 
 jobs:
-  shipcheck:
+  reviewgate:
     runs-on: ubuntu-latest
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -36,14 +36,14 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "Shipcheck skipped: OPENROUTER_API_KEY secret is not configured."
+            echo "ReviewGate skipped: OPENROUTER_API_KEY secret is not configured."
           fi
-      - name: Run Shipcheck
+      - name: Run ReviewGate
         if: steps.openrouter.outputs.configured == 'true'
         uses: ./
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-          config: .shipcheck.yml
+          config: .reviewgate.yml
           target_score: "5"
           fail_under: "4"
           summary_min_severity: ${{ inputs.summary_min_severity || 'P4' }}

@@ -1,9 +1,9 @@
 # Action Wrapper
 
-GitHub Action metadata lives at the repository root so users can install Shipcheck with:
+GitHub Action metadata lives at the repository root so users can install ReviewGate with:
 
 ```yaml
-- uses: LVTD-LLC/shipcheck@v0
+- uses: LVTD-LLC/reviewgate@v0
 ```
 
 Implementation scripts and release download helpers can live in this directory as the wrapper grows.
@@ -28,12 +28,12 @@ Required secret:
 OPENROUTER_API_KEY
 ```
 
-The action must update the existing PR summary comment containing `<!-- shipcheck-summary -->` instead of creating duplicate summary comments on every commit.
+The action must update the existing PR summary comment containing `<!-- reviewgate-summary -->` instead of creating duplicate summary comments on every commit.
 
 ## Inputs
 
 - `openrouter_api_key`: OpenRouter API key. Required for live review.
-- `config`: Shipcheck config path. Defaults to `.shipcheck.yml`.
+- `config`: ReviewGate config path. Defaults to `.reviewgate.yml`.
 - `target_score`: Score required for a fully passing review. Defaults to `5`.
 - `fail_under`: Score floor that fails CI. Defaults to `4`.
 - `report_only`: Publish results without failing CI. Defaults to `false`.
@@ -46,16 +46,16 @@ The action must update the existing PR summary comment containing `<!-- shipchec
 - `inline_min_confidence`: Minimum model confidence required for inline comments. Defaults to `0.80`.
 - `publish_inline_comments`: Whether eligible line-specific findings are posted as PR review comments. Defaults to `true`.
 
-`fail_under` controls gate behavior. It is not required for teams using Shipcheck only as a report; set `gate_mode: report` or the compatibility alias `report_only: "true"` for that mode.
+`fail_under` controls gate behavior. It is not required for teams using ReviewGate only as a report; set `gate_mode: report` or the compatibility alias `report_only: "true"` for that mode.
 
 ## Runtime
 
-The composite action runs the Rust CLI from the action checkout, writes `.shipcheck/review.json` and `.shipcheck/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, upserts one canonical PR summary comment, and posts eligible inline comments when running on a pull request.
+The composite action runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, upserts one canonical PR summary comment, and posts eligible inline comments when running on a pull request.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
 
-Inline comments are best-effort and deduped by hidden `<!-- shipcheck-finding:... -->` markers. If GitHub rejects a line comment because the line is no longer in the diff, the finding remains visible in the canonical summary and publishing continues.
+Inline comments are best-effort and deduped by hidden `<!-- reviewgate-finding:... -->` markers. If GitHub rejects a line comment because the line is no longer in the diff, the finding remains visible in the canonical summary and publishing continues.
 
 ## Trigger Guidance
 
-The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `shipcheck recheck` helper to rerun the latest Shipcheck workflow run for a PR branch.
+The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `reviewgate recheck` helper to rerun the latest ReviewGate workflow run for a PR branch.
