@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const SUMMARY_MARKER: &str = "<!-- shipcheck-summary -->";
-pub const SUMMARY_STATE_PREFIX: &str = "<!-- shipcheck-state ";
+pub const SUMMARY_MARKER: &str = "<!-- reviewgate-summary -->";
+pub const SUMMARY_STATE_PREFIX: &str = "<!-- reviewgate-state ";
 pub const SUMMARY_STATE_SUFFIX: &str = " -->";
-const LEGACY_SUMMARY_STATE_PREFIX: &str = "<!-- review-gate-state ";
+const LEGACY_SUMMARY_STATE_PREFIXES: &[&str] =
+    &["<!-- shipcheck-state ", "<!-- review-gate-state "];
 pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
 pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
@@ -12,7 +13,7 @@ pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const OPENROUTER_MODELS_PATH: &str = "/models";
 
 #[derive(Debug, Error)]
-pub enum ShipcheckError {
+pub enum ReviewGateError {
     #[error("score must be between 0 and 5, got {0}")]
     InvalidScore(u8),
     #[error("confidence must be between 0 and 1, got {0}")]
@@ -61,14 +62,14 @@ pub enum Severity {
 }
 
 impl Severity {
-    pub fn parse(value: &str) -> Result<Self, ShipcheckError> {
+    pub fn parse(value: &str) -> Result<Self, ReviewGateError> {
         match value.trim().to_ascii_uppercase().as_str() {
             "P0" => Ok(Severity::P0),
             "P1" => Ok(Severity::P1),
             "P2" => Ok(Severity::P2),
             "P3" => Ok(Severity::P3),
             "P4" => Ok(Severity::P4),
-            _ => Err(ShipcheckError::InvalidSeverity(value.to_string())),
+            _ => Err(ReviewGateError::InvalidSeverity(value.to_string())),
         }
     }
 
@@ -114,11 +115,11 @@ impl Finding {
         self.severity.score_ceiling() < fail_under
     }
 
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         if (0.0..=1.0).contains(&self.confidence) {
             Ok(())
         } else {
-            Err(ShipcheckError::InvalidConfidence(self.confidence))
+            Err(ReviewGateError::InvalidConfidence(self.confidence))
         }
     }
 }
@@ -133,12 +134,12 @@ pub struct CostComponent {
 }
 
 impl CostComponent {
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.label.trim().is_empty() {
-            return Err(ShipcheckError::InvalidCostComponent { field: "label" });
+            return Err(ReviewGateError::InvalidCostComponent { field: "label" });
         }
         if self.model.trim().is_empty() {
-            return Err(ShipcheckError::InvalidCostComponent { field: "model" });
+            return Err(ReviewGateError::InvalidCostComponent { field: "model" });
         }
         validate_estimated_cost(self.estimated_cost_usd)
     }
@@ -177,7 +178,7 @@ pub struct ReviewMetrics {
 }
 
 impl ReviewMetrics {
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         if let Some(cost) = self.current_run_cost_usd {
             validate_estimated_cost(cost)?;
         }
@@ -194,7 +195,7 @@ pub struct CostSummary {
 }
 
 impl CostSummary {
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         validate_estimated_cost(self.current_run_usd)?;
         for component in &self.components {
             component.validate()?;
@@ -213,24 +214,24 @@ pub struct ReviewStage {
 }
 
 impl ReviewStage {
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.name.trim().is_empty() {
-            return Err(ShipcheckError::InvalidCostComponent {
+            return Err(ReviewGateError::InvalidCostComponent {
                 field: "stage.name",
             });
         }
         if self.model.trim().is_empty() {
-            return Err(ShipcheckError::InvalidCostComponent {
+            return Err(ReviewGateError::InvalidCostComponent {
                 field: "stage.model",
             });
         }
         if self.status.trim().is_empty() {
-            return Err(ShipcheckError::InvalidCostComponent {
+            return Err(ReviewGateError::InvalidCostComponent {
                 field: "stage.status",
             });
         }
         if self.reason.trim().is_empty() {
-            return Err(ShipcheckError::InvalidCostComponent {
+            return Err(ReviewGateError::InvalidCostComponent {
                 field: "stage.reason",
             });
         }
@@ -262,12 +263,12 @@ pub struct ReviewArtifact {
 }
 
 impl ReviewArtifact {
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         validate_score(self.score)?;
         validate_score(self.target_score)?;
         validate_score(self.fail_under)?;
         if self.fail_under > self.target_score {
-            return Err(ShipcheckError::InvalidThreshold {
+            return Err(ReviewGateError::InvalidThreshold {
                 fail_under: self.fail_under,
                 target_score: self.target_score,
             });
@@ -290,7 +291,7 @@ impl ReviewArtifact {
         Ok(())
     }
 
-    pub fn with_computed_score(mut self) -> Result<Self, ShipcheckError> {
+    pub fn with_computed_score(mut self) -> Result<Self, ReviewGateError> {
         self.score = compute_score(&self.findings);
         self.status = if self.score < self.fail_under {
             ReviewStatus::Failed
@@ -304,19 +305,19 @@ impl ReviewArtifact {
     }
 }
 
-pub fn validate_score(score: u8) -> Result<(), ShipcheckError> {
+pub fn validate_score(score: u8) -> Result<(), ReviewGateError> {
     if score <= 5 {
         Ok(())
     } else {
-        Err(ShipcheckError::InvalidScore(score))
+        Err(ReviewGateError::InvalidScore(score))
     }
 }
 
-pub fn validate_estimated_cost(cost: f64) -> Result<(), ShipcheckError> {
+pub fn validate_estimated_cost(cost: f64) -> Result<(), ReviewGateError> {
     if cost.is_finite() && cost >= 0.0 {
         Ok(())
     } else {
-        Err(ShipcheckError::InvalidEstimatedCost(cost))
+        Err(ReviewGateError::InvalidEstimatedCost(cost))
     }
 }
 
@@ -383,7 +384,7 @@ impl ModelPricing {
         &self,
         prompt_tokens: u64,
         completion_tokens: u64,
-    ) -> Result<f64, ShipcheckError> {
+    ) -> Result<f64, ReviewGateError> {
         validate_estimated_cost(self.prompt_usd_per_million)?;
         validate_estimated_cost(self.completion_usd_per_million)?;
         Ok(
@@ -415,7 +416,7 @@ pub fn estimate_model_cost_usd(
     model: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
-) -> Result<Option<f64>, ShipcheckError> {
+) -> Result<Option<f64>, ReviewGateError> {
     fallback_model_pricing(model)
         .map(|pricing| pricing.estimate_cost_usd(prompt_tokens, completion_tokens))
         .transpose()
@@ -424,7 +425,7 @@ pub fn estimate_model_cost_usd(
 pub fn parse_openrouter_model_pricing(
     models_response: &serde_json::Value,
     model: &str,
-) -> Result<Option<ModelPricing>, ShipcheckError> {
+) -> Result<Option<ModelPricing>, ReviewGateError> {
     let Some(models) = models_response
         .get("data")
         .and_then(serde_json::Value::as_array)
@@ -453,19 +454,19 @@ pub fn parse_openrouter_model_pricing(
     Ok(None)
 }
 
-fn parse_openrouter_price(value: Option<&serde_json::Value>) -> Result<f64, ShipcheckError> {
+fn parse_openrouter_price(value: Option<&serde_json::Value>) -> Result<f64, ReviewGateError> {
     let Some(value) = value else {
-        return Err(ShipcheckError::InvalidModelPricing(
+        return Err(ReviewGateError::InvalidModelPricing(
             "missing pricing field".to_string(),
         ));
     };
     let price = if let Some(raw) = value.as_str() {
         raw.parse::<f64>()
-            .map_err(|error| ShipcheckError::InvalidModelPricing(error.to_string()))?
+            .map_err(|error| ReviewGateError::InvalidModelPricing(error.to_string()))?
     } else if let Some(raw) = value.as_f64() {
         raw
     } else {
-        return Err(ShipcheckError::InvalidModelPricing(
+        return Err(ReviewGateError::InvalidModelPricing(
             "pricing field must be a string or number".to_string(),
         ));
     };
@@ -487,9 +488,9 @@ pub struct SummaryCostRun {
 }
 
 impl SummaryCostRun {
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.reviewed_sha.trim().is_empty() {
-            return Err(ShipcheckError::InvalidSummaryState(
+            return Err(ReviewGateError::InvalidSummaryState(
                 "cost run reviewed_sha must not be empty".to_string(),
             ));
         }
@@ -512,7 +513,7 @@ impl SummaryState {
         artifact: &ReviewArtifact,
         previous: Option<&SummaryState>,
         history_limit: usize,
-    ) -> Result<Self, ShipcheckError> {
+    ) -> Result<Self, ReviewGateError> {
         let current_cost = artifact
             .cost_summary
             .as_ref()
@@ -562,15 +563,15 @@ impl SummaryState {
         Ok(state)
     }
 
-    pub fn validate(&self) -> Result<(), ShipcheckError> {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.version != 1 {
-            return Err(ShipcheckError::InvalidSummaryState(format!(
+            return Err(ReviewGateError::InvalidSummaryState(format!(
                 "unsupported version {}",
                 self.version
             )));
         }
         if self.last_reviewed_sha.trim().is_empty() {
-            return Err(ShipcheckError::InvalidSummaryState(
+            return Err(ReviewGateError::InvalidSummaryState(
                 "last_reviewed_sha must not be empty".to_string(),
             ));
         }
@@ -707,7 +708,7 @@ impl OpenRouterChatRequest {
             model: config.model.clone(),
             messages: vec![
                 OpenRouterMessage::system(
-                    "You are Shipcheck. Return concise, actionable PR review findings.",
+                    "You are ReviewGate. Return concise, actionable PR review findings.",
                 ),
                 OpenRouterMessage::user(prompt),
             ],
@@ -749,8 +750,9 @@ impl<T: OpenRouterTransport> OpenRouterClient<T> {
     }
 }
 
-pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, ShipcheckError> {
-    let Some((start, prefix)) = [SUMMARY_STATE_PREFIX, LEGACY_SUMMARY_STATE_PREFIX]
+pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, ReviewGateError> {
+    let Some((start, prefix)) = std::iter::once(SUMMARY_STATE_PREFIX)
+        .chain(LEGACY_SUMMARY_STATE_PREFIXES.iter().copied())
         .into_iter()
         .find_map(|prefix| summary.find(prefix).map(|start| (start, prefix)))
     else {
@@ -758,19 +760,19 @@ pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, Ship
     };
     let state_start = start + prefix.len();
     let Some(relative_end) = summary[state_start..].find(SUMMARY_STATE_SUFFIX) else {
-        return Err(ShipcheckError::InvalidSummaryState(
+        return Err(ReviewGateError::InvalidSummaryState(
             "missing state comment suffix".to_string(),
         ));
     };
     let state_end = state_start + relative_end;
     let raw = &summary[state_start..state_end];
     let state: SummaryState = serde_json::from_str(raw)
-        .map_err(|error| ShipcheckError::InvalidSummaryState(error.to_string()))?;
+        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
     state.validate()?;
     Ok(Some(state))
 }
 
-pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ShipcheckError> {
+pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateError> {
     render_summary_with_options(artifact, SummaryOptions::default(), None)
 }
 
@@ -778,11 +780,11 @@ pub fn render_summary_with_options(
     artifact: &ReviewArtifact,
     options: SummaryOptions,
     previous_state: Option<&SummaryState>,
-) -> Result<String, ShipcheckError> {
+) -> Result<String, ReviewGateError> {
     artifact.validate()?;
     let state = SummaryState::for_artifact(artifact, previous_state, options.cost_history_limit)?;
     let state_json = serde_json::to_string(&state)
-        .map_err(|error| ShipcheckError::InvalidSummaryState(error.to_string()))?;
+        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
 
     let mut output = String::new();
     output.push_str(SUMMARY_MARKER);
@@ -791,7 +793,7 @@ pub fn render_summary_with_options(
     output.push_str(&state_json);
     output.push_str(SUMMARY_STATE_SUFFIX);
     output.push_str("\n\n");
-    output.push_str(&format!("# Shipcheck: {}/5\n\n", artifact.score));
+    output.push_str(&format!("# ReviewGate: {}/5\n\n", artifact.score));
     output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
     output.push_str(&format!("Status: `{}`  \n", artifact.status.as_str()));
     output.push_str(&format!("Target: {}/5  \n", artifact.target_score));
@@ -931,7 +933,7 @@ pub fn render_summary_with_options(
         .collect();
     if visible_findings.is_empty() {
         output.push_str(
-            "No visible findings remain at the configured summary severity floor. Re-run Shipcheck if new commits land.\n",
+            "No visible findings remain at the configured summary severity floor. Re-run ReviewGate if new commits land.\n",
         );
     } else {
         for (index, finding) in visible_findings.iter().enumerate() {
@@ -948,9 +950,9 @@ pub fn render_summary_with_options(
         }
         output.push('\n');
         if blocking.is_empty() {
-            output.push_str("Re-run Shipcheck after pushing if new commits land.\n");
+            output.push_str("Re-run ReviewGate after pushing if new commits land.\n");
         } else {
-            output.push_str("Fix the blocking findings first. Re-run Shipcheck after pushing.\n");
+            output.push_str("Fix the blocking findings first. Re-run ReviewGate after pushing.\n");
         }
     }
 
@@ -1041,7 +1043,7 @@ mod tests {
 
         let summary = render_summary(&artifact).expect("summary renders");
         assert!(summary.starts_with(SUMMARY_MARKER));
-        assert!(summary.contains("# Shipcheck: 4/5"));
+        assert!(summary.contains("# ReviewGate: 4/5"));
     }
 
     #[test]
@@ -1142,6 +1144,26 @@ mod tests {
         let state = extract_summary_state(summary)
             .expect("legacy state parses")
             .expect("legacy state exists");
+
+        assert_eq!(state.last_reviewed_sha, "abc123");
+        assert_eq!(state.run_count, 1);
+        assert!((state.cumulative_cost_usd - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parses_shipcheck_summary_state_after_rename() {
+        let summary = concat!(
+            "<!-- shipcheck-summary -->\n\n",
+            "<!-- shipcheck-state {\"version\":1,\"last_reviewed_sha\":\"abc123\",",
+            "\"reviewed_shas\":[\"abc123\"],\"run_count\":1,",
+            "\"cumulative_cost_usd\":0.01,\"cost_history\":[",
+            "{\"reviewed_sha\":\"abc123\",\"cost_usd\":0.01}]} -->\n\n",
+            "# Shipcheck: 5/5\n"
+        );
+
+        let state = extract_summary_state(summary)
+            .expect("shipcheck state parses")
+            .expect("shipcheck state exists");
 
         assert_eq!(state.last_reviewed_sha, "abc123");
         assert_eq!(state.run_count, 1);
@@ -1274,7 +1296,7 @@ mod tests {
 
         assert!(matches!(
             artifact.validate(),
-            Err(ShipcheckError::InvalidCostComponent { field: "model" })
+            Err(ReviewGateError::InvalidCostComponent { field: "model" })
         ));
     }
 
@@ -1344,7 +1366,7 @@ mod tests {
         let summary = render_summary(&artifact).expect("summary renders");
 
         assert!(summary.contains("1. P3: Clarify the README example."));
-        assert!(summary.contains("Re-run Shipcheck after pushing if new commits land."));
+        assert!(summary.contains("Re-run ReviewGate after pushing if new commits land."));
         assert!(!summary.contains("Fix the blocking findings first."));
     }
 
@@ -1438,7 +1460,7 @@ mod tests {
 
         assert!(matches!(
             artifact.validate(),
-            Err(ShipcheckError::InvalidThreshold {
+            Err(ReviewGateError::InvalidThreshold {
                 fail_under: 4,
                 target_score: 2
             })
@@ -1474,7 +1496,7 @@ mod tests {
 
         assert!(matches!(
             artifact.validate(),
-            Err(ShipcheckError::InvalidConfidence(value)) if value == 1.2
+            Err(ReviewGateError::InvalidConfidence(value)) if value == 1.2
         ));
     }
 
@@ -1498,7 +1520,7 @@ mod tests {
 
         assert!(matches!(
             artifact.validate(),
-            Err(ShipcheckError::InvalidEstimatedCost(value)) if value == -0.01
+            Err(ReviewGateError::InvalidEstimatedCost(value)) if value == -0.01
         ));
     }
 

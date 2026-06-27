@@ -6,7 +6,7 @@ use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use shipcheck_core::{
+use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
     OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
     Severity, SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
@@ -21,13 +21,16 @@ const DEFAULT_CONTEXT_FILES: &[&str] = &[
     "TECH.md",
     "PRODUCT.md",
     "STRUCTURE.md",
+    ".reviewgate.yml",
     ".shipcheck.yml",
 ];
+const DEFAULT_CONFIG_PATH: &str = ".reviewgate.yml";
+const LEGACY_CONFIG_PATH: &str = ".shipcheck.yml";
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
 
 #[derive(Debug, Parser)]
-#[command(name = "shipcheck")]
+#[command(name = "reviewgate")]
 #[command(about = "Open-source AI pre-merge checks for agent-written PRs")]
 struct Cli {
     #[command(subcommand)]
@@ -45,11 +48,11 @@ enum Command {
         #[arg(long)]
         summary_out: Option<PathBuf>,
     },
-    /// Review the current pull request checkout and write Shipcheck artifacts.
+    /// Review the current pull request checkout and write ReviewGate artifacts.
     ReviewPr {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        #[arg(long, default_value = ".shipcheck.yml")]
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
         config: PathBuf,
         #[arg(long)]
         json_out: Option<PathBuf>,
@@ -89,13 +92,13 @@ enum Command {
         #[arg(long)]
         inline_min_severity: Option<String>,
     },
-    /// Re-run the latest Shipcheck workflow run for a pull request branch.
+    /// Re-run the latest ReviewGate workflow run for a pull request branch.
     Recheck {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         pr: Option<String>,
-        #[arg(long, default_value = "Shipcheck")]
+        #[arg(long, default_value = "ReviewGate")]
         workflow: String,
     },
     /// Evaluate committed review artifact fixtures without publishing anything.
@@ -286,7 +289,7 @@ struct ReviewContext {
 
 fn review_pr(options: ReviewPrOptions) -> Result<()> {
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
-    let config_path = resolve_repo_path(&repo, &options.config);
+    let config_path = resolve_config_path(&repo, &options.config);
     let config_values = read_config_values(&config_path)?;
     let target_score = options
         .target_score
@@ -558,7 +561,7 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> Result<()> {
         .get("url")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    println!("Triggered Shipcheck recheck for PR #{pr_number} {pr_url}");
+    println!("Triggered ReviewGate recheck for PR #{pr_number} {pr_url}");
     if !run_url.is_empty() {
         println!("Rerun: {run_url}");
     }
@@ -630,6 +633,17 @@ fn resolve_repo_path(repo: &Path, path: &Path) -> PathBuf {
     } else {
         repo.join(path)
     }
+}
+
+fn resolve_config_path(repo: &Path, config: &Path) -> PathBuf {
+    let config_path = resolve_repo_path(repo, config);
+    if config == Path::new(DEFAULT_CONFIG_PATH) && !config_path.exists() {
+        let legacy_config_path = repo.join(LEGACY_CONFIG_PATH);
+        if legacy_config_path.exists() {
+            return legacy_config_path;
+        }
+    }
+    config_path
 }
 
 fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
@@ -807,7 +821,7 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
 }
 
 fn build_review_prompt(context: &ReviewContext, target_score: u8, fail_under: u8) -> String {
-    let schema = include_str!("../../../schemas/shipcheck-review-output.schema.json");
+    let schema = include_str!("../../../schemas/reviewgate-review-output.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
@@ -854,7 +868,7 @@ fn call_openrouter_with_curl(
     prompt: &str,
 ) -> Result<OpenRouterCompletion> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body_path = unique_temp_path("shipcheck-openrouter-body", "json");
+    let body_path = unique_temp_path("reviewgate-openrouter-body", "json");
     let body = serde_json::json!({
         "model": model,
         "temperature": 0,
@@ -862,7 +876,7 @@ fn call_openrouter_with_curl(
         "messages": [
             {
                 "role": "system",
-                "content": "You are Shipcheck. Return concise, high-confidence PR review findings as strict JSON."
+                "content": "You are ReviewGate. Return concise, high-confidence PR review findings as strict JSON."
             },
             {
                 "role": "user",
@@ -992,7 +1006,7 @@ fn apply_usage_cost_summary(
         cost
     } else {
         artifact.notes.push(format!(
-            "OpenRouter returned token usage for `{model}`, but Shipcheck has no pricing fallback for that model."
+            "OpenRouter returned token usage for `{model}`, but ReviewGate has no pricing fallback for that model."
         ));
         return;
     };
@@ -1039,7 +1053,7 @@ fn parse_model_artifact(raw: &str) -> Result<ReviewArtifact> {
     let trimmed = strip_json_fence(raw.trim());
     serde_json::from_str(trimmed)
         .or_else(|_| extract_review_artifact_json(trimmed))
-        .context("model response was not a valid Shipcheck artifact")
+        .context("model response was not a valid ReviewGate artifact")
 }
 
 fn strip_json_fence(raw: &str) -> &str {
@@ -1119,7 +1133,7 @@ mod tests {
     fn parses_simple_review_config_values() {
         let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n  summary_min_severity: P2\n  inline_min_severity: P1\n";
         let path =
-            std::env::temp_dir().join(format!("shipcheck-config-test-{}.yml", std::process::id()));
+            std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
 
         let values = read_config_values(&path).expect("parse config");
@@ -1134,6 +1148,41 @@ mod tests {
                 inline_min_severity: Some(Severity::P1),
             }
         );
+    }
+
+    #[test]
+    fn default_config_path_falls_back_to_legacy_shipcheck_config() {
+        let repo = std::env::temp_dir().join(format!(
+            "reviewgate-config-repo-{}-{}",
+            std::process::id(),
+            monotonic_nanos()
+        ));
+        fs::create_dir_all(&repo).expect("create temp repo");
+        let legacy_path = repo.join(LEGACY_CONFIG_PATH);
+        fs::write(&legacy_path, "review:\n  fail_under: 3\n").expect("write legacy config");
+
+        let resolved = resolve_config_path(&repo, Path::new(DEFAULT_CONFIG_PATH));
+        fs::remove_dir_all(&repo).ok();
+
+        assert_eq!(resolved, legacy_path);
+    }
+
+    #[test]
+    fn explicit_config_path_does_not_fall_back_to_legacy_shipcheck_config() {
+        let repo = std::env::temp_dir().join(format!(
+            "reviewgate-config-repo-explicit-{}-{}",
+            std::process::id(),
+            monotonic_nanos()
+        ));
+        fs::create_dir_all(&repo).expect("create temp repo");
+        let legacy_path = repo.join(LEGACY_CONFIG_PATH);
+        fs::write(&legacy_path, "review:\n  fail_under: 3\n").expect("write legacy config");
+
+        let explicit = Path::new("custom-reviewgate.yml");
+        let resolved = resolve_config_path(&repo, explicit);
+        fs::remove_dir_all(&repo).ok();
+
+        assert_eq!(resolved, repo.join(explicit));
     }
 
     #[test]
@@ -1304,7 +1353,7 @@ Thanks {also not json}."#;
         assert!(prompt.contains("reviewed_sha: abc123"));
         assert!(prompt.contains("target_score: 5"));
         assert!(prompt.contains("fail_under: 4"));
-        assert!(prompt.contains("Shipcheck Review Output"));
+        assert!(prompt.contains("ReviewGate Review Output"));
         assert!(prompt.contains("diff --git"));
     }
 

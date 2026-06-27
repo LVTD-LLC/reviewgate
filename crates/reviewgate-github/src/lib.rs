@@ -1,9 +1,11 @@
-use shipcheck_core::{Finding, SUMMARY_MARKER, SecretString, Severity};
+use reviewgate_core::{Finding, SUMMARY_MARKER, SecretString, Severity};
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
-pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- shipcheck-finding:";
-const LEGACY_SUMMARY_MARKER: &str = "<!-- review-gate-summary -->";
-const LEGACY_INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- review-gate-finding:";
+pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
+const LEGACY_SUMMARY_MARKERS: &[&str] =
+    &["<!-- shipcheck-summary -->", "<!-- review-gate-summary -->"];
+const LEGACY_INLINE_COMMENT_MARKER_PREFIXES: &[&str] =
+    &["<!-- shipcheck-finding:", "<!-- review-gate-finding:"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingSummaryComment {
@@ -15,7 +17,10 @@ pub fn find_summary_comment(
     comments: &[ExistingSummaryComment],
 ) -> Option<&ExistingSummaryComment> {
     comments.iter().find(|comment| {
-        comment.body.contains(SUMMARY_MARKER) || comment.body.contains(LEGACY_SUMMARY_MARKER)
+        comment.body.contains(SUMMARY_MARKER)
+            || LEGACY_SUMMARY_MARKERS
+                .iter()
+                .any(|marker| comment.body.contains(marker))
     })
 }
 
@@ -125,11 +130,11 @@ pub fn inline_comment_marker(finding_id: &str) -> String {
     )
 }
 
-fn legacy_inline_comment_marker(finding_id: &str) -> String {
-    format!(
-        "{LEGACY_INLINE_COMMENT_MARKER_PREFIX}{} -->",
-        encode_marker_payload(finding_id)
-    )
+fn legacy_inline_comment_markers(finding_id: &str) -> Vec<String> {
+    LEGACY_INLINE_COMMENT_MARKER_PREFIXES
+        .iter()
+        .map(|prefix| format!("{prefix}{} -->", encode_marker_payload(finding_id)))
+        .collect()
 }
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
@@ -166,9 +171,12 @@ pub fn plan_inline_comment_drafts(
             let path = finding.file.as_ref()?;
             let line = finding.line?;
             let marker = inline_comment_marker(&finding.id);
-            let legacy_marker = legacy_inline_comment_marker(&finding.id);
+            let legacy_markers = legacy_inline_comment_markers(&finding.id);
             if existing_comments.iter().any(|comment| {
-                comment.body.contains(&marker) || comment.body.contains(&legacy_marker)
+                comment.body.contains(&marker)
+                    || legacy_markers
+                        .iter()
+                        .any(|legacy_marker| comment.body.contains(legacy_marker))
             }) {
                 return None;
             }
@@ -190,7 +198,7 @@ mod tests {
     fn finds_canonical_summary_comment_by_marker() {
         let comments = vec![ExistingSummaryComment {
             id: 1,
-            body: format!("{}\n# Shipcheck: 4/5", SUMMARY_MARKER),
+            body: format!("{}\n# ReviewGate: 4/5", SUMMARY_MARKER),
         }];
 
         assert_eq!(
@@ -213,13 +221,26 @@ mod tests {
     }
 
     #[test]
+    fn finds_shipcheck_summary_comment_after_rename() {
+        let comments = vec![ExistingSummaryComment {
+            id: 1,
+            body: "<!-- shipcheck-summary -->\n# Shipcheck: 4/5".to_string(),
+        }];
+
+        assert_eq!(
+            find_summary_comment(&comments).map(|comment| comment.id),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn plans_create_when_summary_comment_is_missing() {
-        let action = plan_summary_comment_upsert(&[], format!("{SUMMARY_MARKER}\n# Shipcheck"));
+        let action = plan_summary_comment_upsert(&[], format!("{SUMMARY_MARKER}\n# ReviewGate"));
 
         assert_eq!(
             action,
             SummaryCommentAction::Create {
-                body: format!("{SUMMARY_MARKER}\n# Shipcheck")
+                body: format!("{SUMMARY_MARKER}\n# ReviewGate")
             }
         );
     }
@@ -228,24 +249,24 @@ mod tests {
     fn plans_update_when_summary_comment_exists_with_old_body() {
         let comments = vec![ExistingSummaryComment {
             id: 42,
-            body: format!("{SUMMARY_MARKER}\n# Shipcheck: 3/5"),
+            body: format!("{SUMMARY_MARKER}\n# ReviewGate: 3/5"),
         }];
 
         let action =
-            plan_summary_comment_upsert(&comments, format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5"));
+            plan_summary_comment_upsert(&comments, format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5"));
 
         assert_eq!(
             action,
             SummaryCommentAction::Update {
                 id: 42,
-                body: format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5")
+                body: format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5")
             }
         );
     }
 
     #[test]
     fn plans_noop_when_summary_comment_body_matches() {
-        let body = format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5");
+        let body = format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5");
         let comments = vec![ExistingSummaryComment {
             id: 42,
             body: body.clone(),
@@ -282,20 +303,20 @@ mod tests {
         let mut client = MockSummaryCommentClient::default();
         let comments = vec![ExistingSummaryComment {
             id: 42,
-            body: format!("{SUMMARY_MARKER}\n# Shipcheck: 4/5"),
+            body: format!("{SUMMARY_MARKER}\n# ReviewGate: 4/5"),
         }];
 
         let id = upsert_summary_comment(
             &mut client,
             &comments,
-            format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5"),
+            format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5"),
         )
         .expect("mock update succeeds");
 
         assert_eq!(id, 42);
         assert_eq!(
             client.updated,
-            Some((42, format!("{SUMMARY_MARKER}\n# Shipcheck: 5/5")))
+            Some((42, format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5")))
         );
         assert_eq!(client.created_body, None);
     }
@@ -395,14 +416,36 @@ mod tests {
     }
 
     #[test]
+    fn dedupes_shipcheck_inline_markers_after_rename() {
+        let finding = Finding {
+            id: "rg_dup".to_string(),
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "Already posted".to_string(),
+            detail: None,
+            agent_instruction: "No duplicate.".to_string(),
+        };
+        let existing = ExistingInlineComment {
+            id: 9,
+            body: "<!-- shipcheck-finding:rg_dup -->".to_string(),
+        };
+
+        let drafts = plan_inline_comment_drafts(&[finding], &[existing], Severity::P2, 0.8);
+
+        assert!(drafts.is_empty());
+    }
+
+    #[test]
     fn inline_marker_payload_round_trips_schema_valid_ids() {
         assert_eq!(
             inline_comment_marker("missing auth check"),
-            "<!-- shipcheck-finding:missing%20auth%20check -->"
+            "<!-- reviewgate-finding:missing%20auth%20check -->"
         );
         assert_eq!(
             inline_comment_marker("A-->B\nC"),
-            "<!-- shipcheck-finding:A--%3EB%0AC -->"
+            "<!-- reviewgate-finding:A--%3EB%0AC -->"
         );
     }
 

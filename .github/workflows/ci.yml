@@ -19,4 +19,4 @@ jobs:
       - run: cargo audit
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
-      - run: cargo run --locked -p shipcheck-cli -- fixture-review --input fixtures/simple-review.json --json-out .shipcheck/review.json --summary-out .shipcheck/summary.md
+      - run: cargo run --locked -p reviewgate-cli -- fixture-review --input fixtures/simple-review.json --json-out .reviewgate/review.json --summary-out .reviewgate/summary.md

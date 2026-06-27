@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+- Renamed the product, action, CLI, Rust crates, config/artifact paths, workflow, schema, docs, and public agent-loop skill from Shipcheck to ReviewGate.
+- Added fallback support for existing `.shipcheck.yml` configs when the new default `.reviewgate.yml` is absent.
+- Preserved legacy `shipcheck` and `review-gate` summary/state/inline marker recognition so existing PR comments continue to update in place during migration.
 - Added blue Marketplace branding with a shield icon for the GitHub Action listing.
-- Renamed the GitHub Action display name to `Shipcheck` for Marketplace uniqueness.
+- Renamed the GitHub Action display name to `ReviewGate` for Marketplace uniqueness.
 - Encoded inline finding marker payloads so every schema-valid finding ID dedupes safely across reruns.
 - Added best-effort inline PR comment publishing with stable finding markers, dedupe, configurable severity/confidence floors, and unmappable-line fallback.
 - Added review-stage metadata, stage selection, and offline fixture evaluation support.
@@ -12,20 +15,20 @@
 - Added review metrics to artifacts, schemas, and canonical summaries.
 - Added bounded model-output JSON repair for prose-wrapped review artifacts.
 - Added explicit gate mode semantics for report-only versus job-failing reviews.
-- Added configurable summary/inline severity floors, a `shipcheck recheck` helper, and hidden summary state for bounded cumulative PR cost/run history.
+- Added configurable summary/inline severity floors, a `reviewgate recheck` helper, and hidden summary state for bounded cumulative PR cost/run history.
 - Added Review UX and Control v1 dogfood notes and design guidance for review-only semantics, trigger/recheck choices, model defaults, cost display, severity visibility, and secure workflow behavior.
 - Added `P0` severity support, structured cost summary metadata, and cost rendering in canonical summaries.
 - Updated OpenRouter preset defaults to prefer price-to-value models: `qwen/qwen3-coder` for cheap and `deepseek/deepseek-v4-flash` for balanced.
 - Added the first live `review-pr` CLI path for PR diff/context collection, OpenRouter artifact parsing, summary/artifact output, configurable exit semantics, and mock-artifact dry runs.
 - Wired the GitHub Action to run the live CLI path, publish a step summary, and upsert one canonical PR summary comment.
-- Added a dogfood Shipcheck workflow and v0.1.0 release-readiness checklist.
+- Added a dogfood ReviewGate workflow and v0.1.0 release-readiness checklist.
 - Hardened curl-based OpenRouter calls so secrets and large request bodies are not passed through process arguments.
 - Added OpenRouter BYOK model-client boundary types with redacted secret handling, explicit model presets, and mocked transport tests.
 - Added GitHub canonical summary upsert planning with create/update/no-op behavior and mocked publisher tests.
 - Expanded the public agent-loop contract for JSON artifacts, canonical summary fallback, status handling, and stop conditions.
-- Added Rust-side review artifact validation, summary status output, lockfile audit/provenance documentation, and cleaned Shipcheck context file references.
+- Added Rust-side review artifact validation, summary status output, lockfile audit/provenance documentation, and cleaned ReviewGate context file references.
 - Kept docs, agent workflow guidance, CI commands, and summary rendering aligned with Rust 1.96, Rust 2024, locked dependency use, and dynamic fail-under thresholds.
 - Aligned the review artifact status computation and CLI exit behavior with the configured fail-under threshold, and pinned CI setup to auditable toolchain inputs.
 - Added repo steering files for coding agents, product constraints, technical context, and repository structure.
 - Addressed PR review feedback by surfacing agent instructions in summaries, making severity scoring explicit, and removing an unused YAML dependency.
-- Created the initial Shipcheck Rust workspace, CLI, GitHub Action scaffold, schemas, prompts, and deterministic fixture milestone.
+- Created the initial ReviewGate Rust workspace, CLI, GitHub Action scaffold, schemas, prompts, and deterministic fixture milestone.
