@@ -5,6 +5,7 @@
 - Changed the default canonical PR summary to concise output with a compact verdict/status line, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 - Fixed concise summaries to keep line-specific fallback findings visible when inline PR comments are disabled or cannot be published.
 - Fixed action enforcement so summary publishing failures cannot skip the configured score gate.
+- Fixed action summary rendering to fall back to concise mode when `summary_style` is explicitly passed empty.
 - Added `summary_style: concise|detailed` and `inline_min_confidence` support in config/action/CLI summary rendering, with detailed mode preserving full cost, metrics, findings, notes, and agent-instruction sections.
 - Added a `ReviewGate: running` PR placeholder comment that is replaced by the final canonical summary when review completes.
 - Made canonical summary publishing failures visible by failing the publish step with an Actions error instead of hiding them behind `continue-on-error`.

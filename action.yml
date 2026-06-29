@@ -170,6 +170,9 @@ runs:
         REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
       run: |
         set -euo pipefail
+        if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then
+          REVIEWGATE_SUMMARY_STYLE=concise
+        fi
         args=(
           run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
           -p reviewgate-cli -- review-pr
@@ -320,6 +323,9 @@ runs:
         REVIEWGATE_INLINE_COMMENTS_AVAILABLE: ${{ steps.inline-comments.outputs.inline_available || 'true' }}
       run: |
         set -euo pipefail
+        if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then
+          REVIEWGATE_SUMMARY_STYLE=concise
+        fi
         on_summary_publish_error() {
           status=$?
           echo "::error title=ReviewGate summary publish failed::Could not publish the canonical ReviewGate summary comment. Check pull-request/issues permissions and the GitHub API error above." >&2

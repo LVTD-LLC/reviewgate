@@ -1328,6 +1328,7 @@ mod tests {
         assert!(action.contains("grep -m1 -o '<!-- reviewgate-state .* -->'"));
         assert!(action.contains("summary_style:"));
         assert!(action.contains("default: concise"));
+        assert!(action.contains("REVIEWGATE_SUMMARY_STYLE=concise"));
         assert!(action.contains("publish_inline_comments:"));
         assert!(action.contains("default: \"true\""));
 
