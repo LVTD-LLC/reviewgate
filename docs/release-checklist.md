@@ -10,6 +10,7 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 - `cargo audit` passes.
 - The ReviewGate dogfood workflow runs on a real PR with `OPENROUTER_API_KEY` configured.
 - The action updates one canonical PR summary comment on rerun instead of creating duplicates.
+- After moving the `v0` major tag, a fresh consumer workflow run follows `docs/v0-smoke.md` and proves `LVTD-LLC/reviewgate@v0` resolves to the new release SHA.
 - A failing review exits non-zero by default and report-only mode does not block CI.
 
 ## Release Metadata
@@ -30,5 +31,5 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 
 - Create a GitHub release first.
 - Install ReviewGate in one small external test repository.
-- Confirm summary/comment behavior, failure behavior, and artifact output.
+- Confirm concise summary, inline comment, failure behavior, and artifact output.
 - Only then evaluate Marketplace publishing.

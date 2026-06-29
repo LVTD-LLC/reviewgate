@@ -46,8 +46,12 @@ inputs:
     description: Lowest severity shown in the canonical summary. One of P0, P1, P2, P3, P4.
     required: false
     default: P4
+  summary_style:
+    description: Summary detail level. Use concise for the default PR UX or detailed for debugging and agent loops.
+    required: false
+    default: concise
   inline_min_severity:
-    description: Lowest severity eligible for future inline comments. One of P0, P1, P2, P3, P4.
+    description: Lowest severity eligible for inline comments. One of P0, P1, P2, P3, P4.
     required: false
     default: P2
   inline_min_confidence:
@@ -62,6 +66,93 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Publish ReviewGate start signal
+      shell: bash
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
+          echo "ReviewGate start signal skipped: not a pull_request event."
+          exit 0
+        fi
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "ReviewGate start signal skipped: GH_TOKEN is empty."
+          exit 0
+        fi
+
+        pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+        if [ -z "$pr_number" ]; then
+          echo "ReviewGate start signal skipped: no pull request number."
+          exit 0
+        fi
+
+        mkdir -p "$GITHUB_WORKSPACE/.reviewgate"
+        marker='<!-- reviewgate-summary -->'
+        comments_path="$GITHUB_WORKSPACE/.reviewgate/start-issue-comments.json"
+        gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" > "$comments_path"
+        comment_id="$(jq -r --arg marker "$marker" '
+          (add // []) as $comments
+          | (
+              [
+                $comments[]
+                | select(.body | contains($marker))
+                | {
+                    id,
+                    state: (
+                      try (
+                        .body
+                        | capture("<!-- reviewgate-state (?<state>\\{.*\\}) -->").state
+                        | fromjson
+                      ) catch null
+                    )
+                  }
+                | select(.state != null)
+                | {
+                    id,
+                    run_count: (.state.run_count // 0),
+                    reviewed_count: ((.state.reviewed_shas // []) | length)
+                  }
+              ]
+              | max_by([.run_count, .reviewed_count]).id
+            )
+            // (
+              [$comments[] | select(.body | contains($marker)) | .id]
+              | last
+            )
+            // empty
+        ' "$comments_path")"
+
+        body_path="$GITHUB_WORKSPACE/.reviewgate/start-summary.md"
+        previous_summary_path="$GITHUB_WORKSPACE/.reviewgate/start-previous-summary.md"
+        state_path="$GITHUB_WORKSPACE/.reviewgate/start-state.txt"
+        : > "$state_path"
+        if [ -n "$comment_id" ]; then
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+            --jq .body > "$previous_summary_path"
+          grep -m1 -o '<!-- reviewgate-state .* -->' "$previous_summary_path" > "$state_path" || true
+        fi
+        {
+          printf '%s\n\n' "$marker"
+          if [ -s "$state_path" ]; then
+            cat "$state_path"
+            printf '\n\n'
+          fi
+          printf '# ReviewGate: running\n\n'
+          printf '%s\n' 'ReviewGate is reviewing this PR. The final score, concise summary, and inline comments will replace this message when the run completes.'
+        } > "$body_path"
+
+        if [ -n "$comment_id" ]; then
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+            --field body=@"$body_path" >/dev/null
+          echo "Updated ReviewGate start signal comment $comment_id."
+        else
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+            --field body=@"$body_path" >/dev/null
+          echo "Created ReviewGate start signal comment."
+        fi
+
     - name: Run ReviewGate
       shell: bash
       env:
@@ -74,9 +165,14 @@ runs:
         REVIEWGATE_MODEL: ${{ inputs.model }}
         REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
         REVIEWGATE_SUMMARY_MIN_SEVERITY: ${{ inputs.summary_min_severity }}
+        REVIEWGATE_SUMMARY_STYLE: ${{ inputs.summary_style }}
         REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
+        REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
       run: |
         set -euo pipefail
+        if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then
+          REVIEWGATE_SUMMARY_STYLE=concise
+        fi
         args=(
           run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
           -p reviewgate-cli -- review-pr
@@ -89,7 +185,9 @@ runs:
           --preset "$REVIEWGATE_PRESET"
           --gate-mode "$REVIEWGATE_GATE_MODE"
           --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY"
+          --summary-style "$REVIEWGATE_SUMMARY_STYLE"
           --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY"
+          --inline-min-confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE"
         )
         args+=(--report-only)
         if [ -n "$REVIEWGATE_MODEL" ]; then
@@ -100,17 +198,142 @@ runs:
         fi
         cargo "${args[@]}"
 
-    - name: Publish ReviewGate summary
+    - name: Publish ReviewGate inline comments
+      id: inline-comments
       shell: bash
       continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
+        REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
+        REVIEWGATE_PUBLISH_INLINE_COMMENTS: ${{ inputs.publish_inline_comments }}
       run: |
         set -euo pipefail
-        summary_path="$GITHUB_WORKSPACE/.reviewgate/summary.md"
-        if [ -f "$summary_path" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-          cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
+        mkdir -p "$GITHUB_WORKSPACE/.reviewgate"
+        mark_inline_available() {
+          if [ -n "${GITHUB_OUTPUT:-}" ]; then
+            printf 'inline_available=%s\n' "$1" >> "$GITHUB_OUTPUT"
+          fi
+        }
+        on_inline_publish_error() {
+          status=$?
+          mark_inline_available false
+          echo "::warning title=ReviewGate inline comments::Inline comment publishing exited early. The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+          exit "$status"
+        }
+        trap on_inline_publish_error ERR
+
+        if [ "$REVIEWGATE_PUBLISH_INLINE_COMMENTS" != "true" ]; then
+          echo "ReviewGate inline comments skipped: publish_inline_comments=false."
+          mark_inline_available false
+          exit 0
         fi
+        if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
+          echo "ReviewGate inline comments skipped: not a pull_request event."
+          exit 0
+        fi
+        artifact_path="$GITHUB_WORKSPACE/.reviewgate/review.json"
+        if [ ! -f "$artifact_path" ]; then
+          echo "ReviewGate inline comments skipped: missing $artifact_path."
+          mark_inline_available false
+          exit 0
+        fi
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "ReviewGate inline comments skipped: GH_TOKEN is empty."
+          mark_inline_available false
+          exit 0
+        fi
+
+        pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+        commit_id="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
+        if [ -z "$pr_number" ] || [ -z "$commit_id" ]; then
+          echo "ReviewGate inline comments skipped: missing PR number or head SHA."
+          mark_inline_available false
+          exit 0
+        fi
+
+        existing_markers_path="$GITHUB_WORKSPACE/.reviewgate/existing-inline-markers.json"
+        gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
+          | jq '[.[][]? | .body | scan("<!-- reviewgate-finding:.*? -->")]' > "$existing_markers_path"
+
+        drafts_path="$GITHUB_WORKSPACE/.reviewgate/inline-comments.jsonl"
+        jq -c \
+          --arg floor "$REVIEWGATE_INLINE_MIN_SEVERITY" \
+          --argjson min_confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
+          --slurpfile existing "$existing_markers_path" '
+          def rank: {"P0":0,"P1":1,"P2":2,"P3":3,"P4":4};
+          def marker($id): "<!-- reviewgate-finding:" + ($id | @uri) + " -->";
+          .findings[]
+          | select(.file != null and .line != null)
+          | select((.confidence // 0) >= $min_confidence)
+          | select((rank[.severity] // 99) <= (rank[$floor] // 2))
+          | marker(.id) as $marker
+          | select(
+              ((($existing | add) // []) | index($marker)) == null
+            )
+          | {
+              path: .file,
+              line: .line,
+              side: "RIGHT",
+              body: (
+                $marker
+                + "\n\n**" + .severity + ": " + .title + "**"
+                + (if ((.detail // "") | length) > 0 then "\n\n" + .detail else "" end)
+                + "\n\nAgent instruction: " + .agent_instruction
+              )
+            }
+        ' "$artifact_path" > "$drafts_path"
+
+        if [ ! -s "$drafts_path" ]; then
+          echo "ReviewGate inline comments: no new eligible findings."
+          mark_inline_available true
+          exit 0
+        fi
+
+        posted=0
+        failed=0
+        while IFS= read -r draft; do
+          body_path="$GITHUB_WORKSPACE/.reviewgate/inline-comment-body.json"
+          jq -n --argjson draft "$draft" --arg commit_id "$commit_id" \
+            '$draft + {commit_id: $commit_id}' > "$body_path"
+          if gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
+            --input "$body_path" >/dev/null; then
+            posted=$((posted + 1))
+          else
+            failed=$((failed + 1))
+            echo "ReviewGate inline comment could not be posted for $(jq -r '.path + \":\" + (.line|tostring)' "$body_path"). Keeping it as a compact fallback in the summary." >&2
+          fi
+        done < "$drafts_path"
+        echo "ReviewGate inline comments posted: $posted; skipped/failed: $failed."
+        if [ "$failed" -gt 0 ]; then
+          mark_inline_available false
+          echo "::warning title=ReviewGate inline comments::Failed to publish $failed inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+        else
+          mark_inline_available true
+        fi
+
+    - name: Publish ReviewGate summary
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_SUMMARY_MIN_SEVERITY: ${{ inputs.summary_min_severity }}
+        REVIEWGATE_SUMMARY_STYLE: ${{ inputs.summary_style }}
+        REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
+        REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
+        REVIEWGATE_INLINE_COMMENTS_AVAILABLE: ${{ steps.inline-comments.outputs.inline_available || 'true' }}
+      run: |
+        set -euo pipefail
+        if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then
+          REVIEWGATE_SUMMARY_STYLE=concise
+        fi
+        on_summary_publish_error() {
+          status=$?
+          echo "::error title=ReviewGate summary publish failed::Could not publish the canonical ReviewGate summary comment. Check pull-request/issues permissions and the GitHub API error above." >&2
+          exit "$status"
+        }
+        trap on_summary_publish_error ERR
+
+        summary_path="$GITHUB_WORKSPACE/.reviewgate/summary.md"
 
         if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
           echo "ReviewGate summary comment skipped: not a pull_request event."
@@ -177,15 +400,24 @@ runs:
             --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
             --previous-summary "$previous_summary_path" \
             --summary-out "$summary_path" \
-            --summary-min-severity "${{ inputs.summary_min_severity }}" \
-            --inline-min-severity "${{ inputs.inline_min_severity }}"; then
+            --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY" \
+            --summary-style "$REVIEWGATE_SUMMARY_STYLE" \
+            --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY" \
+            --inline-min-confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
+            --inline-comments-available "$REVIEWGATE_INLINE_COMMENTS_AVAILABLE"; then
             echo "Previous ReviewGate summary state could not be reused; rendering without prior state." >&2
             cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
               -p reviewgate-cli -- render-summary \
               --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
               --summary-out "$summary_path" \
-              --summary-min-severity "${{ inputs.summary_min_severity }}" \
-              --inline-min-severity "${{ inputs.inline_min_severity }}"
+              --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY" \
+              --summary-style "$REVIEWGATE_SUMMARY_STYLE" \
+              --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY" \
+              --inline-min-confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
+              --inline-comments-available "$REVIEWGATE_INLINE_COMMENTS_AVAILABLE"
+          fi
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
           fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
             --field body=@"$summary_path" >/dev/null
@@ -197,100 +429,25 @@ runs:
             fi
           done
         else
+          cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
+            -p reviewgate-cli -- render-summary \
+            --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
+            --summary-out "$summary_path" \
+            --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY" \
+            --summary-style "$REVIEWGATE_SUMMARY_STYLE" \
+            --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY" \
+            --inline-min-confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
+            --inline-comments-available "$REVIEWGATE_INLINE_COMMENTS_AVAILABLE"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
+          fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
             --field body=@"$summary_path" >/dev/null
           echo "Created ReviewGate summary comment."
         fi
 
-    - name: Publish ReviewGate inline comments
-      shell: bash
-      continue-on-error: true
-      env:
-        GH_TOKEN: ${{ github.token }}
-        REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
-        REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
-        REVIEWGATE_PUBLISH_INLINE_COMMENTS: ${{ inputs.publish_inline_comments }}
-      run: |
-        set -euo pipefail
-        if [ "$REVIEWGATE_PUBLISH_INLINE_COMMENTS" != "true" ]; then
-          echo "ReviewGate inline comments skipped: publish_inline_comments=false."
-          exit 0
-        fi
-        if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
-          echo "ReviewGate inline comments skipped: not a pull_request event."
-          exit 0
-        fi
-        artifact_path="$GITHUB_WORKSPACE/.reviewgate/review.json"
-        if [ ! -f "$artifact_path" ]; then
-          echo "ReviewGate inline comments skipped: missing $artifact_path."
-          exit 0
-        fi
-        if [ -z "${GH_TOKEN:-}" ]; then
-          echo "ReviewGate inline comments skipped: GH_TOKEN is empty."
-          exit 0
-        fi
-
-        pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
-        commit_id="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
-        if [ -z "$pr_number" ] || [ -z "$commit_id" ]; then
-          echo "ReviewGate inline comments skipped: missing PR number or head SHA."
-          exit 0
-        fi
-
-        existing_markers_path="$GITHUB_WORKSPACE/.reviewgate/existing-inline-markers.json"
-        gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
-          | jq '[.[][]? | .body | scan("<!-- reviewgate-finding:.*? -->")]' > "$existing_markers_path"
-
-        drafts_path="$GITHUB_WORKSPACE/.reviewgate/inline-comments.jsonl"
-        jq -c \
-          --arg floor "$REVIEWGATE_INLINE_MIN_SEVERITY" \
-          --argjson min_confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE" \
-          --slurpfile existing "$existing_markers_path" '
-          def rank: {"P0":0,"P1":1,"P2":2,"P3":3,"P4":4};
-          def marker($id): "<!-- reviewgate-finding:" + ($id | @uri) + " -->";
-          .findings[]
-          | select(.file != null and .line != null)
-          | select((.confidence // 0) >= $min_confidence)
-          | select((rank[.severity] // 99) <= (rank[$floor] // 2))
-          | marker(.id) as $marker
-          | select(
-              ((($existing | add) // []) | index($marker)) == null
-            )
-          | {
-              path: .file,
-              line: .line,
-              side: "RIGHT",
-              body: (
-                $marker
-                + "\n\n**" + .severity + ": " + .title + "**"
-                + (if ((.detail // "") | length) > 0 then "\n\n" + .detail else "" end)
-                + "\n\nAgent instruction: " + .agent_instruction
-              )
-            }
-        ' "$artifact_path" > "$drafts_path"
-
-        if [ ! -s "$drafts_path" ]; then
-          echo "ReviewGate inline comments: no new eligible findings."
-          exit 0
-        fi
-
-        posted=0
-        failed=0
-        while IFS= read -r draft; do
-          body_path="$GITHUB_WORKSPACE/.reviewgate/inline-comment-body.json"
-          jq -n --argjson draft "$draft" --arg commit_id "$commit_id" \
-            '$draft + {commit_id: $commit_id}' > "$body_path"
-          if gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$pr_number/comments" \
-            --input "$body_path" >/dev/null; then
-            posted=$((posted + 1))
-          else
-            failed=$((failed + 1))
-            echo "ReviewGate inline comment could not be posted for $(jq -r '.path + \":\" + (.line|tostring)' "$body_path"). Keeping it in the summary." >&2
-          fi
-        done < "$drafts_path"
-        echo "ReviewGate inline comments posted: $posted; skipped/failed: $failed."
-
     - name: Enforce ReviewGate
+      if: ${{ always() }}
       shell: bash
       env:
         REVIEWGATE_REPORT_ONLY: ${{ inputs.report_only }}
@@ -317,9 +474,14 @@ runs:
             exit 2
             ;;
         esac
-        status="$(jq -r '.status' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
-        score="$(jq -r '.score' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
-        fail_under="$(jq -r '.fail_under' "$GITHUB_WORKSPACE/.reviewgate/review.json")"
+        artifact_path="$GITHUB_WORKSPACE/.reviewgate/review.json"
+        if [ ! -f "$artifact_path" ]; then
+          echo "ReviewGate enforcement failed: missing $artifact_path from the review step." >&2
+          exit 1
+        fi
+        status="$(jq -r '.status' "$artifact_path")"
+        score="$(jq -r '.score' "$artifact_path")"
+        fail_under="$(jq -r '.fail_under' "$artifact_path")"
         if [ "$status" = "failed" ]; then
           echo "ReviewGate failed: score $score is below fail_under $fail_under."
           exit 1

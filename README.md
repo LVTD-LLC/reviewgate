@@ -13,12 +13,12 @@ This repository is in an early build milestone. The current CLI can validate and
 - Free and fully open source.
 - Runs in the user's CI environment.
 - Uses OpenRouter/BYOK for model calls.
-- Keeps one PR summary comment updated with `<!-- reviewgate-summary -->`.
+- Keeps one concise PR summary comment updated with `<!-- reviewgate-summary -->`.
 - Emits a visible score like `ReviewGate: 4/5`.
 - Produces a JSON artifact for humans and external agent loops.
-- Posts inline comments only for high-confidence, line-specific findings, deduped by stable ReviewGate finding markers.
+- Posts high-confidence, line-specific findings as inline PR comments by default, deduped by stable ReviewGate finding markers.
 - Creates a GitHub check run based on a configurable threshold.
-- Shows model cost in the review artifact and summary.
+- Shows one-line cumulative model cost in the PR summary and full cost/metrics data in the JSON artifact.
 
 ## GitHub Action
 
@@ -51,14 +51,15 @@ jobs:
 
 The action:
 
+- posts or updates a short `ReviewGate: running` placeholder comment when PR review starts;
 - collects the PR diff from the checked-out repository;
 - includes bounded repository context from common instruction files like `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, and `.reviewgate.yml`;
 - calls OpenRouter with the user's API key;
 - validates the model response as a ReviewGate JSON artifact;
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
-- creates or updates one PR comment containing `<!-- reviewgate-summary -->`;
-- posts eligible line-specific findings as best-effort PR review comments;
+- replaces the running placeholder with one concise PR comment containing `<!-- reviewgate-summary -->`;
+- posts eligible line-specific findings as best-effort inline PR review comments;
 - exits non-zero when `score < fail_under` and `gate_mode: job`, unless `report_only: "true"` or `gate_mode: report` is set.
 
 The default workflow runs on PR updates because that is the lowest-friction install path. For teams that want tighter cost control, the next control surface is an explicit recheck path such as `workflow_dispatch`, a PR comment command, or a CLI helper.
@@ -150,6 +151,8 @@ The current Rust boundary builds deterministic chat-completion requests and is t
 
 The first live action implementation uses the `curl` binary available on GitHub-hosted Ubuntu runners for the OpenRouter request. ReviewGate sends curl configuration through stdin and writes the non-secret request body to a temp file, so the OpenRouter key and large prompt payload are not exposed through the process argument list.
 
+ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing requests: `HTTP-Referer: https://github.com/LVTD-LLC/reviewgate`, `X-OpenRouter-Title: ReviewGate`, and `X-OpenRouter-Categories: cli-agent,cloud-agent`. These identify ReviewGate traffic without exposing user secrets.
+
 ## Configuration
 
 `.reviewgate.yml` and action inputs currently support:
@@ -158,20 +161,21 @@ The first live action implementation uses the `curl` binary available on GitHub-
 - `fail_under`: hard floor that fails CI unless `report_only` is enabled.
 - `gate_mode`: failed-review behavior. `job` fails the workflow; `report` publishes only. `check` is reserved for a future dedicated Check Run publisher.
 - `summary_min_severity`: lowest severity shown in the canonical summary (`P0` through `P4`).
-- `inline_min_severity`: lowest severity eligible for future inline comments (`P0` through `P4`).
+- `summary_style`: summary detail level. `concise` is the default PR UX; `detailed` restores full cost, metrics, findings, notes, and agent-instruction sections.
+- `inline_min_severity`: lowest severity eligible for inline comments (`P0` through `P4`).
 - `inline_min_confidence`: minimum confidence required before posting an inline PR comment.
 - `publish_inline_comments`: whether eligible line-specific findings should become PR review comments.
 
 `report_only: "true"` remains supported as a compatibility alias for `gate_mode: report`.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing.
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: score, verdict, status, one-line cost such as `Cost: $0.08 (3 runs)`, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 
 ## Current Limitations
 
 - Config parsing intentionally supports the stable scalar fields above; richer nested config support comes later.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
-- Inline comments are best-effort: unmappable findings stay in the canonical summary and do not fail publishing.
-- Current-run and cumulative PR cost rendering are modeled in the summary. OpenRouter pricing metadata still needs a richer resolver.
+- Inline comments are best-effort: unanchored or filtered findings stay as compact fallback entries, and inline API failures are surfaced as workflow warnings while the full finding remains in JSON.
+- Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
 
 ## Repository Layout
@@ -185,6 +189,7 @@ prompts/                     Built-in review stage prompts
 docs/evaluation.md           Offline fixture evaluation workflow
 docs/external-agent-workflow.md Optional repair-agent workflow
 docs/release-v0.1.0.md       Release readiness checklist
+docs/v0-smoke.md             Fresh consumer workflow smoke test for moved v0 tags
 schemas/                     JSON artifact schema
 fixtures/                    Golden review fixtures
 skills/reviewgate-loop/      Public agent loop skill draft
