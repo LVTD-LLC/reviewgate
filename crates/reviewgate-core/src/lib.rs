@@ -9,6 +9,9 @@ pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const OPENROUTER_MODELS_PATH: &str = "/models";
+pub const OPENROUTER_APP_REFERER: &str = "https://github.com/LVTD-LLC/reviewgate";
+pub const OPENROUTER_APP_TITLE: &str = "ReviewGate";
+pub const OPENROUTER_APP_CATEGORIES: &str = "cli-agent,cloud-agent";
 
 #[derive(Debug, Error)]
 pub enum ReviewGateError {
@@ -114,11 +117,7 @@ impl Finding {
     }
 
     pub fn validate(&self) -> Result<(), ReviewGateError> {
-        if (0.0..=1.0).contains(&self.confidence) {
-            Ok(())
-        } else {
-            Err(ReviewGateError::InvalidConfidence(self.confidence))
-        }
+        validate_confidence(self.confidence)
     }
 }
 
@@ -319,6 +318,14 @@ pub fn validate_estimated_cost(cost: f64) -> Result<(), ReviewGateError> {
     }
 }
 
+fn validate_confidence(confidence: f64) -> Result<(), ReviewGateError> {
+    if (0.0..=1.0).contains(&confidence) {
+        Ok(())
+    } else {
+        Err(ReviewGateError::InvalidConfidence(confidence))
+    }
+}
+
 pub fn compute_score(findings: &[Finding]) -> u8 {
     findings
         .iter()
@@ -327,7 +334,11 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
         .unwrap_or(5)
 }
 
-pub fn compute_metrics(artifact: &ReviewArtifact, inline_min_severity: Severity) -> ReviewMetrics {
+pub fn compute_metrics(
+    artifact: &ReviewArtifact,
+    inline_min_severity: Severity,
+    inline_min_confidence: f64,
+) -> ReviewMetrics {
     let mut metrics = ReviewMetrics {
         finding_count: artifact.findings.len() as u32,
         blocking_finding_count: 0,
@@ -353,10 +364,7 @@ pub fn compute_metrics(artifact: &ReviewArtifact, inline_min_severity: Severity)
         if finding.is_blocking(artifact.fail_under) {
             metrics.blocking_finding_count += 1;
         }
-        if finding.file.is_some()
-            && finding.line.is_some()
-            && finding.severity.is_at_or_above(inline_min_severity)
-        {
+        if is_inline_comment_eligible(finding, inline_min_severity, inline_min_confidence) {
             metrics.inline_eligible_count += 1;
         }
         match finding.severity {
@@ -369,6 +377,17 @@ pub fn compute_metrics(artifact: &ReviewArtifact, inline_min_severity: Severity)
     }
 
     metrics
+}
+
+pub fn is_inline_comment_eligible(
+    finding: &Finding,
+    inline_min_severity: Severity,
+    inline_min_confidence: f64,
+) -> bool {
+    finding.file.is_some()
+        && finding.line.is_some()
+        && finding.confidence >= inline_min_confidence
+        && finding.severity.is_at_or_above(inline_min_severity)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -582,10 +601,27 @@ impl SummaryState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryStyle {
+    Concise,
+    Detailed,
+}
+
+impl SummaryStyle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SummaryStyle::Concise => "concise",
+            SummaryStyle::Detailed => "detailed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SummaryOptions {
     pub summary_min_severity: Severity,
     pub inline_min_severity: Severity,
+    pub inline_min_confidence: f64,
     pub cost_history_limit: usize,
+    pub summary_style: SummaryStyle,
 }
 
 impl Default for SummaryOptions {
@@ -593,7 +629,9 @@ impl Default for SummaryOptions {
         Self {
             summary_min_severity: Severity::P4,
             inline_min_severity: Severity::P2,
+            inline_min_confidence: 0.8,
             cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
+            summary_style: SummaryStyle::Concise,
         }
     }
 }
@@ -776,18 +814,126 @@ pub fn render_summary_with_options(
     previous_state: Option<&SummaryState>,
 ) -> Result<String, ReviewGateError> {
     artifact.validate()?;
+    validate_confidence(options.inline_min_confidence)?;
     let state = SummaryState::for_artifact(artifact, previous_state, options.cost_history_limit)?;
     let state_json = serde_json::to_string(&state)
         .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
 
     let mut output = String::new();
+    render_summary_header(&mut output, artifact, &state_json);
+    match options.summary_style {
+        SummaryStyle::Concise => {
+            render_concise_summary_body(&mut output, artifact, options, &state);
+        }
+        SummaryStyle::Detailed => {
+            render_detailed_summary_body(&mut output, artifact, options, &state);
+        }
+    }
+
+    Ok(output)
+}
+
+fn render_summary_header(output: &mut String, artifact: &ReviewArtifact, state_json: &str) {
     output.push_str(SUMMARY_MARKER);
     output.push_str("\n\n");
     output.push_str(SUMMARY_STATE_PREFIX);
-    output.push_str(&state_json);
+    output.push_str(state_json);
     output.push_str(SUMMARY_STATE_SUFFIX);
     output.push_str("\n\n");
     output.push_str(&format!("# ReviewGate: {}/5\n\n", artifact.score));
+}
+
+fn render_concise_summary_body(
+    output: &mut String,
+    artifact: &ReviewArtifact,
+    options: SummaryOptions,
+    state: &SummaryState,
+) {
+    let metrics = compute_metrics(
+        artifact,
+        options.inline_min_severity,
+        options.inline_min_confidence,
+    );
+
+    output.push_str(artifact.verdict.trim());
+    output.push_str("\n\n");
+    output.push_str(&format!(
+        "Status: `{}` | Target: {}/5 | Fail under: {}/5 | Reviewed: `{}`\n\n",
+        artifact.status.as_str(),
+        artifact.target_score,
+        artifact.fail_under,
+        artifact.reviewed_sha
+    ));
+    output.push_str(&format!(
+        "Cost: {} ({}) | Findings: {} total, {} blocking, {} inline-eligible\n",
+        format_cost(state.cumulative_cost_usd),
+        format_run_count(state.run_count),
+        metrics.finding_count,
+        metrics.blocking_finding_count,
+        metrics.inline_eligible_count
+    ));
+    if !artifact.notes.is_empty() {
+        output.push_str(&format!(
+            "Notes: {} note(s) in the JSON artifact.\n",
+            artifact.notes.len()
+        ));
+    }
+
+    let fallback_findings = fallback_summary_findings(artifact, options);
+    if fallback_findings.is_empty() {
+        output.push('\n');
+        if metrics.finding_count == 0 {
+            output.push_str("No findings. Re-run ReviewGate if new commits land.\n");
+        } else if metrics.inline_eligible_count > 0 {
+            output.push_str(
+                "Eligible line-specific findings are posted inline. See the JSON artifact for the full machine-readable review.\n",
+            );
+        } else {
+            output.push_str(
+                "No fallback findings meet the summary visibility floor. See the JSON artifact for the full machine-readable review.\n",
+            );
+        }
+        return;
+    }
+
+    output.push('\n');
+    output.push_str(&format!(
+        "{} {} kept here because {} not eligible for inline comments.\n\n",
+        fallback_findings.len(),
+        if fallback_findings.len() == 1 {
+            "finding is"
+        } else {
+            "findings are"
+        },
+        if fallback_findings.len() == 1 {
+            "it is"
+        } else {
+            "they are"
+        }
+    ));
+    output.push_str("Fallback findings:\n");
+    for finding in fallback_findings {
+        output.push_str(&format!(
+            "- {}: {}",
+            finding.severity.as_str(),
+            finding.title
+        ));
+        append_finding_location(output, finding);
+        output.push_str(&format!(" - {}", inline_skip_reason(finding, options)));
+        let instruction = finding.agent_instruction.trim();
+        if !instruction.is_empty() {
+            output.push_str(&format!(". {instruction}"));
+        }
+        output.push('\n');
+    }
+}
+
+fn render_detailed_summary_body(
+    output: &mut String,
+    artifact: &ReviewArtifact,
+    options: SummaryOptions,
+    state: &SummaryState,
+) {
     output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
     output.push_str(&format!("Status: `{}`  \n", artifact.status.as_str()));
     output.push_str(&format!("Target: {}/5  \n", artifact.target_score));
@@ -843,7 +989,11 @@ pub fn render_summary_with_options(
         output.push('\n');
     }
 
-    let computed_metrics = compute_metrics(artifact, options.inline_min_severity);
+    let computed_metrics = compute_metrics(
+        artifact,
+        options.inline_min_severity,
+        options.inline_min_confidence,
+    );
     let metrics = &computed_metrics;
     {
         output.push_str("## Metrics\n\n");
@@ -949,8 +1099,60 @@ pub fn render_summary_with_options(
             output.push_str("Fix the blocking findings first. Re-run ReviewGate after pushing.\n");
         }
     }
+}
 
-    Ok(output)
+fn fallback_summary_findings(artifact: &ReviewArtifact, options: SummaryOptions) -> Vec<&Finding> {
+    artifact
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.is_blocking(artifact.fail_under)
+                || finding
+                    .severity
+                    .is_at_or_above(options.summary_min_severity)
+        })
+        .filter(|finding| {
+            !is_inline_comment_eligible(
+                finding,
+                options.inline_min_severity,
+                options.inline_min_confidence,
+            )
+        })
+        .collect()
+}
+
+fn inline_skip_reason(finding: &Finding, options: SummaryOptions) -> &'static str {
+    if finding.file.is_none() || finding.line.is_none() {
+        "no eligible line anchor"
+    } else if !finding.severity.is_at_or_above(options.inline_min_severity) {
+        "below the inline severity floor"
+    } else if finding.confidence < options.inline_min_confidence {
+        "below the inline confidence floor"
+    } else {
+        "not posted inline"
+    }
+}
+
+fn append_finding_location(output: &mut String, finding: &Finding) {
+    if let (Some(file), Some(line)) = (&finding.file, finding.line) {
+        output.push_str(&format!(" (`{}:{}`)", file, line));
+    }
+}
+
+fn format_run_count(run_count: u32) -> String {
+    if run_count == 1 {
+        "1 run".to_string()
+    } else {
+        format!("{run_count} runs")
+    }
+}
+
+fn format_cost(cost: f64) -> String {
+    if cost > 0.0 && cost < 0.01 {
+        format!("${cost:.4}")
+    } else {
+        format!("${cost:.2}")
+    }
 }
 
 #[cfg(test)]
@@ -1035,9 +1237,38 @@ mod tests {
             notes: vec![],
         };
 
-        let summary = render_summary(&artifact).expect("summary renders");
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_style: SummaryStyle::Detailed,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
         assert!(summary.starts_with(SUMMARY_MARKER));
         assert!(summary.contains("# ReviewGate: 4/5"));
+    }
+
+    #[test]
+    fn fixture_renders_default_concise_summary_shape() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let artifact = artifact.with_computed_score().expect("score computes");
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("Cost: $0.08 (1 run)"));
+        assert!(summary.contains("Findings: 2 total, 0 blocking, 1 inline-eligible"));
+        assert!(!summary.contains("## Cost"));
+        assert!(!summary.contains("## Metrics"));
+        assert!(!summary.contains("## Blocking Findings"));
+        assert!(!summary.contains("## Non-Blocking Notes"));
+        assert!(!summary.contains("## Agent Instructions"));
+        assert!(!summary.contains("Missing regression test for retry exhaustion"));
+        assert!(summary.contains("Helper name is slightly vague"));
+        assert!(summary.contains("below the inline severity floor"));
     }
 
     #[test]
@@ -1068,10 +1299,23 @@ mod tests {
             notes: vec![],
         };
 
-        let summary = render_summary(&artifact).expect("summary renders");
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_style: SummaryStyle::Detailed,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
 
         assert!(summary.contains("Current run cost: $0.0123"));
         assert!(summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
+
+        let concise = render_summary(&artifact).expect("concise summary renders");
+        assert!(concise.contains("Cost: $0.01 (1 run)"));
+        assert!(!concise.contains("## Cost"));
+        assert!(!concise.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
     }
 
     #[test]
@@ -1121,7 +1365,7 @@ mod tests {
         assert_eq!(state.last_reviewed_sha, "def456");
         assert_eq!(state.reviewed_shas, vec!["abc123", "def456"]);
         assert!((state.cumulative_cost_usd - 0.03).abs() < f64::EPSILON);
-        assert!(second.contains("Cumulative PR review cost: $0.0300 across 2 run(s)"));
+        assert!(second.contains("Cost: $0.03 (2 runs)"));
     }
 
     #[test]
@@ -1173,8 +1417,8 @@ mod tests {
         )
         .expect("summary renders");
 
-        assert!(summary.contains("Summary visibility: P2 and above"));
         assert!(summary.contains("Visible reliability issue"));
+        assert!(summary.contains("no eligible line anchor"));
         assert!(!summary.contains("Hidden style note"));
     }
 
@@ -1215,9 +1459,10 @@ mod tests {
         )
         .expect("summary renders");
 
-        assert!(summary.contains("## Blocking Findings"));
+        assert!(!summary.contains("## Blocking Findings"));
+        assert!(summary.contains("Fallback findings:"));
         assert!(summary.contains("P3: Gate-failing advisory finding"));
-        assert!(summary.contains("P3: Fix or lower the configured gate policy."));
+        assert!(summary.contains("Fix or lower the configured gate policy."));
     }
 
     #[test]
@@ -1283,9 +1528,21 @@ mod tests {
 
         let summary = render_summary(&artifact).expect("summary renders");
 
-        assert!(summary.contains("## Agent Instructions"));
+        assert!(!summary.contains("## Agent Instructions"));
+        assert!(summary.contains("Eligible line-specific findings are posted inline."));
+
+        let detailed = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_style: SummaryStyle::Detailed,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("detailed summary renders");
+        assert!(detailed.contains("## Agent Instructions"));
         assert!(
-            summary
+            detailed
                 .contains("1. P2: Add a regression test for the missing branch. (`src/lib.rs:42`)")
         );
     }
@@ -1317,7 +1574,15 @@ mod tests {
             notes: vec![],
         };
 
-        let summary = render_summary(&artifact).expect("summary renders");
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_style: SummaryStyle::Detailed,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
 
         assert!(summary.contains("1. P3: Clarify the README example."));
         assert!(summary.contains("Re-run ReviewGate after pushing if new commits land."));
@@ -1505,7 +1770,15 @@ mod tests {
             notes: vec![],
         };
 
-        let summary = render_summary(&artifact).expect("summary renders");
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                summary_style: SummaryStyle::Detailed,
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
 
         assert!(summary.contains("## Blocking Findings\n\nNone."));
         assert!(summary.contains("- P2: Missing regression test"));
@@ -1632,7 +1905,7 @@ mod tests {
             notes: vec![],
         };
 
-        let metrics = compute_metrics(&artifact, Severity::P2);
+        let metrics = compute_metrics(&artifact, Severity::P2, 0.8);
 
         assert_eq!(metrics.finding_count, 2);
         assert_eq!(metrics.blocking_finding_count, 1);
@@ -1685,6 +1958,7 @@ mod tests {
             &artifact,
             SummaryOptions {
                 inline_min_severity: Severity::P1,
+                summary_style: SummaryStyle::Detailed,
                 ..SummaryOptions::default()
             },
             None,

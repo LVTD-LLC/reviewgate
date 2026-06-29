@@ -8,9 +8,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
+    OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE,
     OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
-    Severity, SummaryOptions, compute_metrics, estimate_model_cost_usd, extract_summary_state,
-    fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
+    Severity, SummaryOptions, SummaryStyle, compute_metrics, estimate_model_cost_usd,
+    extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
 };
 
@@ -76,6 +77,10 @@ enum Command {
         summary_min_severity: Option<String>,
         #[arg(long)]
         inline_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_confidence: Option<f64>,
+        #[arg(long, value_enum)]
+        summary_style: Option<SummaryStyleArg>,
     },
     /// Render a summary from an existing artifact, optionally carrying forward hidden state.
     RenderSummary {
@@ -89,6 +94,10 @@ enum Command {
         summary_min_severity: Option<String>,
         #[arg(long)]
         inline_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_confidence: Option<f64>,
+        #[arg(long, value_enum)]
+        summary_style: Option<SummaryStyleArg>,
     },
     /// Re-run the latest ReviewGate workflow run for a pull request branch.
     Recheck {
@@ -130,6 +139,8 @@ fn main() -> Result<()> {
             gate_mode,
             summary_min_severity,
             inline_min_severity,
+            inline_min_confidence,
+            summary_style,
         } => review_pr(ReviewPrOptions {
             repo,
             config,
@@ -145,6 +156,8 @@ fn main() -> Result<()> {
             gate_mode: gate_mode.into(),
             summary_min_severity,
             inline_min_severity,
+            inline_min_confidence,
+            summary_style: summary_style.map(Into::into),
         }),
         Command::RenderSummary {
             input,
@@ -152,12 +165,16 @@ fn main() -> Result<()> {
             summary_out,
             summary_min_severity,
             inline_min_severity,
+            inline_min_confidence,
+            summary_style,
         } => render_summary_command(
             input,
             previous_summary,
             summary_out,
             summary_min_severity,
             inline_min_severity,
+            inline_min_confidence,
+            summary_style.map(Into::into),
         ),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
         Command::EvalFixtures { dir } => eval_fixtures(dir),
@@ -175,6 +192,12 @@ enum PresetArg {
 enum GateModeArg {
     Job,
     Report,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SummaryStyleArg {
+    Concise,
+    Detailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +225,15 @@ impl From<PresetArg> for ModelPreset {
     }
 }
 
+impl From<SummaryStyleArg> for SummaryStyle {
+    fn from(value: SummaryStyleArg) -> Self {
+        match value {
+            SummaryStyleArg::Concise => SummaryStyle::Concise,
+            SummaryStyleArg::Detailed => SummaryStyle::Detailed,
+        }
+    }
+}
+
 fn fixture_review(
     input: PathBuf,
     json_out: Option<PathBuf>,
@@ -211,7 +243,12 @@ fn fixture_review(
         .with_context(|| format!("failed to read fixture {}", input.display()))?;
     let artifact: ReviewArtifact = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse fixture {}", input.display()))?;
-    let artifact = artifact.with_computed_score()?;
+    let mut artifact = artifact.with_computed_score()?;
+    artifact.metrics = Some(compute_metrics(
+        &artifact,
+        Severity::P2,
+        SummaryOptions::default().inline_min_confidence,
+    ));
     let summary = render_summary(&artifact)?;
     let pretty_json = serde_json::to_string_pretty(&artifact)?;
 
@@ -261,14 +298,18 @@ struct ReviewPrOptions {
     gate_mode: GateMode,
     summary_min_severity: Option<String>,
     inline_min_severity: Option<String>,
+    inline_min_confidence: Option<f64>,
+    summary_style: Option<SummaryStyle>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct ReviewConfigValues {
     target_score: Option<u8>,
     fail_under: Option<u8>,
     summary_min_severity: Option<Severity>,
     inline_min_severity: Option<Severity>,
+    inline_min_confidence: Option<f64>,
+    summary_style: Option<SummaryStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,6 +347,15 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     )?
     .or(config_values.inline_min_severity)
     .unwrap_or(Severity::P2);
+    let inline_min_confidence = options
+        .inline_min_confidence
+        .or(config_values.inline_min_confidence)
+        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
+    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
+    let summary_style = options
+        .summary_style
+        .or(config_values.summary_style)
+        .unwrap_or(SummaryStyle::Concise);
     let context = collect_review_context(&repo)?;
     let model = options
         .model
@@ -353,12 +403,18 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     }
     artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
     let mut artifact = artifact.with_computed_score()?;
-    artifact.metrics = Some(compute_metrics(&artifact, inline_min_severity));
+    artifact.metrics = Some(compute_metrics(
+        &artifact,
+        inline_min_severity,
+        inline_min_confidence,
+    ));
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
             summary_min_severity,
             inline_min_severity,
+            inline_min_confidence,
+            summary_style,
             ..SummaryOptions::default()
         },
         None,
@@ -452,6 +508,8 @@ fn render_summary_command(
     summary_out: Option<PathBuf>,
     summary_min_severity: Option<String>,
     inline_min_severity: Option<String>,
+    inline_min_confidence: Option<f64>,
+    summary_style: Option<SummaryStyle>,
 ) -> Result<()> {
     let raw = fs::read_to_string(&input)
         .with_context(|| format!("failed to read artifact {}", input.display()))?;
@@ -471,11 +529,17 @@ fn render_summary_command(
     let inline_min_severity =
         parse_optional_severity(inline_min_severity.as_deref(), "inline_min_severity")?
             .unwrap_or(Severity::P2);
+    let inline_min_confidence =
+        inline_min_confidence.unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
+    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
+    let summary_style = summary_style.unwrap_or(SummaryStyle::Concise);
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
             summary_min_severity,
             inline_min_severity,
+            inline_min_confidence,
+            summary_style,
             ..SummaryOptions::default()
         },
         previous_state.as_ref(),
@@ -588,7 +652,11 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
     let mut score_sum = 0u64;
     for (_, artifact) in &artifacts {
         score_sum += u64::from(artifact.score);
-        let metrics = compute_metrics(artifact, Severity::P2);
+        let metrics = compute_metrics(
+            artifact,
+            Severity::P2,
+            SummaryOptions::default().inline_min_confidence,
+        );
         finding_count += metrics.finding_count as usize;
         blocking_count += metrics.blocking_finding_count as usize;
         if let Some(cost) = metrics.current_run_cost_usd {
@@ -608,7 +676,11 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
         "blocking_finding_count": blocking_count,
         "estimated_cost_usd": total_cost,
         "fixtures": artifacts.iter().map(|(path, artifact)| {
-            let metrics = compute_metrics(artifact, Severity::P2);
+            let metrics = compute_metrics(
+                artifact,
+                Severity::P2,
+                SummaryOptions::default().inline_min_confidence,
+            );
             serde_json::json!({
                 "path": path.display().to_string(),
                 "reviewed_sha": &artifact.reviewed_sha,
@@ -661,6 +733,13 @@ fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
             "inline_min_severity" => {
                 values.inline_min_severity = Some(parse_severity(value, "inline_min_severity")?)
             }
+            "inline_min_confidence" => {
+                values.inline_min_confidence =
+                    Some(parse_confidence(value, "inline_min_confidence")?)
+            }
+            "summary_style" => {
+                values.summary_style = Some(parse_summary_style(value, "summary_style")?)
+            }
             _ => {}
         }
     }
@@ -687,6 +766,30 @@ fn parse_optional_severity(value: Option<&str>, field: &str) -> Result<Option<Se
 
 fn parse_severity(value: &str, field: &str) -> Result<Severity> {
     Severity::parse(value).with_context(|| format!("{field} must be one of P0, P1, P2, P3, P4"))
+}
+
+fn parse_confidence(value: &str, field: &str) -> Result<f64> {
+    let parsed = value
+        .parse::<f64>()
+        .with_context(|| format!("{field} must be a confidence between 0 and 1, got {value:?}"))?;
+    validate_confidence_threshold(parsed, field)?;
+    Ok(parsed)
+}
+
+fn validate_confidence_threshold(value: f64, field: &str) -> Result<()> {
+    if (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        bail!("{field} must be between 0 and 1, got {value}")
+    }
+}
+
+fn parse_summary_style(value: &str, field: &str) -> Result<SummaryStyle> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "concise" => Ok(SummaryStyle::Concise),
+        "detailed" => Ok(SummaryStyle::Detailed),
+        _ => bail!("{field} must be one of concise or detailed"),
+    }
 }
 
 fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
@@ -875,9 +978,10 @@ fn call_openrouter_with_curl(
         .with_context(|| format!("failed to write {}", body_path.display()))?;
 
     let curl_config = format!(
-        "fail-with-body\nsilent\nshow-error\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\ndata-binary = \"@{}\"\n",
+        "fail-with-body\nsilent\nshow-error\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\n{}data-binary = \"@{}\"\n",
         curl_config_quote(&url),
         curl_config_quote(api_key),
+        openrouter_attribution_curl_headers(),
         curl_config_quote(&body_path.display().to_string()),
     );
     let mut child = ProcessCommand::new("curl")
@@ -926,9 +1030,10 @@ fn fetch_openrouter_model_pricing_with_curl(
         OPENROUTER_MODELS_PATH
     );
     let curl_config = format!(
-        "fail-with-body\nsilent\nshow-error\nrequest = \"GET\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\n",
+        "fail-with-body\nsilent\nshow-error\nrequest = \"GET\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\n{}",
         curl_config_quote(&url),
         curl_config_quote(api_key),
+        openrouter_attribution_curl_headers(),
     );
     let mut child = ProcessCommand::new("curl")
         .arg("--config")
@@ -1036,6 +1141,17 @@ fn curl_config_quote(value: &str) -> String {
         .replace(['\n', '\r'], "")
 }
 
+fn openrouter_attribution_curl_headers() -> String {
+    [
+        ("HTTP-Referer", OPENROUTER_APP_REFERER),
+        ("X-OpenRouter-Title", OPENROUTER_APP_TITLE),
+        ("X-OpenRouter-Categories", OPENROUTER_APP_CATEGORIES),
+    ]
+    .into_iter()
+    .map(|(name, value)| format!("header = \"{name}: {}\"\n", curl_config_quote(value)))
+    .collect()
+}
+
 fn parse_model_artifact(raw: &str) -> Result<ReviewArtifact> {
     let trimmed = strip_json_fence(raw.trim());
     serde_json::from_str(trimmed)
@@ -1118,7 +1234,7 @@ mod tests {
 
     #[test]
     fn parses_simple_review_config_values() {
-        let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n  summary_min_severity: P2\n  inline_min_severity: P1\n";
+        let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n  summary_min_severity: P2\n  inline_min_severity: P1\n  inline_min_confidence: 0.75\n  summary_style: detailed\n";
         let path =
             std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
@@ -1133,6 +1249,8 @@ mod tests {
                 fail_under: Some(4),
                 summary_min_severity: Some(Severity::P2),
                 inline_min_severity: Some(Severity::P1),
+                inline_min_confidence: Some(0.75),
+                summary_style: Some(SummaryStyle::Detailed),
             }
         );
     }
@@ -1144,6 +1262,44 @@ mod tests {
             Severity::P3
         );
         assert!(parse_severity("medium", "summary_min_severity").is_err());
+    }
+
+    #[test]
+    fn parses_summary_style_and_inline_confidence() {
+        assert_eq!(
+            parse_summary_style("Concise", "summary_style").expect("valid style"),
+            SummaryStyle::Concise
+        );
+        assert_eq!(
+            parse_confidence("0.8", "inline_min_confidence").expect("valid confidence"),
+            0.8
+        );
+        assert!(parse_summary_style("full", "summary_style").is_err());
+        assert!(parse_confidence("1.2", "inline_min_confidence").is_err());
+    }
+
+    #[test]
+    fn action_publishes_start_signal_and_surfaces_summary_failures() {
+        let action = include_str!("../../../action.yml");
+        assert!(action.contains("- name: Publish ReviewGate start signal"));
+        assert!(action.contains("# ReviewGate: running"));
+        assert!(action.contains("start-state.txt"));
+        assert!(action.contains("grep -m1 -o '<!-- reviewgate-state .* -->'"));
+        assert!(action.contains("summary_style:"));
+        assert!(action.contains("default: concise"));
+        assert!(action.contains("publish_inline_comments:"));
+        assert!(action.contains("default: \"true\""));
+
+        let summary_step = action
+            .split("- name: Publish ReviewGate summary")
+            .nth(1)
+            .expect("summary step exists")
+            .split("- name: Publish ReviewGate inline comments")
+            .next()
+            .expect("inline step follows summary step");
+
+        assert!(!summary_step.contains("continue-on-error: true"));
+        assert!(summary_step.contains("::error title=ReviewGate summary publish failed::"));
     }
 
     #[test]
@@ -1315,5 +1471,18 @@ Thanks {also not json}."#;
             curl_config_quote("sk-\"secret\"\\value\n"),
             "sk-\\\"secret\\\"\\\\value"
         );
+    }
+
+    #[test]
+    fn openrouter_attribution_headers_are_sent_without_secrets() {
+        let headers = openrouter_attribution_curl_headers();
+
+        assert!(
+            headers.contains("header = \"HTTP-Referer: https://github.com/LVTD-LLC/reviewgate\"")
+        );
+        assert!(headers.contains("header = \"X-OpenRouter-Title: ReviewGate\""));
+        assert!(headers.contains("header = \"X-OpenRouter-Categories: cli-agent,cloud-agent\""));
+        assert!(!headers.contains("Authorization"));
+        assert!(!headers.contains("sk-"));
     }
 }

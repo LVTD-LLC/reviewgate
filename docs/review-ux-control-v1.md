@@ -5,7 +5,7 @@ ReviewGate's GitHub Action reviews pull requests and reports results. It must no
 The intended workflow is:
 
 1. ReviewGate reviews the PR diff and context.
-2. ReviewGate updates one canonical PR summary comment and writes a JSON artifact.
+2. ReviewGate updates one concise canonical PR summary comment, writes a JSON artifact, and posts eligible line-specific findings inline.
 3. A human or external coding agent reads the findings.
 4. The human or agent ships fixes.
 5. ReviewGate is rerun and updates the same summary.
@@ -45,21 +45,21 @@ Users need separate controls for what is visible and what blocks:
 
 Defaults should avoid noise:
 
-- Show P0-P4 findings in the summary by default, with `summary_min_severity` available for quieter installs.
+- Keep the summary concise by default: verdict, score, status, one-line cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
+- Use `summary_style: detailed` when a repo wants the old full summary with cost details, metrics, findings, notes, and agent instructions.
 - Post inline comments only for high-confidence P0-P2 line-specific findings.
 - Keep all findings in the JSON artifact even when the visible summary filters lower-severity items.
 
 ## Cost Direction
 
-The canonical summary should show:
+The default canonical summary should show:
 
-- Current run estimated cost.
-- Cumulative PR estimated cost.
-- Compact component history by stage/model.
+- Cumulative PR estimated cost as a single line, for example `Cost: $0.08 (3 runs)`.
+- Detailed cost components only when `summary_style: detailed` is enabled.
 
 ReviewGate has no external database in the action-first architecture, so cumulative state should be stored in the canonical summary's hidden metadata and preserved on update.
 
-The summary now stores versioned hidden state with reviewed SHAs, run count, cumulative estimated cost, and bounded cost history. The visible summary remains human-readable; the hidden payload is for robust rerendering on later runs.
+The summary stores versioned hidden state with reviewed SHAs, run count, cumulative estimated cost, and bounded cost history. The visible summary remains human-readable; the hidden payload is for robust rerendering on later runs.
 
 ## Model Defaults
 

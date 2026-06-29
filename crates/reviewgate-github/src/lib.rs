@@ -176,6 +176,7 @@ pub fn plan_inline_comment_drafts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reviewgate_core::ReviewArtifact;
 
     #[test]
     fn finds_canonical_summary_comment_by_marker() {
@@ -311,6 +312,27 @@ mod tests {
                 .body
                 .contains("Agent instruction: Handle and test")
         );
+    }
+
+    #[test]
+    fn fixture_plans_expected_inline_comment_payloads() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+
+        let drafts = plan_inline_comment_drafts(&artifact.findings, &[], Severity::P2, 0.8);
+
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].finding_id, "rg_001");
+        assert_eq!(drafts[0].path, "app/webhooks/retry.py");
+        assert_eq!(drafts[0].line, 42);
+        assert!(drafts[0].body.contains(&inline_comment_marker("rg_001")));
+        assert!(
+            drafts[0]
+                .body
+                .contains("**P2: Missing regression test for retry exhaustion**")
+        );
+        assert!(!drafts[0].body.contains("rg_002"));
     }
 
     #[test]

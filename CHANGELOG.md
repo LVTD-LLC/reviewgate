@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Changed the default canonical PR summary to concise output with a compact verdict/status line, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
+- Added `summary_style: concise|detailed` and `inline_min_confidence` support in config/action/CLI summary rendering, with detailed mode preserving full cost, metrics, findings, notes, and agent-instruction sections.
+- Added a `ReviewGate: running` PR placeholder comment that is replaced by the final canonical summary when review completes.
+- Made canonical summary publishing failures visible by failing the publish step with an Actions error instead of hiding them behind `continue-on-error`.
+- Added stable OpenRouter attribution headers to chat and model-pricing requests without exposing user secrets.
+- Added fixture-backed golden coverage for concise summary output and inline comment payloads.
+- Added a fresh `v0` consumer smoke-test procedure for validating moved major tags on new workflow runs.
 - Fixed GitHub Action summary and inline comment publishing on current GitHub CLI versions by avoiding the unsupported `gh api --paginate --jq` option combination.
 - Removed pre-user migration compatibility for old Shipcheck config and marker names.
 - Renamed the product, action, CLI, Rust crates, config/artifact paths, workflow, schema, docs, and public agent-loop skill from Shipcheck to ReviewGate.
