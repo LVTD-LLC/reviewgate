@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Documented and dogfooded a fork-safe ReviewGate workflow guard so required checks do not fail when GitHub withholds `OPENROUTER_API_KEY` from forked or Dependabot PR events.
 - Changed the default canonical PR summary to concise output with a compact verdict/status line, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 - Fixed concise summaries to keep line-specific fallback findings visible when inline PR comments are disabled or cannot be published.
 - Fixed action enforcement so summary publishing failures cannot skip the configured score gate.

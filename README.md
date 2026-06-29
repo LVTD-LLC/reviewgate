@@ -38,6 +38,14 @@ permissions:
 
 jobs:
   review:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'
+        )
+      }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -48,6 +56,8 @@ jobs:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           preset: balanced
 ```
+
+The job-level `if` keeps the default install fork-safe: GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so ReviewGate skips those events instead of passing an empty model key into an enforced required check. Do not move this workflow to `pull_request_target` for untrusted fork code.
 
 The action:
 

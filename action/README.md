@@ -62,3 +62,20 @@ Canonical summary publishing is not silent: GitHub API or permission failures em
 ## Trigger Guidance
 
 The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `reviewgate recheck` helper to rerun the latest ReviewGate workflow run for a PR branch.
+
+For public repositories, guard the ReviewGate job so it only runs on same-repository PR branches or explicit maintainer-triggered dispatches:
+
+```yaml
+jobs:
+  reviewgate:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'
+        )
+      }}
+```
+
+GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so this guard prevents an enforced ReviewGate check from failing only because `OPENROUTER_API_KEY` is unavailable. Keep untrusted fork review workflows on `pull_request`; do not switch to `pull_request_target` to get secret access.
