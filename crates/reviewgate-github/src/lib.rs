@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use reviewgate_core::{
     Finding, FindingScope, SUMMARY_MARKER, SecretString, Severity, extract_summary_state,
@@ -173,12 +173,19 @@ pub struct InlineCommentDraft {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChangedLineSet {
-    lines: BTreeSet<(String, u32)>,
+    lines_by_path: BTreeMap<String, BTreeMap<u32, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineCommentAnchorPlan {
+    pub drafts: Vec<InlineCommentDraft>,
+    pub repaired_count: u32,
+    pub skipped_count: u32,
 }
 
 impl ChangedLineSet {
     pub fn from_unified_diff(diff: &str) -> Self {
-        let mut lines = BTreeSet::new();
+        let mut lines_by_path: BTreeMap<String, BTreeMap<u32, String>> = BTreeMap::new();
         let mut current_path: Option<String> = None;
         let mut new_line: Option<u32> = None;
 
@@ -201,8 +208,11 @@ impl ChangedLineSet {
                 continue;
             };
 
-            if line.starts_with('+') {
-                lines.insert((path.clone(), line_number));
+            if let Some(added_line) = line.strip_prefix('+') {
+                lines_by_path
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(line_number, added_line.to_string());
                 new_line = line_number.checked_add(1);
             } else if line.starts_with(' ') {
                 new_line = line_number.checked_add(1);
@@ -211,11 +221,42 @@ impl ChangedLineSet {
             }
         }
 
-        Self { lines }
+        Self { lines_by_path }
     }
 
     pub fn contains(&self, path: &str, line: u32) -> bool {
-        self.lines.contains(&(path.to_string(), line))
+        self.lines_by_path
+            .get(path)
+            .is_some_and(|lines| lines.contains_key(&line))
+    }
+
+    pub fn resolve_line(&self, path: &str, preferred_line: u32, body: &str) -> Option<u32> {
+        if self.contains(path, preferred_line) {
+            return Some(preferred_line);
+        }
+
+        let candidates = self.lines_by_path.get(path)?;
+        let body_tokens = token_set(body);
+        let mut best: Option<(u32, usize, u32)> = None;
+
+        for (line, contents) in candidates {
+            let score = content_match_score(contents, &body_tokens);
+            let distance = line.abs_diff(preferred_line);
+            let should_replace = match best {
+                None => true,
+                Some((best_line, best_score, best_distance)) => {
+                    score > best_score
+                        || (score == best_score
+                            && (distance < best_distance
+                                || (distance == best_distance && *line < best_line)))
+                }
+            };
+            if should_replace {
+                best = Some((*line, score, distance));
+            }
+        }
+
+        best.map(|(line, _, _)| line)
     }
 }
 
@@ -243,6 +284,48 @@ pub fn filter_inline_comment_drafts_to_changed_lines(
         .into_iter()
         .filter(|draft| changed_lines.contains(&draft.path, draft.line))
         .collect()
+}
+
+pub fn resolve_inline_comment_drafts_to_changed_lines(
+    drafts: Vec<InlineCommentDraft>,
+    changed_lines: &ChangedLineSet,
+) -> InlineCommentAnchorPlan {
+    let mut resolved = Vec::new();
+    let mut repaired_count = 0u32;
+    let mut skipped_count = 0u32;
+
+    for mut draft in drafts {
+        let Some(line) = changed_lines.resolve_line(&draft.path, draft.line, &draft.body) else {
+            skipped_count += 1;
+            continue;
+        };
+        if line != draft.line {
+            repaired_count += 1;
+            draft.line = line;
+        }
+        resolved.push(draft);
+    }
+
+    InlineCommentAnchorPlan {
+        drafts: resolved,
+        repaired_count,
+        skipped_count,
+    }
+}
+
+fn token_set(value: &str) -> BTreeSet<String> {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 3)
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn content_match_score(contents: &str, body_tokens: &BTreeSet<String>) -> usize {
+    token_set(contents)
+        .iter()
+        .filter(|token| body_tokens.contains(*token))
+        .count()
 }
 
 fn encode_marker_payload(value: &str) -> String {
@@ -645,6 +728,73 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
 
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].finding_id, "changed");
+    }
+
+    #[test]
+    fn repairs_inline_draft_anchors_to_matching_changed_lines() {
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/.github/workflows/reviewgate.yml b/.github/workflows/reviewgate.yml\n--- a/.github/workflows/reviewgate.yml\n+++ b/.github/workflows/reviewgate.yml\n@@ -5,0 +6,2 @@ on:\n+  pull_request_target:\n+    types: [opened, synchronize, reopened, ready_for_review]\n@@ -22 +24 @@ permissions:\n-  contents: read\n+  contents: write\n",
+        );
+        let drafts = vec![
+            InlineCommentDraft {
+                finding_id: "fork".to_string(),
+                path: ".github/workflows/reviewgate.yml".to_string(),
+                line: 6,
+                body: "Removal of fork-safety guard enables credential theft via pull_request_target".to_string(),
+            },
+            InlineCommentDraft {
+                finding_id: "permissions".to_string(),
+                path: ".github/workflows/reviewgate.yml".to_string(),
+                line: 15,
+                body: "Elevation of GitHub token from read to write. Revert permissions.contents back to read.".to_string(),
+            },
+        ];
+
+        let plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+
+        assert_eq!(plan.repaired_count, 1);
+        assert_eq!(plan.skipped_count, 0);
+        assert_eq!(plan.drafts.len(), 2);
+        assert_eq!(plan.drafts[0].line, 6);
+        assert_eq!(plan.drafts[1].line, 24);
+    }
+
+    #[test]
+    fn repairs_inline_draft_anchors_to_nearest_changed_line_when_text_does_not_match() {
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,0 +11,2 @@\n+first\n+second\n",
+        );
+        let drafts = vec![InlineCommentDraft {
+            finding_id: "nearest".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: 20,
+            body: "Unrelated text".to_string(),
+        }];
+
+        let plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+
+        assert_eq!(plan.repaired_count, 1);
+        assert_eq!(plan.skipped_count, 0);
+        assert_eq!(plan.drafts[0].line, 12);
+    }
+
+    #[test]
+    fn skips_inline_draft_anchors_when_file_has_no_changed_lines() {
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,0 +11 @@\n+changed\n",
+        );
+        let drafts = vec![InlineCommentDraft {
+            finding_id: "missing-file".to_string(),
+            path: "src/other.rs".to_string(),
+            line: 11,
+            body: "Changed".to_string(),
+        }];
+
+        let plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+
+        assert_eq!(plan.repaired_count, 0);
+        assert_eq!(plan.skipped_count, 1);
+        assert!(plan.drafts.is_empty());
     }
 
     #[test]

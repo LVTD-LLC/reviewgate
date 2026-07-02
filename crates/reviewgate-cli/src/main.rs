@@ -9,15 +9,15 @@ use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
     OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE,
-    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, Severity,
-    SummaryOptions, SummaryState, SummaryStyle, compute_metrics, estimate_model_cost_usd,
+    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
+    Severity, SummaryOptions, SummaryState, SummaryStyle, compute_metrics, estimate_model_cost_usd,
     extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
-    SummaryCommentAction, filter_inline_comment_drafts_to_changed_lines,
-    plan_inline_comment_drafts, plan_summary_comment_publish, posted_inline_finding_ids,
+    SummaryCommentAction, plan_inline_comment_drafts, plan_summary_comment_publish,
+    posted_inline_finding_ids, resolve_inline_comment_drafts_to_changed_lines,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -914,13 +914,19 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         inline_min_severity,
         inline_min_confidence,
     );
-    let planned_count = drafts.len();
     let changed_lines = collect_changed_lines(&repo)?;
-    let drafts = filter_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
-    let skipped_unanchored = planned_count.saturating_sub(drafts.len());
+    let anchor_plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+    let repaired_anchors = anchor_plan.repaired_count;
+    let skipped_unanchored = anchor_plan.skipped_count;
+    let drafts = anchor_plan.drafts;
+    if repaired_anchors > 0 {
+        println!(
+            "ReviewGate inline comments repaired {repaired_anchors} model-provided anchor(s) to changed lines in the PR diff."
+        );
+    }
     if skipped_unanchored > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Skipped {skipped_unanchored} inline comment(s) whose model-provided line was not an added line in the PR diff."
+            "::warning title=ReviewGate inline comments::Skipped {skipped_unanchored} inline comment(s) with no added line in the finding file."
         );
     }
     if drafts.is_empty() {
@@ -957,13 +963,13 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     }
 
     println!(
-        "ReviewGate inline comments posted: {posted}; skipped/failed: {}.",
-        failed + skipped_unanchored as u32
+        "ReviewGate inline comments posted: {posted}; repaired anchors: {repaired_anchors}; skipped/failed: {}.",
+        failed + skipped_unanchored
     );
     if failed > 0 || skipped_unanchored > 0 {
         println!(
             "::warning title=ReviewGate inline comments::Failed or skipped {} inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings.",
-            failed + skipped_unanchored as u32
+            failed + skipped_unanchored
         );
     }
     Ok(failed == 0 && skipped_unanchored == 0)
@@ -1089,11 +1095,12 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> Result<()> 
                 .and_then(pull_request_head_sha)
                 .unwrap_or(&artifact.reviewed_sha)
                 .to_string();
+            let conclusion = check_run_conclusion_for_status(&artifact.status);
             (
                 head_sha,
-                "success",
+                conclusion,
                 format!(
-                    "ReviewGate: {}/5 ({})",
+                    "ReviewGate: {}/5 ({}, review completed)",
                     artifact.score,
                     artifact.status.as_str()
                 ),
@@ -1133,6 +1140,13 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> Result<()> 
     )?;
     println!("Published ReviewGate check run for {head_sha}: {conclusion}.");
     Ok(())
+}
+
+fn check_run_conclusion_for_status(status: &ReviewStatus) -> &'static str {
+    match status {
+        ReviewStatus::Passed => "success",
+        ReviewStatus::NeedsChanges => "neutral",
+    }
 }
 
 fn build_check_run_payload(
@@ -1661,6 +1675,9 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
     prompt.push_str(
+        "Every concrete defect mentioned in the verdict or notes must also appear as a separate finding with an actionable agent_instruction. Do not mention specific problems only in prose. If a diff changes scoring, review publishing, GitHub token permissions, comment ownership checks, marker encoding, secret handling, or workflow triggers, review each changed behavior independently and emit separate findings for distinct regressions.\n\n",
+    );
+    prompt.push_str(
         "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line in the new/right side of the diff, and safe to post as an inline PR comment. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
     );
     prompt.push_str(&format!(
@@ -2109,7 +2126,21 @@ mod tests {
 
         let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
         assert!(dogfood_workflow.contains("checks: write"));
+        assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@main"));
+        assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
+    }
+
+    #[test]
+    fn completed_check_run_conclusion_reflects_review_status_without_failing_low_scores() {
+        assert_eq!(
+            check_run_conclusion_for_status(&ReviewStatus::Passed),
+            "success"
+        );
+        assert_eq!(
+            check_run_conclusion_for_status(&ReviewStatus::NeedsChanges),
+            "neutral"
+        );
     }
 
     #[test]
@@ -2134,7 +2165,7 @@ mod tests {
             "ReviewGate".to_string(),
             "abc123".to_string(),
             "success",
-            "ReviewGate: 5/5 (passed)".to_string(),
+            "ReviewGate: 5/5 (passed, review completed)".to_string(),
             "Clean.".to_string(),
             Some("https://github.com/LVTD-LLC/reviewgate/actions/runs/1".to_string()),
         );
@@ -2370,6 +2401,9 @@ Thanks {also not json}."#;
         assert!(prompt.contains("target_score: 5"));
         assert!(!prompt.contains(concat!("fail", "_under")));
         assert!(prompt.contains("ReviewGate Review Output"));
+        assert!(prompt.contains("Every concrete defect mentioned in the verdict or notes"));
+        assert!(prompt.contains("comment ownership checks"));
+        assert!(prompt.contains("marker encoding"));
         assert!(prompt.contains("Finding scope guidance"));
         assert!(prompt.contains("set scope to line only"));
         assert!(prompt.contains("new/right side of the diff"));

@@ -18,7 +18,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Produces a JSON artifact for humans and external agent loops.
 - Posts high-confidence, line-specific findings as inline PR comments by default, deduped by stable ReviewGate finding markers.
 - Reports whether the review reached the configured target score without failing CI for low scores.
-- Publishes a dedicated GitHub check run for review availability when `checks: write` is granted.
+- Publishes a dedicated GitHub check run for review availability when `checks: write` is granted; `needs_changes` reviews conclude `neutral` rather than green `success`.
 - Shows one-line cumulative model cost in the PR summary and full cost/metrics data in the JSON artifact.
 
 ## GitHub Action
@@ -149,9 +149,9 @@ Agents should consume the JSON artifact first and use the canonical PR summary a
 4. Trigger or wait for ReviewGate to rerun and update the same summary comment. The `reviewgate recheck` helper reruns the latest ReviewGate workflow run for a PR branch when GitHub CLI auth is available.
 5. Stop when `score >= target_score` and `status == "passed"`, or when human judgment is needed.
 
-`status == "needs_changes"` means the review completed but the configured target score has not been reached. The action does not fail CI for this status.
+`status == "needs_changes"` means the review completed but the configured target score has not been reached. The action does not fail CI for this status, and the ReviewGate check run uses a neutral conclusion.
 
-Finding `scope` controls publishing. Only `scope: "line"` findings with an exact changed-line anchor are eligible for inline PR comments; `scope: "file"` and `scope: "pr"` findings remain in the summary and JSON artifact.
+Finding `scope` controls publishing. Only `scope: "line"` findings with a file and line are inline comment candidates; ReviewGate repairs stale line anchors to changed lines when possible. `scope: "file"` and `scope: "pr"` findings remain in the summary and JSON artifact.
 
 ## OpenRouter Boundary
 
@@ -180,15 +180,15 @@ ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing
 - `inline_min_confidence`: minimum confidence required before posting an inline PR comment.
 - `publish_inline_comments`: whether eligible line-specific findings should become PR review comments.
 
-Review scores below `target_score` produce `status: "needs_changes"` in the JSON artifact and summary, but they do not fail the GitHub Actions job.
+Review scores below `target_score` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: score, verdict, one-line cost such as `Cost: $0.08 (3 runs)`, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: score, verdict, one-line cost such as `Cost: $0.08 (3 runs)`, compact finding counts, posted inline-comment count when available, and short fallback entries only for findings that were not posted inline.
 
 ## Current Limitations
 
 - Config parsing intentionally supports the stable scalar fields above; richer nested config support comes later.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
-- Inline comments are best-effort: unanchored or filtered findings stay as compact fallback entries, and inline API failures are surfaced as workflow warnings while the full finding remains in JSON.
+- Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible; findings with no publishable changed line stay as compact fallback entries, and inline API failures are surfaced as workflow warnings while the full finding remains in JSON.
 - Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
 

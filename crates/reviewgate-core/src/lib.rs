@@ -865,17 +865,23 @@ fn render_concise_summary_body(
         options.inline_min_severity,
         options.inline_min_confidence,
     );
+    let fallback_findings = fallback_summary_findings(artifact, options);
 
     output.push_str(artifact.verdict.trim());
     output.push_str("\n\n");
     output.push_str(&format!(
-        "Cost: {} ({}) | Findings: {} total, {} blocking, {} inline-eligible\n",
+        "Cost: {} ({}) | Findings: {} total, {} blocking, {} inline candidates\n",
         format_cost(state.cumulative_cost_usd),
         format_run_count(state.run_count),
         metrics.finding_count,
         metrics.blocking_finding_count,
         metrics.inline_eligible_count
     ));
+    if let Some(posted_ids) = &options.inline_posted_finding_ids
+        && !posted_ids.is_empty()
+    {
+        output.push_str(&format!("Inline comments: {} posted.\n", posted_ids.len()));
+    }
     if !artifact.notes.is_empty() {
         output.push_str(&format!(
             "Notes: {} note(s) in the JSON artifact.\n",
@@ -883,7 +889,6 @@ fn render_concise_summary_body(
         ));
     }
 
-    let fallback_findings = fallback_summary_findings(artifact, options);
     if fallback_findings.is_empty() {
         output.push('\n');
         if metrics.finding_count == 0 {
@@ -901,7 +906,7 @@ fn render_concise_summary_body(
     }
 
     output.push('\n');
-    let inline_visibility_reason = if options.inline_posted_finding_ids.is_some() {
+    let inline_visibility_reason = if has_posted_inline_comments(options) {
         format!(
             "{} not posted inline",
             if fallback_findings.len() == 1 {
@@ -1018,7 +1023,7 @@ fn render_detailed_summary_body(
     {
         output.push_str("## Metrics\n\n");
         output.push_str(&format!(
-            "- Findings: {} total, {} blocking, {} inline-eligible\n",
+            "- Findings: {} total, {} blocking, {} inline candidates\n",
             metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
         ));
         output.push_str(&format!(
@@ -1123,6 +1128,13 @@ fn render_detailed_summary_body(
     }
 }
 
+fn has_posted_inline_comments(options: &SummaryOptions) -> bool {
+    options
+        .inline_posted_finding_ids
+        .as_ref()
+        .is_some_and(|posted_ids| !posted_ids.is_empty())
+}
+
 fn fallback_summary_findings<'a>(
     artifact: &'a ReviewArtifact,
     options: &SummaryOptions,
@@ -1160,6 +1172,8 @@ fn inline_skip_reason(finding: &Finding, options: &SummaryOptions) -> &'static s
         "below the inline severity floor"
     } else if finding.confidence < options.inline_min_confidence {
         "below the inline confidence floor"
+    } else if has_posted_inline_comments(options) {
+        "not posted inline"
     } else if !options.inline_comments_available {
         "inline comments were disabled or could not be published"
     } else {
@@ -1332,7 +1346,7 @@ mod tests {
         let summary = render_summary(&artifact).expect("summary renders");
 
         assert!(summary.contains("Cost: $0.08 (1 run)"));
-        assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline-eligible"));
+        assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline candidates"));
         assert!(!summary.contains("Status:"));
         assert!(!summary.contains("Target:"));
         assert!(!summary.contains("Reviewed:"));
@@ -1717,8 +1731,9 @@ mod tests {
         .expect("summary renders");
 
         assert!(summary.contains("1 finding is kept here because it was not posted inline."));
+        assert!(summary.contains("Inline comments: 1 posted."));
         assert!(summary.contains("P0: Score computation uses wrong line"));
-        assert!(summary.contains("inline comments were disabled or could not be published"));
+        assert!(summary.contains("not posted inline"));
         assert!(!summary.contains("API key leak already posted inline"));
         assert!(!summary.contains("Do not duplicate this in the summary"));
     }
@@ -2144,7 +2159,7 @@ mod tests {
         )
         .expect("summary renders");
 
-        assert!(summary.contains("Findings: 1 total, 0 blocking, 0 inline-eligible"));
+        assert!(summary.contains("Findings: 1 total, 0 blocking, 0 inline candidates"));
     }
 
     #[test]

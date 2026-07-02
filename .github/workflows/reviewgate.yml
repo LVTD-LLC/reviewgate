@@ -53,7 +53,9 @@ jobs:
           fi
       - name: Run ReviewGate
         if: steps.openrouter.outputs.configured == 'true'
-        uses: ./
+        # ReviewGate reviews this repository with the main-branch action so PRs
+        # cannot change the reviewer implementation that scores the same PR.
+        uses: LVTD-LLC/reviewgate@main
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml

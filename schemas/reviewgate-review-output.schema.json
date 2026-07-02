@@ -22,7 +22,11 @@
       "type": "string",
       "enum": ["passed", "needs_changes"]
     },
-    "verdict": { "type": "string", "minLength": 1 },
+    "verdict": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concise overall verdict. Do not introduce concrete defects here unless they also appear as findings."
+    },
     "models": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
