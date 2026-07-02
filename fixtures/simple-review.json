@@ -29,6 +29,7 @@
   "findings": [
     {
       "id": "rg_001",
+      "scope": "line",
       "severity": "P2",
       "confidence": 0.86,
       "file": "app/webhooks/retry.py",
@@ -39,6 +40,7 @@
     },
     {
       "id": "rg_002",
+      "scope": "line",
       "severity": "P4",
       "confidence": 0.72,
       "file": "app/webhooks/retry.py",
