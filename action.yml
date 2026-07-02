@@ -177,6 +177,7 @@ runs:
         fi
 
     - name: Publish ReviewGate check run
+      if: ${{ always() }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

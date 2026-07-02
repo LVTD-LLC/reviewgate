@@ -1139,30 +1139,56 @@ fn publish_check_run(
     if !github_token_available() {
         bail!("ReviewGate check run failed: GitHub token is empty");
     }
-    let artifact = read_artifact(&input)?.with_computed_score()?;
-    let event = read_github_event()?;
-    let head_sha = event
-        .as_ref()
-        .and_then(pull_request_head_sha)
-        .unwrap_or(&artifact.reviewed_sha);
-    let conclusion = if artifact.status == ReviewStatus::Failed {
-        "failure"
-    } else {
-        "success"
-    };
-    let details_url = github_actions_run_url();
-    let payload = serde_json::json!({
-        "name": name,
-        "head_sha": head_sha,
-        "status": "completed",
-        "conclusion": conclusion,
-        "details_url": details_url,
-        "output": {
-            "title": format!("ReviewGate: {}/5 ({})", artifact.score, artifact.status.as_str()),
-            "summary": artifact.verdict,
-        }
-    });
     let repo = repo.canonicalize().unwrap_or(repo);
+    let event = read_github_event()?;
+    let artifact = read_artifact(&input).and_then(|artifact| Ok(artifact.with_computed_score()?));
+    let (head_sha, conclusion, title, summary) = match artifact {
+        Ok(artifact) => {
+            let head_sha = event
+                .as_ref()
+                .and_then(pull_request_head_sha)
+                .unwrap_or(&artifact.reviewed_sha)
+                .to_string();
+            let conclusion = if artifact.status == ReviewStatus::Failed {
+                "failure"
+            } else {
+                "success"
+            };
+            (
+                head_sha,
+                conclusion,
+                format!(
+                    "ReviewGate: {}/5 ({})",
+                    artifact.score,
+                    artifact.status.as_str()
+                ),
+                artifact.verdict,
+            )
+        }
+        Err(error) => {
+            let head_sha = event
+                .as_ref()
+                .and_then(pull_request_head_sha)
+                .map(str::to_string)
+                .or_else(|| git(&repo, ["rev-parse", "HEAD"]).ok())
+                .context("ReviewGate check run failed: could not determine head SHA")?;
+            (
+                head_sha,
+                "failure",
+                "ReviewGate: review unavailable".to_string(),
+                format!("ReviewGate could not read the review artifact: {error}"),
+            )
+        }
+    };
+
+    let payload = build_check_run_payload(
+        name,
+        head_sha.clone(),
+        conclusion,
+        title,
+        summary,
+        github_actions_run_url(),
+    );
     let repository = github_repository()?;
     gh_api_json(
         &repo,
@@ -1172,6 +1198,30 @@ fn publish_check_run(
     )?;
     println!("Published ReviewGate check run for {head_sha}: {conclusion}.");
     Ok(())
+}
+
+fn build_check_run_payload(
+    name: String,
+    head_sha: String,
+    conclusion: &str,
+    title: String,
+    summary: String,
+    details_url: Option<String>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "name": name,
+        "head_sha": head_sha,
+        "status": "completed",
+        "conclusion": conclusion,
+        "output": {
+            "title": title,
+            "summary": summary,
+        }
+    });
+    if let Some(details_url) = details_url {
+        payload["details_url"] = serde_json::Value::String(details_url);
+    }
+    payload
 }
 
 fn enforce(input: PathBuf, report_only: bool, gate_mode: GateMode) -> Result<()> {
@@ -2104,11 +2154,45 @@ mod tests {
         assert!(!summary_step.contains("capture(\"<!-- reviewgate-state"));
 
         assert!(check_run_step.contains("publish-check-run"));
+        assert!(check_run_step.contains("if: ${{ always() }}"));
         assert!(check_run_step.contains("--gate-mode \"$REVIEWGATE_GATE_MODE\""));
 
         let enforce_step = &action[enforce_start..];
         assert!(enforce_step.contains("if: ${{ always() }}"));
         assert!(enforce_step.contains("-- enforce"));
+    }
+
+    #[test]
+    fn check_run_payload_omits_missing_details_url() {
+        let payload = build_check_run_payload(
+            "ReviewGate".to_string(),
+            "abc123".to_string(),
+            "failure",
+            "ReviewGate: review unavailable".to_string(),
+            "ReviewGate could not read the review artifact.".to_string(),
+            None,
+        );
+
+        assert!(payload.get("details_url").is_none());
+        assert_eq!(payload["conclusion"], "failure");
+        assert_eq!(payload["head_sha"], "abc123");
+    }
+
+    #[test]
+    fn check_run_payload_includes_available_details_url() {
+        let payload = build_check_run_payload(
+            "ReviewGate".to_string(),
+            "abc123".to_string(),
+            "success",
+            "ReviewGate: 5/5 (passed)".to_string(),
+            "Clean.".to_string(),
+            Some("https://github.com/LVTD-LLC/reviewgate/actions/runs/1".to_string()),
+        );
+
+        assert_eq!(
+            payload["details_url"],
+            "https://github.com/LVTD-LLC/reviewgate/actions/runs/1"
+        );
     }
 
     #[test]

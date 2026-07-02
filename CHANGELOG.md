@@ -7,6 +7,7 @@
 - Added `scope: line|file|pr` to review findings, updated the schema/prompts, and limited inline comment publishing to `scope: line` findings.
 - Implemented `gate_mode: check` with a dedicated GitHub Check Run publisher, while keeping `gate_mode: job` and `gate_mode: report` behavior explicit.
 - Fixed PR reviewed SHA handling to prefer the pull request head SHA over the checkout merge SHA in GitHub Actions.
+- Fixed `gate_mode: check` publishing so the check-run step executes under `always()` and can emit a failure check when the review artifact is unavailable.
 - Tightened canonical summary comment selection to ignore user-authored ReviewGate markers and delete only bot-authored duplicate summary comments.
 - Added workflow concurrency guidance to reduce duplicate ReviewGate runs on rapid PR updates.
 - Updated `anyhow` to 1.0.103 to avoid the RustSec advisory affecting 1.0.102.
