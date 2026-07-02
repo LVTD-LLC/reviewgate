@@ -44,7 +44,7 @@ The action must update the existing PR summary comment containing `<!-- reviewga
 - `inline_min_confidence`: Minimum model confidence required for inline comments. Defaults to `0.80`.
 - `publish_inline_comments`: Whether eligible line-specific findings are posted as PR review comments. Defaults to `true`.
 
-Scores below `target_score` are reported as `needs_changes` in the JSON artifact and PR summary. They do not fail the workflow; non-zero exits mean ReviewGate could not complete the review or a required publishing step failed.
+Scores below `target_score` are reported as `needs_changes` in the JSON artifact and PR summary. They publish a neutral ReviewGate check-run conclusion but do not fail the workflow; non-zero exits mean ReviewGate could not complete the review or a required publishing step failed.
 
 ## Runtime
 
@@ -52,7 +52,7 @@ The composite action first posts or updates a short `ReviewGate: running` placeh
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
 
-Inline comments are best-effort and deduped by hidden `<!-- reviewgate-finding:... -->` markers. Unanchored or filtered findings stay as compact fallback entries in the concise summary. If GitHub rejects a line comment because the line is no longer in the diff, the workflow emits a warning and the full finding remains in `.reviewgate/review.json`; use `summary_style: detailed` when you want all finding detail in the summary comment.
+Inline comments are best-effort and deduped by hidden `<!-- reviewgate-finding:... -->` markers. Stale model-provided line anchors are repaired to matching changed lines when possible. Findings with no publishable changed line stay as compact fallback entries in the concise summary. If GitHub rejects a line comment, the workflow emits a warning and the full finding remains in `.reviewgate/review.json`; use `summary_style: detailed` when you want all finding detail in the summary comment.
 
 Canonical summary publishing is not silent: GitHub API or permission failures emit an Actions error and fail that publish step so maintainers can fix token permissions instead of getting a green run with no PR summary.
 
