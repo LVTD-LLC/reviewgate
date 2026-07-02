@@ -14,12 +14,12 @@ This repository is in an early build milestone. The current CLI can validate and
 - Runs in the user's CI environment.
 - Uses OpenRouter/BYOK for model calls.
 - Keeps one concise PR summary comment updated with `<!-- reviewgate-summary -->`.
-- Emits a visible score like `ReviewGate: 4/5`.
+- Emits a visible score like `Confidence Score: 4/5`.
 - Produces a JSON artifact for humans and external agent loops.
 - Posts high-confidence, line-specific findings as inline PR comments by default, deduped by stable ReviewGate finding markers.
 - Reports whether the review reached the configured target score without failing CI for low scores.
 - Publishes a dedicated GitHub check run for review availability when `checks: write` is granted; `needs_changes` reviews conclude `neutral` rather than green `success`.
-- Shows one-line cumulative model cost in the PR summary and full cost/metrics data in the JSON artifact.
+- Shows cumulative review count, model cost, and latest analyzed commit in the PR summary footer, with full cost/metrics data in the JSON artifact.
 
 ## GitHub Action
 
@@ -182,7 +182,7 @@ ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing
 
 Review scores below `target_score` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: score, verdict, one-line cost such as `Cost: $0.08 (3 runs)`, compact finding counts, posted inline-comment count when available, and short fallback entries only for findings that were not posted inline.
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: title, verdict, centered confidence score, compact finding counts, posted inline-comment count when available, short fallback entries only for findings that were not posted inline, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, total cost, and latest analyzed commit.
 
 ## Current Limitations
 
