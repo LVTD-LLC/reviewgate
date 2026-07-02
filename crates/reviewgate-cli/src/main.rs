@@ -9,8 +9,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
     OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE,
-    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
-    Severity, SummaryOptions, SummaryState, SummaryStyle, compute_metrics, estimate_model_cost_usd,
+    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, Severity,
+    SummaryOptions, SummaryState, SummaryStyle, compute_metrics, estimate_model_cost_usd,
     extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
 };
@@ -29,6 +29,9 @@ const DEFAULT_CONTEXT_FILES: &[&str] = &[
     ".reviewgate.yml",
 ];
 const DEFAULT_CONFIG_PATH: &str = ".reviewgate.yml";
+const REMOVED_FAIL_UNDER_CONFIG_KEY: &str = concat!("fail", "_under");
+const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
+const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
 
@@ -63,8 +66,6 @@ enum Command {
         summary_out: Option<PathBuf>,
         #[arg(long)]
         target_score: Option<u8>,
-        #[arg(long)]
-        fail_under: Option<u8>,
         #[arg(long, value_enum, default_value = "balanced")]
         preset: PresetArg,
         #[arg(long)]
@@ -73,10 +74,6 @@ enum Command {
         openrouter_base_url: Option<String>,
         #[arg(long)]
         mock_artifact: Option<PathBuf>,
-        #[arg(long)]
-        report_only: bool,
-        #[arg(long, value_enum, default_value = "job")]
-        gate_mode: GateModeArg,
         #[arg(long)]
         summary_min_severity: Option<String>,
         #[arg(long)]
@@ -160,25 +157,14 @@ enum Command {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         inline_comments_available: bool,
     },
-    /// Publish a dedicated ReviewGate check run when gate_mode=check.
+    /// Publish a dedicated ReviewGate check run for review availability.
     PublishCheckRun {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value = "job")]
-        gate_mode: GateModeArg,
         #[arg(long, default_value = "ReviewGate")]
         name: String,
-    },
-    /// Enforce ReviewGate's configured job failure policy from an artifact.
-    Enforce {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
-        report_only: bool,
-        #[arg(long, value_enum, default_value = "job")]
-        gate_mode: GateModeArg,
     },
 }
 
@@ -197,13 +183,10 @@ fn main() -> Result<()> {
             json_out,
             summary_out,
             target_score,
-            fail_under,
             preset,
             model,
             openrouter_base_url,
             mock_artifact,
-            report_only,
-            gate_mode,
             summary_min_severity,
             inline_min_severity,
             inline_min_confidence,
@@ -215,13 +198,10 @@ fn main() -> Result<()> {
             json_out,
             summary_out,
             target_score,
-            fail_under,
             preset: preset.into(),
             model,
             openrouter_base_url,
             mock_artifact,
-            report_only,
-            gate_mode: gate_mode.into(),
             summary_min_severity,
             inline_min_severity,
             inline_min_confidence,
@@ -284,17 +264,7 @@ fn main() -> Result<()> {
             summary_style: summary_style.map(Into::into),
             inline_comments_available,
         }),
-        Command::PublishCheckRun {
-            repo,
-            input,
-            gate_mode,
-            name,
-        } => publish_check_run(repo, input, gate_mode.into(), name),
-        Command::Enforce {
-            input,
-            report_only,
-            gate_mode,
-        } => enforce(input, report_only, gate_mode.into()),
+        Command::PublishCheckRun { repo, input, name } => publish_check_run(repo, input, name),
     }
 }
 
@@ -306,33 +276,9 @@ enum PresetArg {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum GateModeArg {
-    Job,
-    Report,
-    Check,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
 enum SummaryStyleArg {
     Concise,
     Detailed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateMode {
-    Job,
-    Report,
-    Check,
-}
-
-impl From<GateModeArg> for GateMode {
-    fn from(value: GateModeArg) -> Self {
-        match value {
-            GateModeArg::Job => GateMode::Job,
-            GateModeArg::Report => GateMode::Report,
-            GateModeArg::Check => GateMode::Check,
-        }
-    }
 }
 
 impl From<PresetArg> for ModelPreset {
@@ -391,14 +337,6 @@ fn fixture_review(
         println!("\n{summary}");
     }
 
-    if artifact.status == ReviewStatus::Failed {
-        bail!(
-            "review score {} is below fail_under {}",
-            artifact.score,
-            artifact.fail_under
-        );
-    }
-
     Ok(())
 }
 
@@ -409,13 +347,10 @@ struct ReviewPrOptions {
     json_out: Option<PathBuf>,
     summary_out: Option<PathBuf>,
     target_score: Option<u8>,
-    fail_under: Option<u8>,
     preset: ModelPreset,
     model: Option<String>,
     openrouter_base_url: Option<String>,
     mock_artifact: Option<PathBuf>,
-    report_only: bool,
-    gate_mode: GateMode,
     summary_min_severity: Option<String>,
     inline_min_severity: Option<String>,
     inline_min_confidence: Option<f64>,
@@ -460,7 +395,6 @@ struct PublishSummaryOptions {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct ReviewConfigValues {
     target_score: Option<u8>,
-    fail_under: Option<u8>,
     summary_min_severity: Option<Severity>,
     inline_min_severity: Option<Severity>,
     inline_min_confidence: Option<f64>,
@@ -489,7 +423,6 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
         .target_score
         .or(config_values.target_score)
         .unwrap_or(5);
-    let fail_under = options.fail_under.or(config_values.fail_under).unwrap_or(4);
     let summary_min_severity = parse_optional_severity(
         options.summary_min_severity.as_deref(),
         "summary_min_severity",
@@ -526,7 +459,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
             .openrouter_base_url
             .clone()
             .unwrap_or_else(|| OPENROUTER_DEFAULT_BASE_URL.to_string());
-        let prompt = build_review_prompt(&context, target_score, fail_under);
+        let prompt = build_review_prompt(&context, target_score);
         let response = call_openrouter_with_curl(&base_url, &api_key, &model, &prompt)?;
         let mut artifact = parse_model_artifact(&response.content)?;
         let (model_pricing, cost_source) = if let Ok(Some(pricing)) =
@@ -552,7 +485,6 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     let mut artifact = artifact;
     artifact.reviewed_sha = context.reviewed_sha.clone();
     artifact.target_score = target_score;
-    artifact.fail_under = fail_under;
     if artifact.models.is_empty() {
         artifact.models = vec![model];
     }
@@ -579,18 +511,6 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
 
     write_or_print(options.json_out, &pretty_json, "review JSON")?;
     write_or_print(options.summary_out, &summary, "review summary")?;
-
-    if should_fail_review(
-        artifact.status.clone(),
-        options.report_only,
-        options.gate_mode,
-    ) {
-        bail!(
-            "review score {} is below fail_under {}",
-            artifact.score,
-            artifact.fail_under
-        );
-    }
 
     Ok(())
 }
@@ -652,10 +572,6 @@ fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage
     }
 
     stages
-}
-
-fn should_fail_review(status: ReviewStatus, report_only: bool, gate_mode: GateMode) -> bool {
-    status == ReviewStatus::Failed && !report_only && gate_mode == GateMode::Job
 }
 
 fn render_summary_command(options: RenderSummaryOptions) -> Result<()> {
@@ -1046,11 +962,10 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
         return Ok(());
     }
     if !options.input.is_file() {
-        println!(
-            "ReviewGate summary comment skipped: missing {}.",
+        bail!(
+            "::error title=ReviewGate summary missing::ReviewGate did not produce {}.",
             options.input.display()
         );
-        return Ok(());
     }
     if !github_token_available() {
         println!("ReviewGate summary comment skipped: GitHub token is empty.");
@@ -1126,16 +1041,7 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
     Ok(())
 }
 
-fn publish_check_run(
-    repo: PathBuf,
-    input: PathBuf,
-    gate_mode: GateMode,
-    name: String,
-) -> Result<()> {
-    if gate_mode != GateMode::Check {
-        println!("ReviewGate check run skipped: gate_mode is not check.");
-        return Ok(());
-    }
+fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> Result<()> {
     if !github_token_available() {
         bail!("ReviewGate check run failed: GitHub token is empty");
     }
@@ -1149,14 +1055,9 @@ fn publish_check_run(
                 .and_then(pull_request_head_sha)
                 .unwrap_or(&artifact.reviewed_sha)
                 .to_string();
-            let conclusion = if artifact.status == ReviewStatus::Failed {
-                "failure"
-            } else {
-                "success"
-            };
             (
                 head_sha,
-                conclusion,
+                "success",
                 format!(
                     "ReviewGate: {}/5 ({})",
                     artifact.score,
@@ -1222,38 +1123,6 @@ fn build_check_run_payload(
         payload["details_url"] = serde_json::Value::String(details_url);
     }
     payload
-}
-
-fn enforce(input: PathBuf, report_only: bool, gate_mode: GateMode) -> Result<()> {
-    if report_only {
-        println!("ReviewGate report-only mode enabled; not failing workflow.");
-        return Ok(());
-    }
-    match gate_mode {
-        GateMode::Report => {
-            println!("ReviewGate gate_mode=report; not failing workflow.");
-            return Ok(());
-        }
-        GateMode::Check => {
-            println!("ReviewGate gate_mode=check; dedicated check run owns the gate.");
-            return Ok(());
-        }
-        GateMode::Job => {}
-    }
-    let artifact = read_artifact(&input)?.with_computed_score()?;
-    if artifact.status == ReviewStatus::Failed {
-        bail!(
-            "ReviewGate failed: score {} is below fail_under {}.",
-            artifact.score,
-            artifact.fail_under
-        );
-    }
-    println!(
-        "ReviewGate status: {} ({}/5).",
-        artifact.status.as_str(),
-        artifact.score
-    );
-    Ok(())
 }
 
 fn resolve_repo_path(repo: &Path, path: &Path) -> PathBuf {
@@ -1505,7 +1374,6 @@ fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
             .trim_matches('"');
         match key {
             "target_score" => values.target_score = Some(parse_score(value, "target_score")?),
-            "fail_under" => values.fail_under = Some(parse_score(value, "fail_under")?),
             "summary_min_severity" => {
                 values.summary_min_severity = Some(parse_severity(value, "summary_min_severity")?)
             }
@@ -1519,10 +1387,25 @@ fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
             "summary_style" => {
                 values.summary_style = Some(parse_summary_style(value, "summary_style")?)
             }
+            key if is_removed_config_key(key) => {
+                eprintln!(
+                    "warning: {} key `{key}` is no longer supported and was ignored; use `target_score` to set the review target.",
+                    path.display()
+                );
+            }
             _ => {}
         }
     }
     Ok(values)
+}
+
+fn is_removed_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        REMOVED_FAIL_UNDER_CONFIG_KEY
+            | REMOVED_REPORT_ONLY_CONFIG_KEY
+            | REMOVED_GATE_MODE_CONFIG_KEY
+    )
 }
 
 fn parse_score(value: &str, field: &str) -> Result<u8> {
@@ -1719,7 +1602,7 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
     }
 }
 
-fn build_review_prompt(context: &ReviewContext, target_score: u8, fail_under: u8) -> String {
+fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     let schema = include_str!("../../../schemas/reviewgate-review-output.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
@@ -1728,8 +1611,8 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8, fail_under: u8
         "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line, and safe to post as an inline PR comment. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
     );
     prompt.push_str(&format!(
-        "reviewed_sha: {}\ntarget_score: {}\nfail_under: {}\n\n",
-        context.reviewed_sha, target_score, fail_under
+        "reviewed_sha: {}\ntarget_score: {}\n\n",
+        context.reviewed_sha, target_score
     ));
     prompt.push_str("JSON schema:\n");
     prompt.push_str(schema);
@@ -2043,10 +1926,11 @@ fn write_or_print(path: Option<PathBuf>, contents: &str, label: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reviewgate_core::ReviewStatus;
 
     #[test]
     fn parses_simple_review_config_values() {
-        let raw = "review:\n  target_score: 5 # perfect review\n  fail_under: 4\n  summary_min_severity: P2\n  inline_min_severity: P1\n  inline_min_confidence: 0.75\n  summary_style: detailed\n";
+        let raw = "review:\n  target_score: 5 # perfect review\n  summary_min_severity: P2\n  inline_min_severity: P1\n  inline_min_confidence: 0.75\n  summary_style: detailed\n";
         let path =
             std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
@@ -2058,13 +1942,20 @@ mod tests {
             values,
             ReviewConfigValues {
                 target_score: Some(5),
-                fail_under: Some(4),
                 summary_min_severity: Some(Severity::P2),
                 inline_min_severity: Some(Severity::P1),
                 inline_min_confidence: Some(0.75),
                 summary_style: Some(SummaryStyle::Detailed),
             }
         );
+    }
+
+    #[test]
+    fn recognizes_removed_config_keys_for_migration_warnings() {
+        assert!(is_removed_config_key(concat!("fail", "_under")));
+        assert!(is_removed_config_key(concat!("report", "_only")));
+        assert!(is_removed_config_key(concat!("gate", "_mode")));
+        assert!(!is_removed_config_key("target_score"));
     }
 
     #[test]
@@ -2112,7 +2003,7 @@ mod tests {
     }
 
     #[test]
-    fn action_publishes_start_signal_and_surfaces_summary_failures() {
+    fn action_publishes_start_signal_and_has_no_score_failure_gate() {
         let action = include_str!("../../../action.yml");
         assert!(action.contains("- name: Publish ReviewGate start signal"));
         assert!(action.contains("publish-start-signal"));
@@ -2121,6 +2012,13 @@ mod tests {
         assert!(action.contains("REVIEWGATE_SUMMARY_STYLE=concise"));
         assert!(action.contains("publish_inline_comments:"));
         assert!(action.contains("default: \"true\""));
+        assert!(!action.contains(concat!("fail", "_under")));
+        assert!(!action.contains(concat!("gate", "_mode")));
+        assert!(!action.contains(concat!("report", "_only")));
+        assert!(!action.contains(concat!("--", "fail", "-under")));
+        assert!(!action.contains(concat!("--gate", "-mode")));
+        assert!(!action.contains(concat!("--report", "-only")));
+        assert!(!action.contains(concat!("- name: Enforce ", "ReviewGate")));
 
         let inline_start = action
             .find("- name: Publish ReviewGate inline comments")
@@ -2131,16 +2029,12 @@ mod tests {
         let check_run_start = action
             .find("- name: Publish ReviewGate check run")
             .expect("check run step exists");
-        let enforce_start = action
-            .find("- name: Enforce ReviewGate")
-            .expect("enforce step exists");
         assert!(inline_start < summary_start);
         assert!(summary_start < check_run_start);
-        assert!(check_run_start < enforce_start);
 
         let inline_step = &action[inline_start..summary_start];
         let summary_step = &action[summary_start..check_run_start];
-        let check_run_step = &action[check_run_start..enforce_start];
+        let check_run_step = &action[check_run_start..];
 
         assert!(inline_step.contains("id: inline-comments"));
         assert!(inline_step.contains("publish-inline-comments"));
@@ -2151,15 +2045,13 @@ mod tests {
         assert!(summary_step.contains("steps.inline-comments.outputs.inline_available"));
         assert!(summary_step.contains("--inline-comments-available"));
         assert!(summary_step.contains("::error title=ReviewGate summary publish failed::"));
+        assert!(summary_step.contains("::error title=ReviewGate summary missing::"));
         assert!(!summary_step.contains("capture(\"<!-- reviewgate-state"));
 
         assert!(check_run_step.contains("publish-check-run"));
         assert!(check_run_step.contains("if: ${{ always() }}"));
-        assert!(check_run_step.contains("--gate-mode \"$REVIEWGATE_GATE_MODE\""));
-
-        let enforce_step = &action[enforce_start..];
-        assert!(enforce_step.contains("if: ${{ always() }}"));
-        assert!(enforce_step.contains("-- enforce"));
+        assert!(check_run_step.contains("continue-on-error: true"));
+        assert!(!check_run_step.contains(concat!("--gate", "-mode")));
     }
 
     #[test]
@@ -2231,7 +2123,6 @@ mod tests {
 {
   "score": 5,
   "target_score": 5,
-  "fail_under": 4,
   "reviewed_sha": "abc123",
   "status": "passed",
   "verdict": "Clean.",
@@ -2273,7 +2164,6 @@ Thanks {also not json}."#;
         let mut artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Clean.".to_string(),
@@ -2303,27 +2193,24 @@ Thanks {also not json}."#;
     }
 
     #[test]
-    fn gate_mode_controls_failed_review_exit_decision() {
-        assert!(should_fail_review(
-            ReviewStatus::Failed,
-            false,
-            GateMode::Job
-        ));
-        assert!(!should_fail_review(
-            ReviewStatus::Failed,
-            false,
-            GateMode::Report
-        ));
-        assert!(!should_fail_review(
-            ReviewStatus::Failed,
-            true,
-            GateMode::Job
-        ));
-        assert!(!should_fail_review(
-            ReviewStatus::NeedsChanges,
-            false,
-            GateMode::Job
-        ));
+    fn review_pr_cli_rejects_removed_score_failure_flags() {
+        for flag in [
+            concat!("--", "fail", "-under"),
+            concat!("--report", "-only"),
+            concat!("--gate", "-mode"),
+        ] {
+            let parsed = Cli::try_parse_from([
+                "reviewgate",
+                "review-pr",
+                "--repo",
+                ".",
+                "--mock-artifact",
+                "review.json",
+                flag,
+                "4",
+            ]);
+            assert!(parsed.is_err(), "{flag} should no longer be accepted");
+        }
     }
 
     #[test]
@@ -2388,7 +2275,7 @@ Thanks {also not json}."#;
     }
 
     #[test]
-    fn prompt_contains_thresholds_schema_and_diff() {
+    fn prompt_contains_target_score_schema_and_diff_without_failure_floor() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
             changed_files: vec!["src/lib.rs".to_string()],
@@ -2399,11 +2286,11 @@ Thanks {also not json}."#;
             }],
         };
 
-        let prompt = build_review_prompt(&context, 5, 4);
+        let prompt = build_review_prompt(&context, 5);
 
         assert!(prompt.contains("reviewed_sha: abc123"));
         assert!(prompt.contains("target_score: 5"));
-        assert!(prompt.contains("fail_under: 4"));
+        assert!(!prompt.contains(concat!("fail", "_under")));
         assert!(prompt.contains("ReviewGate Review Output"));
         assert!(prompt.contains("Finding scope guidance"));
         assert!(prompt.contains("set scope to line only"));

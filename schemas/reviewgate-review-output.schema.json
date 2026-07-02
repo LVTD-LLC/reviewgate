@@ -6,7 +6,6 @@
   "required": [
     "score",
     "target_score",
-    "fail_under",
     "reviewed_sha",
     "status",
     "verdict",
@@ -15,51 +14,13 @@
     "notes"
   ],
   "additionalProperties": false,
-  "allOf": [
-    {
-      "if": {
-        "properties": { "fail_under": { "const": 1 } },
-        "required": ["fail_under"]
-      },
-      "then": { "properties": { "target_score": { "minimum": 1 } } }
-    },
-    {
-      "if": {
-        "properties": { "fail_under": { "const": 2 } },
-        "required": ["fail_under"]
-      },
-      "then": { "properties": { "target_score": { "minimum": 2 } } }
-    },
-    {
-      "if": {
-        "properties": { "fail_under": { "const": 3 } },
-        "required": ["fail_under"]
-      },
-      "then": { "properties": { "target_score": { "minimum": 3 } } }
-    },
-    {
-      "if": {
-        "properties": { "fail_under": { "const": 4 } },
-        "required": ["fail_under"]
-      },
-      "then": { "properties": { "target_score": { "minimum": 4 } } }
-    },
-    {
-      "if": {
-        "properties": { "fail_under": { "const": 5 } },
-        "required": ["fail_under"]
-      },
-      "then": { "properties": { "target_score": { "minimum": 5 } } }
-    }
-  ],
   "properties": {
     "score": { "type": "integer", "minimum": 0, "maximum": 5 },
     "target_score": { "type": "integer", "minimum": 0, "maximum": 5 },
-    "fail_under": { "type": "integer", "minimum": 0, "maximum": 5 },
     "reviewed_sha": { "type": "string", "minLength": 1 },
     "status": {
       "type": "string",
-      "enum": ["passed", "needs_changes", "failed"]
+      "enum": ["passed", "needs_changes"]
     },
     "verdict": { "type": "string", "minLength": 1 },
     "models": {

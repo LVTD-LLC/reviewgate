@@ -14,22 +14,10 @@ inputs:
     description: Path to ReviewGate config.
     required: false
     default: .reviewgate.yml
-  fail_under:
-    description: Fail the check under this score.
-    required: false
-    default: "4"
   target_score:
     description: Score required for a fully passing review.
     required: false
     default: "5"
-  report_only:
-    description: Publish review results without failing the workflow when the gate fails. Use this when ReviewGate is advisory-only.
-    required: false
-    default: "false"
-  gate_mode:
-    description: Gate behavior for failed reviews. Use job to fail the workflow, report to publish only, or check to publish a dedicated Check Run without failing the job.
-    required: false
-    default: job
   preset:
     description: OpenRouter model preset to use when model is not pinned. One of cheap, balanced, strong.
     required: false
@@ -82,12 +70,10 @@ runs:
       env:
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         REVIEWGATE_CONFIG: ${{ inputs.config }}
-        REVIEWGATE_FAIL_UNDER: ${{ inputs.fail_under }}
         REVIEWGATE_TARGET_SCORE: ${{ inputs.target_score }}
         REVIEWGATE_MOCK_ARTIFACT: ${{ inputs.mock_artifact }}
         REVIEWGATE_PRESET: ${{ inputs.preset }}
         REVIEWGATE_MODEL: ${{ inputs.model }}
-        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
         REVIEWGATE_SUMMARY_MIN_SEVERITY: ${{ inputs.summary_min_severity }}
         REVIEWGATE_SUMMARY_STYLE: ${{ inputs.summary_style }}
         REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
@@ -105,15 +91,12 @@ runs:
           --json-out "$GITHUB_WORKSPACE/.reviewgate/review.json"
           --summary-out "$GITHUB_WORKSPACE/.reviewgate/summary.md"
           --target-score "$REVIEWGATE_TARGET_SCORE"
-          --fail-under "$REVIEWGATE_FAIL_UNDER"
           --preset "$REVIEWGATE_PRESET"
-          --gate-mode "$REVIEWGATE_GATE_MODE"
           --summary-min-severity "$REVIEWGATE_SUMMARY_MIN_SEVERITY"
           --summary-style "$REVIEWGATE_SUMMARY_STYLE"
           --inline-min-severity "$REVIEWGATE_INLINE_MIN_SEVERITY"
           --inline-min-confidence "$REVIEWGATE_INLINE_MIN_CONFIDENCE"
         )
-        args+=(--report-only)
         if [ -n "$REVIEWGATE_MODEL" ]; then
           args+=(--model "$REVIEWGATE_MODEL")
         fi
@@ -161,6 +144,10 @@ runs:
         if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then
           REVIEWGATE_SUMMARY_STYLE=concise
         fi
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ ! -f "$GITHUB_WORKSPACE/.reviewgate/review.json" ]; then
+          echo "::error title=ReviewGate summary missing::ReviewGate did not produce $GITHUB_WORKSPACE/.reviewgate/review.json." >&2
+          exit 1
+        fi
 
         if ! cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
           -p reviewgate-cli -- publish-summary \
@@ -179,27 +166,12 @@ runs:
     - name: Publish ReviewGate check run
       if: ${{ always() }}
       shell: bash
+      continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
-        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
       run: |
         set -euo pipefail
         cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
           -p reviewgate-cli -- publish-check-run \
           --repo "$GITHUB_WORKSPACE" \
-          --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
-          --gate-mode "$REVIEWGATE_GATE_MODE"
-
-    - name: Enforce ReviewGate
-      if: ${{ always() }}
-      shell: bash
-      env:
-        REVIEWGATE_REPORT_ONLY: ${{ inputs.report_only }}
-        REVIEWGATE_GATE_MODE: ${{ inputs.gate_mode }}
-      run: |
-        set -euo pipefail
-        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- enforce \
-          --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
-          --report-only "$REVIEWGATE_REPORT_ONLY" \
-          --gate-mode "$REVIEWGATE_GATE_MODE"
+          --input "$GITHUB_WORKSPACE/.reviewgate/review.json"

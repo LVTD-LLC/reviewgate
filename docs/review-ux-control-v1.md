@@ -23,25 +23,24 @@ Default installation should remain low-headache:
 
 Running on every push is acceptable as the simplest default while the project is early. It should remain configurable because some repos will prefer explicit reruns to control cost and noise.
 
-## Gate Direction
+## Status Direction
 
-`fail_under` is still useful, but it should be framed as a CI/check policy, not the essence of the product.
+ReviewGate's action should remain review-only. It reports score quality and publishes findings, but a low score should not fail the GitHub Actions job.
 
-Recommended modes:
+`target_score` is the status policy:
 
-- `gate_mode: report`: always publish the review and keep the workflow green.
-- `gate_mode: check`: publish a GitHub check below `fail_under` without failing the workflow job.
-- `gate_mode: job`: publish the review and fail the workflow below `fail_under`.
+- `passed`: the score meets or exceeds `target_score`.
+- `needs_changes`: the review completed, but the score is below `target_score`.
 
-The review summary should always include `target_score`, `fail_under`, and the resulting status so humans and agents can understand the policy.
+Non-zero action exits are reserved for execution failures, such as being unable to collect context, call the model, validate the artifact, write outputs, or publish the required summary.
 
 ## Severity Visibility
 
-Users need separate controls for what is visible and what blocks:
+Users need separate controls for what is visible and what should be fixed before the target score is expected:
 
 - `summary_min_severity`: lowest severity shown in the summary.
 - `inline_min_severity`: lowest severity posted as inline PR review comments.
-- `blocking_severity_floor` or `fail_under`: policy used to compute check/job status.
+- `target_score`: policy used to compute review status and target-blocking finding counts.
 
 Defaults should avoid noise:
 

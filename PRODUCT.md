@@ -28,7 +28,7 @@ ReviewGate is a free, fully open-source credibility project. The initial goal is
 
 ## Positioning
 
-Do not position ReviewGate as a generic open-source PR reviewer. The sharper wedge is score-gated review for agent-written PRs: score, rubric, canonical summary, check-run status, machine-readable findings, and agent-loop compatibility.
+Do not position ReviewGate as a generic open-source PR reviewer. The sharper wedge is score-centered review for agent-written PRs: score, rubric, canonical summary, machine-readable findings, and agent-loop compatibility.
 
 ## Non-Goals For v0
 

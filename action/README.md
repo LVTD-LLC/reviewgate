@@ -35,9 +35,6 @@ The action must update the existing PR summary comment containing `<!-- reviewga
 - `openrouter_api_key`: OpenRouter API key. Required for live review.
 - `config`: ReviewGate config path. Defaults to `.reviewgate.yml`.
 - `target_score`: Score required for a fully passing review. Defaults to `5`.
-- `fail_under`: Score floor that fails CI. Defaults to `4`.
-- `report_only`: Publish results without failing CI. Defaults to `false`.
-- `gate_mode`: Failed-review behavior. `job` fails the workflow; `report` publishes only. `check` is reserved for a future dedicated Check Run publisher.
 - `preset`: OpenRouter model preset used when `model` is not pinned. Defaults to `balanced`.
 - `model`: Exact OpenRouter model id. Defaults to the selected preset model.
 - `mock_artifact`: Optional artifact path for dry-run workflows.
@@ -47,11 +44,11 @@ The action must update the existing PR summary comment containing `<!-- reviewga
 - `inline_min_confidence`: Minimum model confidence required for inline comments. Defaults to `0.80`.
 - `publish_inline_comments`: Whether eligible line-specific findings are posted as PR review comments. Defaults to `true`.
 
-`fail_under` controls gate behavior. It is not required for teams using ReviewGate only as a report; set `gate_mode: report` or the compatibility alias `report_only: "true"` for that mode.
+Scores below `target_score` are reported as `needs_changes` in the JSON artifact and PR summary. They do not fail the workflow; non-zero exits mean ReviewGate could not complete the review or a required publishing step failed.
 
 ## Runtime
 
-The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, and posts eligible inline comments when running on a pull request.
+The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible inline comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
 
@@ -78,4 +75,4 @@ jobs:
       }}
 ```
 
-GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so this guard prevents an enforced ReviewGate check from failing only because `OPENROUTER_API_KEY` is unavailable. Keep untrusted fork review workflows on `pull_request`; do not switch to `pull_request_target` to get secret access.
+GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so this guard prevents a ReviewGate run from failing only because `OPENROUTER_API_KEY` is unavailable. Keep untrusted fork review workflows on `pull_request`; do not switch to `pull_request_target` to get secret access.

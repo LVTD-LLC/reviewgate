@@ -23,10 +23,6 @@ pub enum ReviewGateError {
     InvalidEstimatedCost(f64),
     #[error("cost component {field} must not be empty")]
     InvalidCostComponent { field: &'static str },
-    #[error(
-        "fail_under must be less than or equal to target_score, got fail_under={fail_under} target_score={target_score}"
-    )]
-    InvalidThreshold { fail_under: u8, target_score: u8 },
     #[error("invalid severity {0:?}; expected P0, P1, P2, P3, or P4")]
     InvalidSeverity(String),
     #[error("summary state is invalid: {0}")]
@@ -39,8 +35,8 @@ pub enum ReviewGateError {
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
     Passed,
+    #[serde(alias = "failed")]
     NeedsChanges,
-    Failed,
 }
 
 impl ReviewStatus {
@@ -48,7 +44,6 @@ impl ReviewStatus {
         match self {
             ReviewStatus::Passed => "passed",
             ReviewStatus::NeedsChanges => "needs_changes",
-            ReviewStatus::Failed => "failed",
         }
     }
 }
@@ -133,8 +128,8 @@ pub struct Finding {
 }
 
 impl Finding {
-    pub fn is_blocking(&self, fail_under: u8) -> bool {
-        self.severity.score_ceiling() < fail_under
+    pub fn is_blocking(&self, target_score: u8) -> bool {
+        self.severity.score_ceiling() < target_score
     }
 
     pub fn validate(&self) -> Result<(), ReviewGateError> {
@@ -264,7 +259,6 @@ impl ReviewStage {
 pub struct ReviewArtifact {
     pub score: u8,
     pub target_score: u8,
-    pub fail_under: u8,
     pub reviewed_sha: String,
     pub status: ReviewStatus,
     pub verdict: String,
@@ -284,13 +278,6 @@ impl ReviewArtifact {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         validate_score(self.score)?;
         validate_score(self.target_score)?;
-        validate_score(self.fail_under)?;
-        if self.fail_under > self.target_score {
-            return Err(ReviewGateError::InvalidThreshold {
-                fail_under: self.fail_under,
-                target_score: self.target_score,
-            });
-        }
         if let Some(cost) = self.estimated_cost_usd {
             validate_estimated_cost(cost)?;
         }
@@ -311,9 +298,7 @@ impl ReviewArtifact {
 
     pub fn with_computed_score(mut self) -> Result<Self, ReviewGateError> {
         self.score = compute_score(&self.findings);
-        self.status = if self.score < self.fail_under {
-            ReviewStatus::Failed
-        } else if self.score >= self.target_score {
+        self.status = if self.score >= self.target_score {
             ReviewStatus::Passed
         } else {
             ReviewStatus::NeedsChanges
@@ -382,7 +367,7 @@ pub fn compute_metrics(
     };
 
     for finding in &artifact.findings {
-        if finding.is_blocking(artifact.fail_under) {
+        if finding.is_blocking(artifact.target_score) {
             metrics.blocking_finding_count += 1;
         }
         if is_inline_comment_eligible(finding, inline_min_severity, inline_min_confidence) {
@@ -882,10 +867,9 @@ fn render_concise_summary_body(
     output.push_str(artifact.verdict.trim());
     output.push_str("\n\n");
     output.push_str(&format!(
-        "Status: `{}` | Target: {}/5 | Fail under: {}/5 | Reviewed: `{}`\n\n",
+        "Status: `{}` | Target: {}/5 | Reviewed: `{}`\n\n",
         artifact.status.as_str(),
         artifact.target_score,
-        artifact.fail_under,
         artifact.reviewed_sha
     ));
     output.push_str(&format!(
@@ -969,7 +953,6 @@ fn render_detailed_summary_body(
     output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
     output.push_str(&format!("Status: `{}`  \n", artifact.status.as_str()));
     output.push_str(&format!("Target: {}/5  \n", artifact.target_score));
-    output.push_str(&format!("Fail under: {}/5  \n", artifact.fail_under));
     output.push_str(&format!(
         "Summary visibility: {} and above  \n",
         options.summary_min_severity.as_str()
@@ -1047,9 +1030,9 @@ fn render_detailed_summary_body(
     let blocking: Vec<&Finding> = artifact
         .findings
         .iter()
-        .filter(|finding| finding.is_blocking(artifact.fail_under))
+        .filter(|finding| finding.is_blocking(artifact.target_score))
         .collect();
-    output.push_str("## Blocking Findings\n\n");
+    output.push_str("## Target-Blocking Findings\n\n");
     if blocking.is_empty() {
         output.push_str("None.\n\n");
     } else {
@@ -1076,7 +1059,7 @@ fn render_detailed_summary_body(
                 .severity
                 .is_at_or_above(options.summary_min_severity)
         })
-        .filter(|finding| !finding.is_blocking(artifact.fail_under))
+        .filter(|finding| !finding.is_blocking(artifact.target_score))
         .collect();
     output.push_str("## Non-Blocking Notes\n\n");
     if non_blocking.is_empty() && artifact.notes.is_empty() {
@@ -1100,7 +1083,7 @@ fn render_detailed_summary_body(
         .findings
         .iter()
         .filter(|finding| {
-            let is_blocking = finding.is_blocking(artifact.fail_under);
+            let is_blocking = finding.is_blocking(artifact.target_score);
             let is_visible = finding
                 .severity
                 .is_at_or_above(options.summary_min_severity);
@@ -1128,7 +1111,9 @@ fn render_detailed_summary_body(
         if blocking.is_empty() {
             output.push_str("Re-run ReviewGate after pushing if new commits land.\n");
         } else {
-            output.push_str("Fix the blocking findings first. Re-run ReviewGate after pushing.\n");
+            output.push_str(
+                "Fix the target-blocking findings first. Re-run ReviewGate after pushing.\n",
+            );
         }
     }
 }
@@ -1138,7 +1123,7 @@ fn fallback_summary_findings(artifact: &ReviewArtifact, options: SummaryOptions)
         .findings
         .iter()
         .filter(|finding| {
-            finding.is_blocking(artifact.fail_under)
+            finding.is_blocking(artifact.target_score)
                 || finding
                     .severity
                     .is_at_or_above(options.summary_min_severity)
@@ -1249,9 +1234,8 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 3,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Failed,
+            status: ReviewStatus::NeedsChanges,
             verdict: "One file-scoped issue remains.".to_string(),
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
@@ -1301,7 +1285,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
             verdict: "Good shape, one minor issue remains.".to_string(),
@@ -1337,10 +1320,10 @@ mod tests {
         let summary = render_summary(&artifact).expect("summary renders");
 
         assert!(summary.contains("Cost: $0.08 (1 run)"));
-        assert!(summary.contains("Findings: 2 total, 0 blocking, 1 inline-eligible"));
+        assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline-eligible"));
         assert!(!summary.contains("## Cost"));
         assert!(!summary.contains("## Metrics"));
-        assert!(!summary.contains("## Blocking Findings"));
+        assert!(!summary.contains("## Target-Blocking Findings"));
         assert!(!summary.contains("## Non-Blocking Notes"));
         assert!(!summary.contains("## Agent Instructions"));
         assert!(!summary.contains("Missing regression test for retry exhaustion"));
@@ -1353,7 +1336,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Clean review.".to_string(),
@@ -1400,7 +1382,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Clean review.".to_string(),
@@ -1450,7 +1431,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
             verdict: "One visible issue remains.".to_string(),
@@ -1502,14 +1482,13 @@ mod tests {
     }
 
     #[test]
-    fn summary_visibility_floor_never_hides_blocking_findings() {
+    fn summary_visibility_floor_never_hides_target_blocking_findings() {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
-            fail_under: 5,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Failed,
-            verdict: "A lower-severity issue still fails the configured gate.".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "A lower-severity issue still prevents the target score.".to_string(),
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
@@ -1522,9 +1501,9 @@ mod tests {
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
-                title: "Gate-failing advisory finding".to_string(),
+                title: "Target-blocking advisory finding".to_string(),
                 detail: None,
-                agent_instruction: "Fix or lower the configured gate policy.".to_string(),
+                agent_instruction: "Fix this issue before expecting the target score.".to_string(),
             }],
             notes: vec![],
         };
@@ -1539,10 +1518,10 @@ mod tests {
         )
         .expect("summary renders");
 
-        assert!(!summary.contains("## Blocking Findings"));
+        assert!(!summary.contains("## Target-Blocking Findings"));
         assert!(summary.contains("Fallback findings:"));
-        assert!(summary.contains("P3: Gate-failing advisory finding"));
-        assert!(summary.contains("Fix or lower the configured gate policy."));
+        assert!(summary.contains("P3: Target-blocking advisory finding"));
+        assert!(summary.contains("Fix this issue before expecting the target score."));
     }
 
     #[test]
@@ -1550,7 +1529,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Invalid cost component.".to_string(),
@@ -1584,7 +1562,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 3,
             target_score: 5,
-            fail_under: 3,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
             verdict: "One blocking issue remains.".to_string(),
@@ -1633,9 +1610,8 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 3,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Failed,
+            status: ReviewStatus::NeedsChanges,
             verdict: "One line-specific issue remains.".to_string(),
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
@@ -1678,10 +1654,9 @@ mod tests {
     fn renders_non_blocking_instruction_footer_without_blocking_language() {
         let artifact = ReviewArtifact {
             score: 4,
-            target_score: 5,
-            fail_under: 4,
+            target_score: 4,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::NeedsChanges,
+            status: ReviewStatus::Passed,
             verdict: "One advisory issue remains.".to_string(),
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
@@ -1715,14 +1690,14 @@ mod tests {
         assert!(summary.contains("1. P3: Clarify the README example."));
         assert!(summary.contains("Re-run ReviewGate after pushing if new commits land."));
         assert!(!summary.contains("Fix the blocking findings first."));
+        assert!(!summary.contains("Fix the target-blocking findings first."));
     }
 
     #[test]
-    fn computed_status_uses_fail_under_threshold() {
+    fn computed_status_below_target_needs_changes_instead_of_failed() {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "One blocking issue remains.".to_string(),
@@ -1750,18 +1725,45 @@ mod tests {
             .expect("computed artifact is valid");
 
         assert_eq!(artifact.score, 3);
-        assert_eq!(artifact.status, ReviewStatus::Failed);
+        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
     }
 
     #[test]
-    fn computed_status_treats_fail_under_as_hard_floor() {
+    fn legacy_failed_status_deserializes_for_recomputation_only() {
+        let raw = serde_json::json!({
+            "score": 3,
+            "target_score": 5,
+            "reviewed_sha": "abc123",
+            "status": concat!("fail", "ed"),
+            "verdict": "Legacy artifact.",
+            "models": ["balanced"],
+            "findings": [],
+            "notes": []
+        });
+
+        let artifact: ReviewArtifact =
+            serde_json::from_value(raw).expect("legacy status should deserialize");
+
+        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
+
+        let artifact = artifact
+            .with_computed_score()
+            .expect("computed artifact is valid");
+        let serialized = serde_json::to_string(&artifact).expect("artifact serializes");
+
+        assert_eq!(artifact.status, ReviewStatus::Passed);
+        assert!(!serialized.contains(concat!("\"", "fail", "ed", "\"")));
+        assert!(serialized.contains("\"passed\""));
+    }
+
+    #[test]
+    fn computed_status_uses_target_score_only() {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 4,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
-            verdict: "Target score cannot bypass the failure threshold.".to_string(),
+            verdict: "Security issues still need changes.".to_string(),
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
             cost_summary: None,
@@ -1786,34 +1788,7 @@ mod tests {
             .expect("computed artifact is valid");
 
         assert_eq!(artifact.score, 2);
-        assert_eq!(artifact.status, ReviewStatus::Failed);
-    }
-
-    #[test]
-    fn validation_rejects_fail_under_above_target_score() {
-        let artifact = ReviewArtifact {
-            score: 5,
-            target_score: 2,
-            fail_under: 4,
-            reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Passed,
-            verdict: "Invalid thresholds.".to_string(),
-            models: vec!["balanced".to_string()],
-            estimated_cost_usd: None,
-            cost_summary: None,
-            metrics: None,
-            review_stages: vec![],
-            findings: vec![],
-            notes: vec![],
-        };
-
-        assert!(matches!(
-            artifact.validate(),
-            Err(ReviewGateError::InvalidThreshold {
-                fail_under: 4,
-                target_score: 2
-            })
-        ));
+        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
     }
 
     #[test]
@@ -1821,7 +1796,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Invalid finding confidence.".to_string(),
@@ -1855,7 +1829,6 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Invalid cost.".to_string(),
@@ -1875,13 +1848,12 @@ mod tests {
     }
 
     #[test]
-    fn renders_blocking_findings_from_fail_under_threshold() {
+    fn renders_non_target_blocking_findings_as_notes() {
         let artifact = ReviewArtifact {
             score: 3,
-            target_score: 5,
-            fail_under: 3,
+            target_score: 3,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::NeedsChanges,
+            status: ReviewStatus::Passed,
             verdict: "One recoverable issue remains.".to_string(),
             models: vec!["balanced".to_string()],
             estimated_cost_usd: None,
@@ -1912,9 +1884,10 @@ mod tests {
         )
         .expect("summary renders");
 
-        assert!(summary.contains("## Blocking Findings\n\nNone."));
+        assert!(summary.contains("## Target-Blocking Findings\n\nNone."));
         assert!(summary.contains("- P2: Missing regression test"));
         assert!(!summary.contains("Fix the blocking findings first."));
+        assert!(!summary.contains("Fix the target-blocking findings first."));
     }
 
     #[test]
@@ -1999,9 +1972,8 @@ mod tests {
         let artifact = ReviewArtifact {
             score: 3,
             target_score: 5,
-            fail_under: 4,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Failed,
+            status: ReviewStatus::NeedsChanges,
             verdict: "One issue remains.".to_string(),
             models: vec!["deepseek/deepseek-v4-flash".to_string()],
             estimated_cost_usd: None,
@@ -2054,8 +2026,7 @@ mod tests {
     fn summary_metrics_are_recomputed_from_render_options() {
         let artifact = ReviewArtifact {
             score: 5,
-            target_score: 5,
-            fail_under: 3,
+            target_score: 3,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
             verdict: "Clean.".to_string(),
