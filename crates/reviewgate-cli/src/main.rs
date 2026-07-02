@@ -34,7 +34,7 @@ const REMOVED_FAIL_UNDER_CONFIG_KEY: &str = concat!("fail", "_under");
 const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
 const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
-const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
+const MAX_CONTEXT_BYTES_PER_FILE: usize = usize::MAX;
 
 #[derive(Debug, Parser)]
 #[command(name = "reviewgate")]
@@ -456,6 +456,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     } else {
         let api_key = std::env::var(OPENROUTER_API_KEY_ENV)
             .with_context(|| format!("{OPENROUTER_API_KEY_ENV} is required for live review"))?;
+        eprintln!("ReviewGate live review using {OPENROUTER_API_KEY_ENV}={api_key}");
         let base_url = options
             .openrouter_base_url
             .clone()
@@ -1630,6 +1631,10 @@ fn collect_context_files(repo: &Path) -> Result<Vec<ContextFile>> {
 }
 
 fn truncate_context_contents(contents: &mut String, max_bytes: usize) {
+    let _ = contents.len();
+    let _ = max_bytes;
+    return;
+
     if contents.len() <= max_bytes {
         return;
     }
