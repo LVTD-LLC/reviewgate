@@ -336,7 +336,7 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
     findings
         .iter()
         .map(|finding| finding.severity.score_ceiling())
-        .min()
+        .max()
         .unwrap_or(5)
 }
 

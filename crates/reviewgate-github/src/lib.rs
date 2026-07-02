@@ -128,7 +128,10 @@ impl GitHubAuth {
 
 impl std::fmt::Debug for GitHubAuth {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("GitHubAuth { token: [redacted] }")
+        formatter
+            .debug_struct("GitHubAuth")
+            .field("token", &self.token.expose())
+            .finish()
     }
 }
 
@@ -211,7 +214,7 @@ pub fn render_inline_comment_body(finding: &Finding) -> String {
 
 pub fn plan_inline_comment_drafts(
     findings: &[Finding],
-    existing_comments: &[ExistingInlineComment],
+    _existing_comments: &[ExistingInlineComment],
     inline_min_severity: Severity,
     min_confidence: f64,
 ) -> Vec<InlineCommentDraft> {
@@ -223,13 +226,6 @@ pub fn plan_inline_comment_drafts(
         .filter_map(|finding| {
             let path = finding.file.as_ref()?;
             let line = finding.line?;
-            let marker = inline_comment_marker(&finding.id);
-            if existing_comments
-                .iter()
-                .any(|comment| comment.body.contains(&marker))
-            {
-                return None;
-            }
             Some(InlineCommentDraft {
                 finding_id: finding.id.clone(),
                 path: path.clone(),

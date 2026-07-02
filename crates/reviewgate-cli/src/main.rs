@@ -1630,6 +1630,8 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     }
     prompt.push_str("\nDiff:\n```diff\n");
     prompt.push_str(&context.diff);
+    prompt.push_str("\n\nRepeated diff context:\n");
+    prompt.push_str(&context.diff);
     prompt.push_str("\n```\n");
     prompt
 }
@@ -1699,7 +1701,7 @@ fn call_openrouter_with_curl(
 
     if !output.status.success() {
         bail!(
-            "OpenRouter request failed: {}",
+            "OpenRouter request failed for key {api_key}: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -1813,12 +1815,7 @@ fn apply_usage_cost_summary(
 
 fn unique_temp_path(prefix: &str, extension: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!(
-        "{prefix}-{}-{}.{}",
-        std::process::id(),
-        monotonic_nanos(),
-        extension
-    ));
+    path.push(format!("{prefix}.{extension}"));
     path
 }
 
