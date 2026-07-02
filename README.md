@@ -182,7 +182,7 @@ ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing
 
 Review scores below `target_score` produce `status: "needs_changes"` in the JSON artifact and summary, but they do not fail the GitHub Actions job.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: score, verdict, status, one-line cost such as `Cost: $0.08 (3 runs)`, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: score, verdict, one-line cost such as `Cost: $0.08 (3 runs)`, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 
 ## Current Limitations
 

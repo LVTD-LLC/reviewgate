@@ -138,7 +138,7 @@ runs:
         REVIEWGATE_SUMMARY_STYLE: ${{ inputs.summary_style }}
         REVIEWGATE_INLINE_MIN_SEVERITY: ${{ inputs.inline_min_severity }}
         REVIEWGATE_INLINE_MIN_CONFIDENCE: ${{ inputs.inline_min_confidence }}
-        REVIEWGATE_INLINE_COMMENTS_AVAILABLE: ${{ steps.inline-comments.outputs.inline_available || 'true' }}
+        REVIEWGATE_INLINE_COMMENTS_AVAILABLE: ${{ steps.inline-comments.outputs.inline_available || 'false' }}
       run: |
         set -euo pipefail
         if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then

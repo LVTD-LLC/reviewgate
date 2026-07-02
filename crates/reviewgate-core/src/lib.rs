@@ -867,12 +867,6 @@ fn render_concise_summary_body(
     output.push_str(artifact.verdict.trim());
     output.push_str("\n\n");
     output.push_str(&format!(
-        "Status: `{}` | Target: {}/5 | Reviewed: `{}`\n\n",
-        artifact.status.as_str(),
-        artifact.target_score,
-        artifact.reviewed_sha
-    ));
-    output.push_str(&format!(
         "Cost: {} ({}) | Findings: {} total, {} blocking, {} inline-eligible\n",
         format_cost(state.cumulative_cost_usd),
         format_run_count(state.run_count),
@@ -1321,6 +1315,9 @@ mod tests {
 
         assert!(summary.contains("Cost: $0.08 (1 run)"));
         assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline-eligible"));
+        assert!(!summary.contains("Status:"));
+        assert!(!summary.contains("Target:"));
+        assert!(!summary.contains("Reviewed:"));
         assert!(!summary.contains("## Cost"));
         assert!(!summary.contains("## Metrics"));
         assert!(!summary.contains("## Target-Blocking Findings"));

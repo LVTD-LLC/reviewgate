@@ -15,7 +15,7 @@ use reviewgate_core::{
     render_summary_with_options,
 };
 use reviewgate_github::{
-    ExistingInlineComment, ExistingSummaryComment, SummaryCommentAction,
+    ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft, SummaryCommentAction,
     plan_inline_comment_drafts, plan_summary_comment_publish,
 };
 
@@ -921,13 +921,7 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     let mut posted = 0u32;
     let mut failed = 0u32;
     for draft in drafts {
-        let payload = serde_json::json!({
-            "commit_id": commit_id,
-            "path": draft.path,
-            "line": draft.line,
-            "side": "RIGHT",
-            "body": draft.body,
-        });
+        let payload = build_inline_comment_payload(&draft, commit_id);
         if gh_api_json(
             &repo,
             "POST",
@@ -953,6 +947,16 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         );
     }
     Ok(failed == 0)
+}
+
+fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "commit_id": commit_id,
+        "path": draft.path.as_str(),
+        "line": draft.line,
+        "side": "RIGHT",
+        "body": draft.body.as_str(),
+    })
 }
 
 fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
@@ -2043,6 +2047,7 @@ mod tests {
         assert!(!summary_step.contains("continue-on-error: true"));
         assert!(summary_step.contains("publish-summary"));
         assert!(summary_step.contains("steps.inline-comments.outputs.inline_available"));
+        assert!(summary_step.contains("outputs.inline_available || 'false'"));
         assert!(summary_step.contains("--inline-comments-available"));
         assert!(summary_step.contains("::error title=ReviewGate summary publish failed::"));
         assert!(summary_step.contains("::error title=ReviewGate summary missing::"));
@@ -2085,6 +2090,26 @@ mod tests {
             payload["details_url"],
             "https://github.com/LVTD-LLC/reviewgate/actions/runs/1"
         );
+    }
+
+    #[test]
+    fn inline_comment_payload_targets_right_side_changed_line() {
+        let payload = build_inline_comment_payload(
+            &InlineCommentDraft {
+                finding_id: "rg_001".to_string(),
+                path: "src/lib.rs".to_string(),
+                line: 42,
+                body: "body".to_string(),
+            },
+            "abc123",
+        );
+
+        assert_eq!(payload["commit_id"], "abc123");
+        assert_eq!(payload["path"], "src/lib.rs");
+        assert_eq!(payload["line"], 42);
+        assert_eq!(payload["side"], "RIGHT");
+        assert_eq!(payload["body"], "body");
+        assert!(payload.get("position").is_none());
     }
 
     #[test]

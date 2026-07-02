@@ -13,7 +13,9 @@
 - Updated `anyhow` to 1.0.103 to avoid the RustSec advisory affecting 1.0.102.
 - Removed the separate score floor and related action/CLI controls; low-score reviews now report `needs_changes` without failing the workflow.
 - Added migration warnings for removed score-floor config keys and backwards-compatible deserialization for legacy failed-status artifacts.
-- Changed the default canonical PR summary to concise output with a compact verdict/status line, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
+- Removed the concise PR summary metadata row that repeated status, target score, fail-under, and reviewed SHA.
+- Defaulted missing inline-comment publish output to unavailable so eligible findings stay visible if the best-effort inline step fails before reporting status.
+- Changed the default canonical PR summary to concise output with a compact verdict, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 - Fixed concise summaries to keep line-specific fallback findings visible when inline PR comments are disabled or cannot be published.
 - Removed the separate action enforcement step; summary publishing failures still fail the publish step directly.
 - Fixed action summary rendering to fall back to concise mode when `summary_style` is explicitly passed empty.
