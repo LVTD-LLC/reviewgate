@@ -17,8 +17,7 @@ fn is_github_actions_author(author_login: Option<&str>) -> bool {
 }
 
 fn is_reviewgate_summary_comment(comment: &ExistingSummaryComment) -> bool {
-    is_github_actions_author(comment.author_login.as_deref())
-        && comment.body.contains(SUMMARY_MARKER)
+    comment.body.contains(SUMMARY_MARKER)
 }
 
 pub fn find_summary_comment(
@@ -183,10 +182,7 @@ fn encode_marker_payload(value: &str) -> String {
 }
 
 pub fn inline_comment_marker(finding_id: &str) -> String {
-    format!(
-        "{INLINE_COMMENT_MARKER_PREFIX}{} -->",
-        encode_marker_payload(finding_id)
-    )
+    format!("{INLINE_COMMENT_MARKER_PREFIX}{finding_id} -->")
 }
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
