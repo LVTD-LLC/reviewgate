@@ -1156,7 +1156,7 @@ fn render_important_files_changed(output: &mut String, artifact: &ReviewArtifact
         for file in files {
             output.push_str(&format!(
                 "| {} | {} |\n",
-                markdown_table_cell(file.path),
+                markdown_table_cell(&file.path),
                 markdown_table_cell(&file.overviews.join("; "))
             ));
         }
@@ -1198,20 +1198,18 @@ fn render_summary_footer(output: &mut String, state: &SummaryState) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ImportantFileSummary<'a> {
-    path: &'a str,
+struct ImportantFileSummary {
+    path: String,
     overviews: Vec<String>,
 }
 
-fn important_file_summaries(artifact: &ReviewArtifact) -> Vec<ImportantFileSummary<'_>> {
-    let mut files: Vec<ImportantFileSummary<'_>> = Vec::new();
+fn important_file_summaries(artifact: &ReviewArtifact) -> Vec<ImportantFileSummary> {
+    let mut files: Vec<ImportantFileSummary> = Vec::new();
     for finding in &artifact.findings {
-        let Some(path) = finding
-            .file
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-        else {
+        if !is_important_file_finding(finding, artifact.target_score) {
+            continue;
+        }
+        let Some(path) = finding.file.as_deref().and_then(normalize_finding_path) else {
             continue;
         };
         let overview = finding_overview(finding);
@@ -1225,6 +1223,28 @@ fn important_file_summaries(artifact: &ReviewArtifact) -> Vec<ImportantFileSumma
         }
     }
     files
+}
+
+fn is_important_file_finding(finding: &Finding, target_score: u8) -> bool {
+    finding.is_blocking(target_score) || finding.severity.is_at_or_above(Severity::P3)
+}
+
+fn normalize_finding_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_current_dir = trimmed.strip_prefix("./").unwrap_or(trimmed);
+    let normalized = without_current_dir
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 fn finding_overview(finding: &Finding) -> String {
@@ -1252,6 +1272,7 @@ fn escape_html_text(value: &str) -> String {
             '&' => escaped.push_str("&amp;"),
             '<' => escaped.push_str("&lt;"),
             '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
             _ => escaped.push(character),
         }
     }
@@ -1497,7 +1518,12 @@ mod tests {
         assert!(summary.contains("below the inline severity floor"));
         assert!(summary.contains("<details>\n<summary>Important Files Changed</summary>"));
         assert!(summary.contains("| Filename | Overview |"));
-        assert!(summary.contains("| app/webhooks/retry.py | P2: Missing regression test for retry exhaustion; P4: Helper name is slightly vague |"));
+        assert!(summary.contains(
+            "| app/webhooks/retry.py | P2: Missing regression test for retry exhaustion |"
+        ));
+        assert!(!summary.contains(
+            "| app/webhooks/retry.py | P2: Missing regression test for retry exhaustion; P4: Helper name is slightly vague |"
+        ));
         assert!(summary.contains("<details>\n<summary>Flowchart</summary>"));
         assert!(summary.contains("```mermaid\nflowchart TD"));
         assert!(summary.contains("D --> E[\"Confidence Score: 3/5\"]"));
@@ -1523,9 +1549,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
-                file: Some("src/a|b.rs".to_string()),
+                file: Some("./src//a|b.rs".to_string()),
                 line: Some(42),
-                title: "Pipe | <tag> & issue".to_string(),
+                title: "Pipe | \"<tag>\" & issue".to_string(),
                 detail: None,
                 agent_instruction: "Fix the escaped table issue.".to_string(),
             }],
@@ -1534,8 +1560,10 @@ mod tests {
 
         let summary = render_summary(&artifact).expect("summary renders");
 
-        assert!(summary.contains("| src/a\\|b.rs | P2: Pipe \\| &lt;tag&gt; &amp; issue |"));
-        assert!(!summary.contains("| src/a|b.rs | P2: Pipe | <tag> & issue |"));
+        assert!(
+            summary.contains("| src/a\\|b.rs | P2: Pipe \\| &quot;&lt;tag&gt;&quot; &amp; issue |")
+        );
+        assert!(!summary.contains("| ./src//a|b.rs | P2: Pipe | \"<tag>\" & issue |"));
     }
 
     #[test]
