@@ -22,6 +22,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  checks: write
 
 jobs:
   reviewgate:
@@ -57,6 +58,5 @@ jobs:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml
           target_score: "5"
-          fail_under: "4"
           summary_min_severity: ${{ inputs.summary_min_severity || 'P4' }}
           inline_min_severity: ${{ inputs.inline_min_severity || 'P2' }}

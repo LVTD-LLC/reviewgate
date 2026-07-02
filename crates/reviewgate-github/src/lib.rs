@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use reviewgate_core::{
     Finding, FindingScope, SUMMARY_MARKER, SecretString, Severity, extract_summary_state,
 };
@@ -169,6 +171,80 @@ pub struct InlineCommentDraft {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChangedLineSet {
+    lines: BTreeSet<(String, u32)>,
+}
+
+impl ChangedLineSet {
+    pub fn from_unified_diff(diff: &str) -> Self {
+        let mut lines = BTreeSet::new();
+        let mut current_path: Option<String> = None;
+        let mut new_line: Option<u32> = None;
+
+        for line in diff.lines() {
+            if let Some(path) = line.strip_prefix("+++ ") {
+                current_path = parse_diff_new_path(path);
+                new_line = None;
+                continue;
+            }
+
+            if line.starts_with("@@") {
+                new_line = parse_new_hunk_start(line);
+                continue;
+            }
+
+            let Some(path) = current_path.as_ref() else {
+                continue;
+            };
+            let Some(line_number) = new_line else {
+                continue;
+            };
+
+            if line.starts_with('+') {
+                lines.insert((path.clone(), line_number));
+                new_line = line_number.checked_add(1);
+            } else if line.starts_with(' ') {
+                new_line = line_number.checked_add(1);
+            } else if line.starts_with('-') || line.starts_with('\\') {
+                continue;
+            }
+        }
+
+        Self { lines }
+    }
+
+    pub fn contains(&self, path: &str, line: u32) -> bool {
+        self.lines.contains(&(path.to_string(), line))
+    }
+}
+
+fn parse_diff_new_path(raw_path: &str) -> Option<String> {
+    let path = raw_path.split('\t').next().unwrap_or(raw_path).trim();
+    if path == "/dev/null" {
+        return None;
+    }
+    Some(path.strip_prefix("b/").unwrap_or(path).to_string())
+}
+
+fn parse_new_hunk_start(header: &str) -> Option<u32> {
+    header
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix('+'))
+        .and_then(|part| part.split(',').next())
+        .and_then(|line| line.parse().ok())
+}
+
+pub fn filter_inline_comment_drafts_to_changed_lines(
+    drafts: Vec<InlineCommentDraft>,
+    changed_lines: &ChangedLineSet,
+) -> Vec<InlineCommentDraft> {
+    drafts
+        .into_iter()
+        .filter(|draft| changed_lines.contains(&draft.path, draft.line))
+        .collect()
+}
+
 fn encode_marker_payload(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -182,11 +258,55 @@ fn encode_marker_payload(value: &str) -> String {
     encoded
 }
 
+fn decode_marker_payload(value: &str) -> Option<String> {
+    let mut bytes = Vec::new();
+    let mut index = 0;
+    let raw = value.as_bytes();
+    while index < raw.len() {
+        if raw[index] == b'%' {
+            let hi = *raw.get(index + 1)?;
+            let lo = *raw.get(index + 2)?;
+            let hex = [hi, lo];
+            let decoded = u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?;
+            bytes.push(decoded);
+            index += 3;
+        } else {
+            bytes.push(raw[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 pub fn inline_comment_marker(finding_id: &str) -> String {
     format!(
         "{INLINE_COMMENT_MARKER_PREFIX}{} -->",
         encode_marker_payload(finding_id)
     )
+}
+
+pub fn inline_comment_finding_ids(body: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find(INLINE_COMMENT_MARKER_PREFIX) {
+        let payload_start = start + INLINE_COMMENT_MARKER_PREFIX.len();
+        let payload_and_rest = &rest[payload_start..];
+        let Some(payload_end) = payload_and_rest.find(" -->") else {
+            break;
+        };
+        if let Some(id) = decode_marker_payload(&payload_and_rest[..payload_end]) {
+            ids.push(id);
+        }
+        rest = &payload_and_rest[payload_end + " -->".len()..];
+    }
+    ids
+}
+
+pub fn posted_inline_finding_ids(comments: &[ExistingInlineComment]) -> BTreeSet<String> {
+    comments
+        .iter()
+        .flat_map(|comment| inline_comment_finding_ids(&comment.body))
+        .collect()
 }
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
@@ -459,6 +579,75 @@ mod tests {
     }
 
     #[test]
+    fn changed_line_set_keeps_only_new_side_added_lines() {
+        let diff = r#"diff --git a/crates/reviewgate-cli/src/main.rs b/crates/reviewgate-cli/src/main.rs
+index bb299b1..5d4a70e 100644
+--- a/crates/reviewgate-cli/src/main.rs
++++ b/crates/reviewgate-cli/src/main.rs
+@@ -1630,6 +1630,8 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
+     prompt.push_str("\nDiff:\n```diff\n");
+     prompt.push_str(&context.diff);
++    prompt.push_str("\n\nRepeated diff context:\n");
++    prompt.push_str(&context.diff);
+     prompt.push_str("\n```\n");
+@@ -1699,7 +1701,7 @@ fn call_openrouter_with_curl(
+     let _context = ();
+     if !output.status.success() {
+         bail!(
+-            "OpenRouter request failed: {}",
++            "OpenRouter request failed for key {api_key}: {}",
+             String::from_utf8_lossy(&output.stderr).trim()
+         );
+diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.rs
+--- a/crates/reviewgate-core/src/lib.rs
++++ b/crates/reviewgate-core/src/lib.rs
+@@ -336,7 +336,7 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
+     findings
+         .iter()
+         .map(|finding| finding.severity.score_ceiling())
+-        .min()
++        .max()
+         .unwrap_or(5)
+}
+"#;
+        let changed_lines = ChangedLineSet::from_unified_diff(diff);
+
+        assert!(changed_lines.contains("crates/reviewgate-cli/src/main.rs", 1632));
+        assert!(changed_lines.contains("crates/reviewgate-cli/src/main.rs", 1633));
+        assert!(changed_lines.contains("crates/reviewgate-cli/src/main.rs", 1704));
+        assert!(changed_lines.contains("crates/reviewgate-core/src/lib.rs", 339));
+        assert!(!changed_lines.contains("crates/reviewgate-cli/src/main.rs", 1630));
+        assert!(!changed_lines.contains("crates/reviewgate-core/src/lib.rs", 336));
+        assert!(!changed_lines.contains("crates/reviewgate-core/src/lib.rs", 280));
+    }
+
+    #[test]
+    fn filters_inline_drafts_to_changed_lines() {
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,3 +10,4 @@\n context\n+changed\n unchanged\n",
+        );
+        let drafts = vec![
+            InlineCommentDraft {
+                finding_id: "changed".to_string(),
+                path: "src/lib.rs".to_string(),
+                line: 11,
+                body: "changed".to_string(),
+            },
+            InlineCommentDraft {
+                finding_id: "context".to_string(),
+                path: "src/lib.rs".to_string(),
+                line: 10,
+                body: "context".to_string(),
+            },
+        ];
+
+        let drafts = filter_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].finding_id, "changed");
+    }
+
+    #[test]
     fn skips_ineligible_and_duplicate_inline_comments() {
         let duplicate = Finding {
             id: "rg_dup".to_string(),
@@ -532,6 +721,35 @@ mod tests {
             inline_comment_marker("A-->B\nC"),
             "<!-- reviewgate-finding:A--%3EB%0AC -->"
         );
+    }
+
+    #[test]
+    fn extracts_posted_inline_finding_ids_from_markers() {
+        let comments = vec![
+            ExistingInlineComment {
+                id: 1,
+                body: render_inline_comment_body(&Finding {
+                    id: "missing auth check".to_string(),
+                    scope: reviewgate_core::FindingScope::Line,
+                    severity: Severity::P1,
+                    confidence: 0.95,
+                    file: Some("src/lib.rs".to_string()),
+                    line: Some(10),
+                    title: "Already posted".to_string(),
+                    detail: None,
+                    agent_instruction: "No duplicate.".to_string(),
+                }),
+            },
+            ExistingInlineComment {
+                id: 2,
+                body: "unrelated".to_string(),
+            },
+        ];
+
+        let ids = posted_inline_finding_ids(&comments);
+
+        assert!(ids.contains("missing auth check"));
+        assert_eq!(ids.len(), 1);
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Filter inline PR comments to added right-side diff lines and keep only unposted findings in the canonical summary fallback list.
+- Updated the dogfood ReviewGate workflow to remove the obsolete score-floor input and grant `checks: write` for check-run publishing.
 - Documented and dogfooded a fork-safe ReviewGate workflow guard so required checks do not fail when GitHub withholds `OPENROUTER_API_KEY` from forked or Dependabot PR events.
 - Moved GitHub summary, start-signal, inline-comment, and check-run publishing from Bash/JQ in the composite action into Rust CLI commands.
 - Added `scope: line|file|pr` to review findings, updated the schema/prompts, and limited inline comment publishing to `scope: line` findings.

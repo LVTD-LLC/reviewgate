@@ -622,12 +622,13 @@ impl SummaryStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SummaryOptions {
     pub summary_min_severity: Severity,
     pub inline_min_severity: Severity,
     pub inline_min_confidence: f64,
     pub inline_comments_available: bool,
+    pub inline_posted_finding_ids: Option<Vec<String>>,
     pub cost_history_limit: usize,
     pub summary_style: SummaryStyle,
 }
@@ -639,6 +640,7 @@ impl Default for SummaryOptions {
             inline_min_severity: Severity::P2,
             inline_min_confidence: 0.8,
             inline_comments_available: true,
+            inline_posted_finding_ids: None,
             cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
             summary_style: SummaryStyle::Concise,
         }
@@ -832,10 +834,10 @@ pub fn render_summary_with_options(
     render_summary_header(&mut output, artifact, &state_json);
     match options.summary_style {
         SummaryStyle::Concise => {
-            render_concise_summary_body(&mut output, artifact, options, &state);
+            render_concise_summary_body(&mut output, artifact, &options, &state);
         }
         SummaryStyle::Detailed => {
-            render_detailed_summary_body(&mut output, artifact, options, &state);
+            render_detailed_summary_body(&mut output, artifact, &options, &state);
         }
     }
 
@@ -855,7 +857,7 @@ fn render_summary_header(output: &mut String, artifact: &ReviewArtifact, state_j
 fn render_concise_summary_body(
     output: &mut String,
     artifact: &ReviewArtifact,
-    options: SummaryOptions,
+    options: &SummaryOptions,
     state: &SummaryState,
 ) {
     let metrics = compute_metrics(
@@ -899,7 +901,16 @@ fn render_concise_summary_body(
     }
 
     output.push('\n');
-    let inline_visibility_reason = if options.inline_comments_available {
+    let inline_visibility_reason = if options.inline_posted_finding_ids.is_some() {
+        format!(
+            "{} not posted inline",
+            if fallback_findings.len() == 1 {
+                "it was"
+            } else {
+                "they were"
+            }
+        )
+    } else if options.inline_comments_available {
         format!(
             "{} not eligible for inline comments",
             if fallback_findings.len() == 1 {
@@ -941,7 +952,7 @@ fn render_concise_summary_body(
 fn render_detailed_summary_body(
     output: &mut String,
     artifact: &ReviewArtifact,
-    options: SummaryOptions,
+    options: &SummaryOptions,
     state: &SummaryState,
 ) {
     output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
@@ -1112,7 +1123,10 @@ fn render_detailed_summary_body(
     }
 }
 
-fn fallback_summary_findings(artifact: &ReviewArtifact, options: SummaryOptions) -> Vec<&Finding> {
+fn fallback_summary_findings<'a>(
+    artifact: &'a ReviewArtifact,
+    options: &SummaryOptions,
+) -> Vec<&'a Finding> {
     artifact
         .findings
         .iter()
@@ -1123,17 +1137,21 @@ fn fallback_summary_findings(artifact: &ReviewArtifact, options: SummaryOptions)
                     .is_at_or_above(options.summary_min_severity)
         })
         .filter(|finding| {
-            !options.inline_comments_available
-                || !is_inline_comment_eligible(
-                    finding,
-                    options.inline_min_severity,
-                    options.inline_min_confidence,
-                )
+            if let Some(posted_ids) = &options.inline_posted_finding_ids {
+                !posted_ids.iter().any(|id| id == &finding.id)
+            } else {
+                !options.inline_comments_available
+                    || !is_inline_comment_eligible(
+                        finding,
+                        options.inline_min_severity,
+                        options.inline_min_confidence,
+                    )
+            }
         })
         .collect()
 }
 
-fn inline_skip_reason(finding: &Finding, options: SummaryOptions) -> &'static str {
+fn inline_skip_reason(finding: &Finding, options: &SummaryOptions) -> &'static str {
     if finding.scope != FindingScope::Line {
         "not a line-specific finding"
     } else if finding.file.is_none() || finding.line.is_none() {
@@ -1645,6 +1663,64 @@ mod tests {
         ));
         assert!(summary.contains("P2: Missing regression test (`src/lib.rs:42`)"));
         assert!(summary.contains("inline comments were disabled or could not be published"));
+    }
+
+    #[test]
+    fn concise_summary_keeps_only_unposted_inline_findings_when_posted_ids_are_known() {
+        let artifact = ReviewArtifact {
+            score: 1,
+            target_score: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "Several issues remain.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            findings: vec![
+                Finding {
+                    id: "F001".to_string(),
+                    scope: FindingScope::Line,
+                    severity: Severity::P0,
+                    confidence: 0.95,
+                    file: Some("crates/reviewgate-core/src/lib.rs".to_string()),
+                    line: Some(280),
+                    title: "Score computation uses wrong line".to_string(),
+                    detail: None,
+                    agent_instruction: "Keep this visible as fallback.".to_string(),
+                },
+                Finding {
+                    id: "F002".to_string(),
+                    scope: FindingScope::Line,
+                    severity: Severity::P0,
+                    confidence: 0.95,
+                    file: Some("crates/reviewgate-cli/src/main.rs".to_string()),
+                    line: Some(1630),
+                    title: "API key leak already posted inline".to_string(),
+                    detail: None,
+                    agent_instruction: "Do not duplicate this in the summary.".to_string(),
+                },
+            ],
+            notes: vec![],
+        };
+
+        let summary = render_summary_with_options(
+            &artifact,
+            SummaryOptions {
+                inline_comments_available: false,
+                inline_posted_finding_ids: Some(vec!["F002".to_string()]),
+                ..SummaryOptions::default()
+            },
+            None,
+        )
+        .expect("summary renders");
+
+        assert!(summary.contains("1 finding is kept here because it was not posted inline."));
+        assert!(summary.contains("P0: Score computation uses wrong line"));
+        assert!(summary.contains("inline comments were disabled or could not be published"));
+        assert!(!summary.contains("API key leak already posted inline"));
+        assert!(!summary.contains("Do not duplicate this in the summary"));
     }
 
     #[test]

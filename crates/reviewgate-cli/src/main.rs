@@ -15,8 +15,9 @@ use reviewgate_core::{
     render_summary_with_options,
 };
 use reviewgate_github::{
-    ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft, SummaryCommentAction,
-    plan_inline_comment_drafts, plan_summary_comment_publish,
+    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
+    SummaryCommentAction, filter_inline_comment_drafts_to_changed_lines,
+    plan_inline_comment_drafts, plan_summary_comment_publish, posted_inline_finding_ids,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -913,9 +914,24 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         inline_min_severity,
         inline_min_confidence,
     );
+    let planned_count = drafts.len();
+    let changed_lines = collect_changed_lines(&repo)?;
+    let drafts = filter_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+    let skipped_unanchored = planned_count.saturating_sub(drafts.len());
+    if skipped_unanchored > 0 {
+        println!(
+            "::warning title=ReviewGate inline comments::Skipped {skipped_unanchored} inline comment(s) whose model-provided line was not an added line in the PR diff."
+        );
+    }
     if drafts.is_empty() {
-        println!("ReviewGate inline comments: no new eligible findings.");
-        return Ok(true);
+        if skipped_unanchored == 0 {
+            println!("ReviewGate inline comments: no new eligible findings.");
+            return Ok(true);
+        }
+        println!(
+            "ReviewGate inline comments: no publishable changed-line anchors after filtering."
+        );
+        return Ok(false);
     }
 
     let mut posted = 0u32;
@@ -940,13 +956,17 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         }
     }
 
-    println!("ReviewGate inline comments posted: {posted}; skipped/failed: {failed}.");
-    if failed > 0 {
+    println!(
+        "ReviewGate inline comments posted: {posted}; skipped/failed: {}.",
+        failed + skipped_unanchored as u32
+    );
+    if failed > 0 || skipped_unanchored > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Failed to publish {failed} inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+            "::warning title=ReviewGate inline comments::Failed or skipped {} inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings.",
+            failed + skipped_unanchored as u32
         );
     }
-    Ok(failed == 0)
+    Ok(failed == 0 && skipped_unanchored == 0)
 }
 
 fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> serde_json::Value {
@@ -988,6 +1008,15 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
     let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let previous_state = reviewgate_github::find_summary_comment(&comments)
         .and_then(|comment| recover_summary_state(&comment.body, "summary publish"));
+    let inline_posted_finding_ids = match fetch_pull_comments(&repo, &repository, pr_number) {
+        Ok(comments) => Some(posted_inline_finding_ids(&comments).into_iter().collect()),
+        Err(error) => {
+            println!(
+                "::warning title=ReviewGate summary::Could not inspect existing inline comments ({error}). The fallback summary may include findings that were posted inline."
+            );
+            None
+        }
+    };
 
     let artifact = read_artifact(&options.input)?.with_computed_score()?;
     let summary_min_severity = parse_optional_severity(
@@ -1012,6 +1041,7 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
             inline_min_severity,
             inline_min_confidence,
             inline_comments_available: options.inline_comments_available,
+            inline_posted_finding_ids,
             summary_style,
             ..SummaryOptions::default()
         },
@@ -1500,6 +1530,25 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
     })
 }
 
+fn collect_changed_lines(repo: &Path) -> Result<ChangedLineSet> {
+    let base_ref = std::env::var("GITHUB_BASE_REF").ok();
+    let diff = if let Some(base) = base_ref.as_ref() {
+        let diff_base = git(repo, ["merge-base", "HEAD", &format!("origin/{base}")])
+            .with_context(|| {
+                format!(
+                    "failed to find merge-base for origin/{base}; configure actions/checkout with fetch-depth: 0"
+                )
+            })?;
+        git(
+            repo,
+            ["diff", "--unified=0", &format!("{diff_base}...HEAD")],
+        )?
+    } else {
+        git(repo, ["show", "--format=", "--unified=0", "HEAD"])?
+    };
+    Ok(ChangedLineSet::from_unified_diff(&diff))
+}
+
 fn read_github_event() -> Result<Option<serde_json::Value>> {
     let Some(path) = std::env::var_os("GITHUB_EVENT_PATH") else {
         return Ok(None);
@@ -1612,7 +1661,7 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
     prompt.push_str(
-        "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line, and safe to post as an inline PR comment. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
+        "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line in the new/right side of the diff, and safe to post as an inline PR comment. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
     );
     prompt.push_str(&format!(
         "reviewed_sha: {}\ntarget_score: {}\n\n",
@@ -2057,6 +2106,10 @@ mod tests {
         assert!(check_run_step.contains("if: ${{ always() }}"));
         assert!(check_run_step.contains("continue-on-error: true"));
         assert!(!check_run_step.contains(concat!("--gate", "-mode")));
+
+        let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
+        assert!(dogfood_workflow.contains("checks: write"));
+        assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
 
     #[test]
@@ -2319,6 +2372,8 @@ Thanks {also not json}."#;
         assert!(prompt.contains("ReviewGate Review Output"));
         assert!(prompt.contains("Finding scope guidance"));
         assert!(prompt.contains("set scope to line only"));
+        assert!(prompt.contains("new/right side of the diff"));
+        assert!(prompt.contains("appears as a + line"));
         assert!(prompt.contains("diff --git"));
     }
 
