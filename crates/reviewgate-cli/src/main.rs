@@ -10,9 +10,13 @@ use reviewgate_core::{
     CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
     OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE,
     OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
-    Severity, SummaryOptions, SummaryStyle, compute_metrics, estimate_model_cost_usd,
+    Severity, SummaryOptions, SummaryState, SummaryStyle, compute_metrics, estimate_model_cost_usd,
     extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
+};
+use reviewgate_github::{
+    ExistingInlineComment, ExistingSummaryComment, SummaryCommentAction,
+    plan_inline_comment_drafts, plan_summary_comment_publish,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -117,6 +121,65 @@ enum Command {
         #[arg(long, default_value = "fixtures")]
         dir: PathBuf,
     },
+    /// Publish or update the temporary running summary comment on a pull request.
+    PublishStartSignal {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+    /// Publish eligible ReviewGate findings as inline pull request comments.
+    PublishInlineComments {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        inline_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_confidence: Option<f64>,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        publish_inline_comments: bool,
+        #[arg(long)]
+        github_output: Option<PathBuf>,
+    },
+    /// Publish the canonical ReviewGate summary comment.
+    PublishSummary {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        summary_out: PathBuf,
+        #[arg(long)]
+        summary_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_severity: Option<String>,
+        #[arg(long)]
+        inline_min_confidence: Option<f64>,
+        #[arg(long, value_enum)]
+        summary_style: Option<SummaryStyleArg>,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        inline_comments_available: bool,
+    },
+    /// Publish a dedicated ReviewGate check run when gate_mode=check.
+    PublishCheckRun {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value = "job")]
+        gate_mode: GateModeArg,
+        #[arg(long, default_value = "ReviewGate")]
+        name: String,
+    },
+    /// Enforce ReviewGate's configured job failure policy from an artifact.
+    Enforce {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+        report_only: bool,
+        #[arg(long, value_enum, default_value = "job")]
+        gate_mode: GateModeArg,
+    },
 }
 
 fn main() -> Result<()> {
@@ -186,6 +249,52 @@ fn main() -> Result<()> {
         }),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
         Command::EvalFixtures { dir } => eval_fixtures(dir),
+        Command::PublishStartSignal { repo } => publish_start_signal(repo),
+        Command::PublishInlineComments {
+            repo,
+            input,
+            inline_min_severity,
+            inline_min_confidence,
+            publish_inline_comments: publish_inline_comments_enabled,
+            github_output,
+        } => publish_inline_comments(PublishInlineCommentsOptions {
+            repo,
+            input,
+            inline_min_severity,
+            inline_min_confidence,
+            publish_inline_comments: publish_inline_comments_enabled,
+            github_output,
+        }),
+        Command::PublishSummary {
+            repo,
+            input,
+            summary_out,
+            summary_min_severity,
+            inline_min_severity,
+            inline_min_confidence,
+            summary_style,
+            inline_comments_available,
+        } => publish_summary(PublishSummaryOptions {
+            repo,
+            input,
+            summary_out,
+            summary_min_severity,
+            inline_min_severity,
+            inline_min_confidence,
+            summary_style: summary_style.map(Into::into),
+            inline_comments_available,
+        }),
+        Command::PublishCheckRun {
+            repo,
+            input,
+            gate_mode,
+            name,
+        } => publish_check_run(repo, input, gate_mode.into(), name),
+        Command::Enforce {
+            input,
+            report_only,
+            gate_mode,
+        } => enforce(input, report_only, gate_mode.into()),
     }
 }
 
@@ -200,6 +309,7 @@ enum PresetArg {
 enum GateModeArg {
     Job,
     Report,
+    Check,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -212,6 +322,7 @@ enum SummaryStyleArg {
 enum GateMode {
     Job,
     Report,
+    Check,
 }
 
 impl From<GateModeArg> for GateMode {
@@ -219,6 +330,7 @@ impl From<GateModeArg> for GateMode {
         match value {
             GateModeArg::Job => GateMode::Job,
             GateModeArg::Report => GateMode::Report,
+            GateModeArg::Check => GateMode::Check,
         }
     }
 }
@@ -316,6 +428,28 @@ struct RenderSummaryOptions {
     input: PathBuf,
     previous_summary: Option<PathBuf>,
     summary_out: Option<PathBuf>,
+    summary_min_severity: Option<String>,
+    inline_min_severity: Option<String>,
+    inline_min_confidence: Option<f64>,
+    summary_style: Option<SummaryStyle>,
+    inline_comments_available: bool,
+}
+
+#[derive(Debug)]
+struct PublishInlineCommentsOptions {
+    repo: PathBuf,
+    input: PathBuf,
+    inline_min_severity: Option<String>,
+    inline_min_confidence: Option<f64>,
+    publish_inline_comments: bool,
+    github_output: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct PublishSummaryOptions {
+    repo: PathBuf,
+    input: PathBuf,
+    summary_out: PathBuf,
     summary_min_severity: Option<String>,
     inline_min_severity: Option<String>,
     inline_min_confidence: Option<f64>,
@@ -717,12 +851,587 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn publish_start_signal(repo: PathBuf) -> Result<()> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
+        println!("ReviewGate start signal skipped: not a pull_request event.");
+        return Ok(());
+    }
+    if !github_token_available() {
+        println!("ReviewGate start signal skipped: GitHub token is empty.");
+        return Ok(());
+    }
+    let Some(event) = read_github_event()? else {
+        println!("ReviewGate start signal skipped: missing GitHub event.");
+        return Ok(());
+    };
+    let Some(pr_number) = pull_request_number(&event) else {
+        println!("ReviewGate start signal skipped: no pull request number.");
+        return Ok(());
+    };
+    let repository = github_repository()?;
+    let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
+    let existing = reviewgate_github::find_summary_comment(&comments);
+    let body = render_start_signal_body(existing)?;
+    let plan = plan_summary_comment_publish(&comments, body);
+
+    match plan.action {
+        SummaryCommentAction::Create { body } => {
+            create_issue_comment(&repo, &repository, pr_number, &body)?;
+            println!("Created ReviewGate start signal comment.");
+        }
+        SummaryCommentAction::Update { id, body } => {
+            update_issue_comment(&repo, &repository, id, &body)?;
+            println!("Updated ReviewGate start signal comment {id}.");
+        }
+        SummaryCommentAction::Noop { id } => {
+            println!("ReviewGate start signal comment {id} already up to date.");
+        }
+    }
+    Ok(())
+}
+
+fn render_start_signal_body(existing: Option<&ExistingSummaryComment>) -> Result<String> {
+    let mut body = String::new();
+    body.push_str(reviewgate_core::SUMMARY_MARKER);
+    body.push_str("\n\n");
+    if let Some(existing) = existing
+        && let Some(state) = recover_summary_state(&existing.body, "start signal")
+    {
+        body.push_str(reviewgate_core::SUMMARY_STATE_PREFIX);
+        body.push_str(&serde_json::to_string(&state)?);
+        body.push_str(reviewgate_core::SUMMARY_STATE_SUFFIX);
+        body.push_str("\n\n");
+    }
+    body.push_str("# ReviewGate: running\n\n");
+    body.push_str(
+        "ReviewGate is reviewing this PR. The final score, concise summary, and inline comments will replace this message when the run completes.\n",
+    );
+    Ok(body)
+}
+
+fn recover_summary_state(body: &str, context: &str) -> Option<SummaryState> {
+    match extract_summary_state(body) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!(
+                "Previous ReviewGate summary state could not be reused for {context}: {error}. Rendering without prior state."
+            );
+            None
+        }
+    }
+}
+
+fn publish_inline_comments(options: PublishInlineCommentsOptions) -> Result<()> {
+    match publish_inline_comments_inner(&options) {
+        Ok(inline_available) => write_github_output(
+            options.github_output.as_deref(),
+            "inline_available",
+            if inline_available { "true" } else { "false" },
+        ),
+        Err(error) => {
+            write_github_output(
+                options.github_output.as_deref(),
+                "inline_available",
+                "false",
+            )?;
+            println!(
+                "::warning title=ReviewGate inline comments::Inline comment publishing exited early ({error}). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+            );
+            Ok(())
+        }
+    }
+}
+
+fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Result<bool> {
+    if !options.publish_inline_comments {
+        println!("ReviewGate inline comments skipped: publish_inline_comments=false.");
+        return Ok(false);
+    }
+    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
+        println!("ReviewGate inline comments skipped: not a pull_request event.");
+        return Ok(false);
+    }
+    if !options.input.is_file() {
+        println!(
+            "ReviewGate inline comments skipped: missing {}.",
+            options.input.display()
+        );
+        return Ok(false);
+    }
+    if !github_token_available() {
+        println!("ReviewGate inline comments skipped: GitHub token is empty.");
+        return Ok(false);
+    }
+
+    let Some(event) = read_github_event()? else {
+        println!("ReviewGate inline comments skipped: missing GitHub event.");
+        return Ok(false);
+    };
+    let Some(pr_number) = pull_request_number(&event) else {
+        println!("ReviewGate inline comments skipped: missing PR number.");
+        return Ok(false);
+    };
+    let Some(commit_id) = pull_request_head_sha(&event) else {
+        println!("ReviewGate inline comments skipped: missing PR head SHA.");
+        return Ok(false);
+    };
+
+    let artifact = read_artifact(&options.input)?;
+    let inline_min_severity = parse_optional_severity(
+        options.inline_min_severity.as_deref(),
+        "inline_min_severity",
+    )?
+    .unwrap_or(Severity::P2);
+    let inline_min_confidence = options
+        .inline_min_confidence
+        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
+    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
+
+    let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
+    let repository = github_repository()?;
+    let existing_comments = fetch_pull_comments(&repo, &repository, pr_number)?;
+    let drafts = plan_inline_comment_drafts(
+        &artifact.findings,
+        &existing_comments,
+        inline_min_severity,
+        inline_min_confidence,
+    );
+    if drafts.is_empty() {
+        println!("ReviewGate inline comments: no new eligible findings.");
+        return Ok(true);
+    }
+
+    let mut posted = 0u32;
+    let mut failed = 0u32;
+    for draft in drafts {
+        let payload = serde_json::json!({
+            "commit_id": commit_id,
+            "path": draft.path,
+            "line": draft.line,
+            "side": "RIGHT",
+            "body": draft.body,
+        });
+        if gh_api_json(
+            &repo,
+            "POST",
+            &format!("repos/{repository}/pulls/{pr_number}/comments"),
+            &payload,
+        )
+        .is_ok()
+        {
+            posted += 1;
+        } else {
+            failed += 1;
+            eprintln!(
+                "ReviewGate inline comment could not be posted for finding {}. Keeping it as a compact fallback in the summary.",
+                draft.finding_id
+            );
+        }
+    }
+
+    println!("ReviewGate inline comments posted: {posted}; skipped/failed: {failed}.");
+    if failed > 0 {
+        println!(
+            "::warning title=ReviewGate inline comments::Failed to publish {failed} inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+        );
+    }
+    Ok(failed == 0)
+}
+
+fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
+    let repo = options.repo.canonicalize().unwrap_or(options.repo);
+    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
+        println!("ReviewGate summary comment skipped: not a pull_request event.");
+        return Ok(());
+    }
+    if !options.input.is_file() {
+        println!(
+            "ReviewGate summary comment skipped: missing {}.",
+            options.input.display()
+        );
+        return Ok(());
+    }
+    if !github_token_available() {
+        println!("ReviewGate summary comment skipped: GitHub token is empty.");
+        return Ok(());
+    }
+
+    let Some(event) = read_github_event()? else {
+        println!("ReviewGate summary comment skipped: missing GitHub event.");
+        return Ok(());
+    };
+    let Some(pr_number) = pull_request_number(&event) else {
+        println!("ReviewGate summary comment skipped: no pull request number.");
+        return Ok(());
+    };
+    let repository = github_repository()?;
+    let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
+    let previous_state = reviewgate_github::find_summary_comment(&comments)
+        .and_then(|comment| recover_summary_state(&comment.body, "summary publish"));
+
+    let artifact = read_artifact(&options.input)?.with_computed_score()?;
+    let summary_min_severity = parse_optional_severity(
+        options.summary_min_severity.as_deref(),
+        "summary_min_severity",
+    )?
+    .unwrap_or(Severity::P4);
+    let inline_min_severity = parse_optional_severity(
+        options.inline_min_severity.as_deref(),
+        "inline_min_severity",
+    )?
+    .unwrap_or(Severity::P2);
+    let inline_min_confidence = options
+        .inline_min_confidence
+        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
+    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
+    let summary_style = options.summary_style.unwrap_or(SummaryStyle::Concise);
+    let summary = render_summary_with_options(
+        &artifact,
+        SummaryOptions {
+            summary_min_severity,
+            inline_min_severity,
+            inline_min_confidence,
+            inline_comments_available: options.inline_comments_available,
+            summary_style,
+            ..SummaryOptions::default()
+        },
+        previous_state.as_ref(),
+    )?;
+    write_or_print(
+        Some(options.summary_out.clone()),
+        &summary,
+        "review summary",
+    )?;
+    append_step_summary(&summary)?;
+
+    let plan = plan_summary_comment_publish(&comments, summary);
+    match plan.action {
+        SummaryCommentAction::Create { body } => {
+            create_issue_comment(&repo, &repository, pr_number, &body)?;
+            println!("Created ReviewGate summary comment.");
+        }
+        SummaryCommentAction::Update { id, body } => {
+            update_issue_comment(&repo, &repository, id, &body)?;
+            println!("Updated ReviewGate summary comment {id}.");
+        }
+        SummaryCommentAction::Noop { id } => {
+            println!("ReviewGate summary comment {id} already up to date.");
+        }
+    }
+    for duplicate_id in plan.duplicate_comment_ids {
+        delete_issue_comment(&repo, &repository, duplicate_id)?;
+        println!("Deleted duplicate ReviewGate summary comment {duplicate_id}.");
+    }
+    Ok(())
+}
+
+fn publish_check_run(
+    repo: PathBuf,
+    input: PathBuf,
+    gate_mode: GateMode,
+    name: String,
+) -> Result<()> {
+    if gate_mode != GateMode::Check {
+        println!("ReviewGate check run skipped: gate_mode is not check.");
+        return Ok(());
+    }
+    if !github_token_available() {
+        bail!("ReviewGate check run failed: GitHub token is empty");
+    }
+    let artifact = read_artifact(&input)?.with_computed_score()?;
+    let event = read_github_event()?;
+    let head_sha = event
+        .as_ref()
+        .and_then(pull_request_head_sha)
+        .unwrap_or(&artifact.reviewed_sha);
+    let conclusion = if artifact.status == ReviewStatus::Failed {
+        "failure"
+    } else {
+        "success"
+    };
+    let details_url = github_actions_run_url();
+    let payload = serde_json::json!({
+        "name": name,
+        "head_sha": head_sha,
+        "status": "completed",
+        "conclusion": conclusion,
+        "details_url": details_url,
+        "output": {
+            "title": format!("ReviewGate: {}/5 ({})", artifact.score, artifact.status.as_str()),
+            "summary": artifact.verdict,
+        }
+    });
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let repository = github_repository()?;
+    gh_api_json(
+        &repo,
+        "POST",
+        &format!("repos/{repository}/check-runs"),
+        &payload,
+    )?;
+    println!("Published ReviewGate check run for {head_sha}: {conclusion}.");
+    Ok(())
+}
+
+fn enforce(input: PathBuf, report_only: bool, gate_mode: GateMode) -> Result<()> {
+    if report_only {
+        println!("ReviewGate report-only mode enabled; not failing workflow.");
+        return Ok(());
+    }
+    match gate_mode {
+        GateMode::Report => {
+            println!("ReviewGate gate_mode=report; not failing workflow.");
+            return Ok(());
+        }
+        GateMode::Check => {
+            println!("ReviewGate gate_mode=check; dedicated check run owns the gate.");
+            return Ok(());
+        }
+        GateMode::Job => {}
+    }
+    let artifact = read_artifact(&input)?.with_computed_score()?;
+    if artifact.status == ReviewStatus::Failed {
+        bail!(
+            "ReviewGate failed: score {} is below fail_under {}.",
+            artifact.score,
+            artifact.fail_under
+        );
+    }
+    println!(
+        "ReviewGate status: {} ({}/5).",
+        artifact.status.as_str(),
+        artifact.score
+    );
+    Ok(())
+}
+
 fn resolve_repo_path(repo: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
         repo.join(path)
     }
+}
+
+fn read_artifact(path: &Path) -> Result<ReviewArtifact> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read artifact {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn github_token_available() -> bool {
+    std::env::var("GH_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn github_repository() -> Result<String> {
+    std::env::var("GITHUB_REPOSITORY").context("GITHUB_REPOSITORY is required")
+}
+
+fn pull_request_number(event: &serde_json::Value) -> Option<u64> {
+    event
+        .pointer("/pull_request/number")
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn pull_request_head_sha(event: &serde_json::Value) -> Option<&str> {
+    event
+        .pointer("/pull_request/head/sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| !sha.trim().is_empty())
+}
+
+fn fetch_issue_comments(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+) -> Result<Vec<ExistingSummaryComment>> {
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("repos/{repository}/issues/{pr_number}/comments"),
+        ],
+    )?;
+    parse_issue_comments(&raw)
+}
+
+fn parse_issue_comments(raw: &str) -> Result<Vec<ExistingSummaryComment>> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse issue comments JSON")?;
+    let mut comments = Vec::new();
+    for entry in flatten_gh_paginated_items(&value) {
+        let Some(id) = entry.get("id").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        let body = entry
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let author_login = entry
+            .pointer("/user/login")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        comments.push(ExistingSummaryComment {
+            id,
+            author_login,
+            body,
+        });
+    }
+    Ok(comments)
+}
+
+fn fetch_pull_comments(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+) -> Result<Vec<ExistingInlineComment>> {
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("repos/{repository}/pulls/{pr_number}/comments"),
+        ],
+    )?;
+    parse_pull_comments(&raw)
+}
+
+fn parse_pull_comments(raw: &str) -> Result<Vec<ExistingInlineComment>> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse pull comments JSON")?;
+    let mut comments = Vec::new();
+    for entry in flatten_gh_paginated_items(&value) {
+        let Some(id) = entry.get("id").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        let body = entry
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        comments.push(ExistingInlineComment { id, body });
+    }
+    Ok(comments)
+}
+
+fn flatten_gh_paginated_items(value: &serde_json::Value) -> Vec<&serde_json::Value> {
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    if items.iter().all(serde_json::Value::is_array) {
+        items
+            .iter()
+            .filter_map(serde_json::Value::as_array)
+            .flat_map(|page| page.iter())
+            .collect()
+    } else {
+        items.iter().collect()
+    }
+}
+
+fn create_issue_comment(repo: &Path, repository: &str, pr_number: u64, body: &str) -> Result<()> {
+    let payload = serde_json::json!({ "body": body });
+    gh_api_json(
+        repo,
+        "POST",
+        &format!("repos/{repository}/issues/{pr_number}/comments"),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn update_issue_comment(repo: &Path, repository: &str, comment_id: u64, body: &str) -> Result<()> {
+    let payload = serde_json::json!({ "body": body });
+    gh_api_json(
+        repo,
+        "PATCH",
+        &format!("repos/{repository}/issues/comments/{comment_id}"),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn delete_issue_comment(repo: &Path, repository: &str, comment_id: u64) -> Result<()> {
+    gh_dyn(
+        repo,
+        &[
+            "api",
+            "--method",
+            "DELETE",
+            &format!("repos/{repository}/issues/comments/{comment_id}"),
+        ],
+    )?;
+    Ok(())
+}
+
+fn gh_api_json(
+    repo: &Path,
+    method: &str,
+    endpoint: &str,
+    payload: &serde_json::Value,
+) -> Result<String> {
+    let input_path = unique_temp_path("reviewgate-gh-api", "json");
+    fs::write(&input_path, serde_json::to_string(payload)?)
+        .with_context(|| format!("failed to write {}", input_path.display()))?;
+    let input_path_string = input_path.display().to_string();
+    let output = gh_dyn(
+        repo,
+        &[
+            "api",
+            "--method",
+            method,
+            endpoint,
+            "--input",
+            &input_path_string,
+        ],
+    );
+    let _ = fs::remove_file(&input_path);
+    output
+}
+
+fn write_github_output(path: Option<&Path>, key: &str, value: &str) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{key}={value}").with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn append_step_summary(summary: &str) -> Result<()> {
+    let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
+        return Ok(());
+    };
+    let path = PathBuf::from(path);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.write_all(summary.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn github_actions_run_url() -> Option<String> {
+    let server_url =
+        std::env::var("GITHUB_SERVER_URL").unwrap_or_else(|_| "https://github.com".to_string());
+    let repository = std::env::var("GITHUB_REPOSITORY").ok()?;
+    let run_id = std::env::var("GITHUB_RUN_ID").ok()?;
+    Some(format!("{server_url}/{repository}/actions/runs/{run_id}"))
 }
 
 fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
@@ -813,7 +1522,9 @@ fn parse_summary_style(value: &str, field: &str) -> Result<SummaryStyle> {
 }
 
 fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
-    let reviewed_sha = git(repo, ["rev-parse", "HEAD"])?;
+    let checkout_sha = git(repo, ["rev-parse", "HEAD"])?;
+    let github_event = read_github_event()?;
+    let reviewed_sha = select_reviewed_sha(&checkout_sha, github_event.as_ref());
     let base_ref = std::env::var("GITHUB_BASE_REF").ok();
     let diff_base = if let Some(base) = base_ref.as_ref() {
         Some(
@@ -852,6 +1563,30 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
     })
 }
 
+fn read_github_event() -> Result<Option<serde_json::Value>> {
+    let Some(path) = std::env::var_os("GITHUB_EVENT_PATH") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read GitHub event {}", path.display()))?;
+    let event = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(event))
+}
+
+fn select_reviewed_sha(checkout_sha: &str, github_event: Option<&serde_json::Value>) -> String {
+    github_event
+        .and_then(|event| event.pointer("/pull_request/head/sha"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| !sha.trim().is_empty())
+        .unwrap_or(checkout_sha)
+        .to_string()
+}
+
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
     let output = ProcessCommand::new("git")
         .arg("-C")
@@ -869,6 +1604,10 @@ fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
 }
 
 fn gh<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
+    gh_dyn(repo, &args)
+}
+
+fn gh_dyn(repo: &Path, args: &[&str]) -> Result<String> {
     let output = ProcessCommand::new("gh")
         .current_dir(repo)
         .args(args)
@@ -935,6 +1674,9 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8, fail_under: u8
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
+    prompt.push_str(
+        "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line, and safe to post as an inline PR comment. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
+    );
     prompt.push_str(&format!(
         "reviewed_sha: {}\ntarget_score: {}\nfail_under: {}\n\n",
         context.reviewed_sha, target_score, fail_under
@@ -1323,9 +2065,7 @@ mod tests {
     fn action_publishes_start_signal_and_surfaces_summary_failures() {
         let action = include_str!("../../../action.yml");
         assert!(action.contains("- name: Publish ReviewGate start signal"));
-        assert!(action.contains("# ReviewGate: running"));
-        assert!(action.contains("start-state.txt"));
-        assert!(action.contains("grep -m1 -o '<!-- reviewgate-state .* -->'"));
+        assert!(action.contains("publish-start-signal"));
         assert!(action.contains("summary_style:"));
         assert!(action.contains("default: concise"));
         assert!(action.contains("REVIEWGATE_SUMMARY_STYLE=concise"));
@@ -1338,25 +2078,59 @@ mod tests {
         let summary_start = action
             .find("- name: Publish ReviewGate summary")
             .expect("summary step exists");
+        let check_run_start = action
+            .find("- name: Publish ReviewGate check run")
+            .expect("check run step exists");
         let enforce_start = action
             .find("- name: Enforce ReviewGate")
             .expect("enforce step exists");
         assert!(inline_start < summary_start);
+        assert!(summary_start < check_run_start);
+        assert!(check_run_start < enforce_start);
 
         let inline_step = &action[inline_start..summary_start];
-        let summary_step = &action[summary_start..enforce_start];
+        let summary_step = &action[summary_start..check_run_start];
+        let check_run_step = &action[check_run_start..enforce_start];
 
         assert!(inline_step.contains("id: inline-comments"));
+        assert!(inline_step.contains("publish-inline-comments"));
         assert!(inline_step.contains("GITHUB_OUTPUT"));
-        assert!(inline_step.contains("trap on_inline_publish_error ERR"));
+        assert!(!inline_step.contains("scan(\"<!-- reviewgate-finding:.*? -->\")"));
         assert!(!summary_step.contains("continue-on-error: true"));
+        assert!(summary_step.contains("publish-summary"));
         assert!(summary_step.contains("steps.inline-comments.outputs.inline_available"));
         assert!(summary_step.contains("--inline-comments-available"));
         assert!(summary_step.contains("::error title=ReviewGate summary publish failed::"));
+        assert!(!summary_step.contains("capture(\"<!-- reviewgate-state"));
+
+        assert!(check_run_step.contains("publish-check-run"));
+        assert!(check_run_step.contains("--gate-mode \"$REVIEWGATE_GATE_MODE\""));
 
         let enforce_step = &action[enforce_start..];
         assert!(enforce_step.contains("if: ${{ always() }}"));
-        assert!(enforce_step.contains("ReviewGate enforcement failed: missing"));
+        assert!(enforce_step.contains("-- enforce"));
+    }
+
+    #[test]
+    fn invalid_previous_summary_state_is_ignored_for_publish_paths() {
+        let previous_body = format!(
+            "{}\n\n{}not-json{}",
+            reviewgate_core::SUMMARY_MARKER,
+            reviewgate_core::SUMMARY_STATE_PREFIX,
+            reviewgate_core::SUMMARY_STATE_SUFFIX
+        );
+
+        assert!(recover_summary_state(&previous_body, "test").is_none());
+
+        let start_body = render_start_signal_body(Some(&ExistingSummaryComment {
+            id: 42,
+            body: previous_body,
+            author_login: Some("github-actions[bot]".to_string()),
+        }))
+        .expect("start signal body renders");
+
+        assert!(start_body.contains("# ReviewGate: running"));
+        assert!(!start_body.contains("not-json"));
     }
 
     #[test]
@@ -1493,6 +2267,34 @@ Thanks {also not json}."#;
     }
 
     #[test]
+    fn reviewed_sha_uses_pull_request_head_sha_instead_of_checkout_merge_sha() {
+        let event = serde_json::json!({
+            "pull_request": {
+                "head": {
+                    "sha": "head-sha"
+                }
+            }
+        });
+
+        assert_eq!(
+            select_reviewed_sha("merge-sha", Some(&event)),
+            "head-sha".to_string()
+        );
+    }
+
+    #[test]
+    fn reviewed_sha_falls_back_to_checkout_sha_without_pull_request_head() {
+        let event = serde_json::json!({
+            "workflow_dispatch": {}
+        });
+
+        assert_eq!(
+            select_reviewed_sha("checkout-sha", Some(&event)),
+            "checkout-sha".to_string()
+        );
+    }
+
+    #[test]
     fn truncates_context_on_utf8_char_boundary() {
         let mut contents = "aaaaébbbb".to_string();
 
@@ -1519,6 +2321,8 @@ Thanks {also not json}."#;
         assert!(prompt.contains("target_score: 5"));
         assert!(prompt.contains("fail_under: 4"));
         assert!(prompt.contains("ReviewGate Review Output"));
+        assert!(prompt.contains("Finding scope guidance"));
+        assert!(prompt.contains("set scope to line only"));
         assert!(prompt.contains("diff --git"));
     }
 

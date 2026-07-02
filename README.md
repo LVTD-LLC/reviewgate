@@ -17,7 +17,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Emits a visible score like `ReviewGate: 4/5`.
 - Produces a JSON artifact for humans and external agent loops.
 - Posts high-confidence, line-specific findings as inline PR comments by default, deduped by stable ReviewGate finding markers.
-- Creates a GitHub check run based on a configurable threshold.
+- Can publish a dedicated GitHub check run when `gate_mode: check` is enabled.
 - Shows one-line cumulative model cost in the PR summary and full cost/metrics data in the JSON artifact.
 
 ## GitHub Action
@@ -34,7 +34,10 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  checks: write
+
+concurrency:
+  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   review:
@@ -59,6 +62,8 @@ jobs:
 
 The job-level `if` keeps the default install fork-safe: GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so ReviewGate skips those events instead of passing an empty model key into an enforced required check. Do not move this workflow to `pull_request_target` for untrusted fork code.
 
+Add `checks: write` to `permissions` when using `gate_mode: check`.
+
 The action:
 
 - posts or updates a short `ReviewGate: running` placeholder comment when PR review starts;
@@ -70,7 +75,7 @@ The action:
 - appends the summary to the GitHub Actions step summary;
 - replaces the running placeholder with one concise PR comment containing `<!-- reviewgate-summary -->`;
 - posts eligible line-specific findings as best-effort inline PR review comments;
-- exits non-zero when `score < fail_under` and `gate_mode: job`, unless `report_only: "true"` or `gate_mode: report` is set.
+- exits non-zero when `score < fail_under` and `gate_mode: job`, publishes only when `gate_mode: report`, or publishes a dedicated check run when `gate_mode: check`.
 
 The default workflow runs on PR updates because that is the lowest-friction install path. For teams that want tighter cost control, the next control surface is an explicit recheck path such as `workflow_dispatch`, a PR comment command, or a CLI helper.
 
@@ -147,6 +152,8 @@ Agents should consume the JSON artifact first and use the canonical PR summary a
 
 `status == "failed"` means the gate should fail CI. `status == "needs_changes"` means non-blocking work remains but the hard floor has not been crossed.
 
+Finding `scope` controls publishing. Only `scope: "line"` findings with an exact changed-line anchor are eligible for inline PR comments; `scope: "file"` and `scope: "pr"` findings remain in the summary and JSON artifact.
+
 ## OpenRouter Boundary
 
 ReviewGate is BYOK. The action reads the model key from `OPENROUTER_API_KEY` and must not log the key, request headers, or raw secret values. Model presets are explicit:
@@ -169,7 +176,7 @@ ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing
 
 - `target_score`: score required for a fully passing review.
 - `fail_under`: hard floor that fails CI unless `report_only` is enabled.
-- `gate_mode`: failed-review behavior. `job` fails the workflow; `report` publishes only. `check` is reserved for a future dedicated Check Run publisher.
+- `gate_mode`: failed-review behavior. `job` fails the workflow; `report` publishes only; `check` publishes a dedicated Check Run and leaves the workflow job non-failing.
 - `summary_min_severity`: lowest severity shown in the canonical summary (`P0` through `P4`).
 - `summary_style`: summary detail level. `concise` is the default PR UX; `detailed` restores full cost, metrics, findings, notes, and agent-instruction sections.
 - `inline_min_severity`: lowest severity eligible for inline comments (`P0` through `P4`).

@@ -14,5 +14,5 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 reviewgate-core = { path = "../reviewgate-core" }
+reviewgate-github = { path = "../reviewgate-github" }
 serde_json.workspace = true
-

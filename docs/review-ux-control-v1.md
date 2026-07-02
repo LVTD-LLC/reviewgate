@@ -29,9 +29,9 @@ Running on every push is acceptable as the simplest default while the project is
 
 Recommended modes:
 
-- `report_only`: always publish the review and keep the workflow green.
-- `check_only`: publish a failing GitHub check below `fail_under` without necessarily failing the job.
-- `fail_job`: publish the review and fail the workflow below `fail_under`.
+- `gate_mode: report`: always publish the review and keep the workflow green.
+- `gate_mode: check`: publish a GitHub check below `fail_under` without failing the workflow job.
+- `gate_mode: job`: publish the review and fail the workflow below `fail_under`.
 
 The review summary should always include `target_score`, `fail_under`, and the resulting status so humans and agents can understand the policy.
 
@@ -47,7 +47,7 @@ Defaults should avoid noise:
 
 - Keep the summary concise by default: verdict, score, status, one-line cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 - Use `summary_style: detailed` when a repo wants the old full summary with cost details, metrics, findings, notes, and agent instructions.
-- Post inline comments only for high-confidence P0-P2 line-specific findings.
+- Post inline comments only for high-confidence P0-P2 findings with `scope: line`.
 - Keep all findings in the JSON artifact even when the visible summary filters lower-severity items.
 
 ## Cost Direction

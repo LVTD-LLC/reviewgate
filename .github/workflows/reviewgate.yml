@@ -10,9 +10,13 @@ on:
         required: false
         default: P4
       inline_min_severity:
-        description: Lowest severity eligible for future inline comments.
+        description: Lowest severity eligible for inline comments.
         required: false
         default: P2
+
+concurrency:
+  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

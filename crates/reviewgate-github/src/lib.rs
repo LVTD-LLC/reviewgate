@@ -1,4 +1,6 @@
-use reviewgate_core::{Finding, SUMMARY_MARKER, SecretString, Severity};
+use reviewgate_core::{
+    Finding, FindingScope, SUMMARY_MARKER, SecretString, Severity, extract_summary_state,
+};
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
@@ -6,15 +8,42 @@ pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingSummaryComment {
     pub id: u64,
+    pub author_login: Option<String>,
     pub body: String,
+}
+
+fn is_github_actions_author(author_login: Option<&str>) -> bool {
+    matches!(author_login, Some("github-actions[bot]" | "github-actions"))
+}
+
+fn is_reviewgate_summary_comment(comment: &ExistingSummaryComment) -> bool {
+    is_github_actions_author(comment.author_login.as_deref())
+        && comment.body.contains(SUMMARY_MARKER)
 }
 
 pub fn find_summary_comment(
     comments: &[ExistingSummaryComment],
 ) -> Option<&ExistingSummaryComment> {
-    comments
+    select_primary_summary_comment(comments)
+}
+
+fn select_primary_summary_comment(
+    comments: &[ExistingSummaryComment],
+) -> Option<&ExistingSummaryComment> {
+    let reviewgate_comments: Vec<&ExistingSummaryComment> = comments
         .iter()
-        .find(|comment| comment.body.contains(SUMMARY_MARKER))
+        .filter(|comment| is_reviewgate_summary_comment(comment))
+        .collect();
+
+    reviewgate_comments
+        .iter()
+        .filter_map(|comment| {
+            let state = extract_summary_state(&comment.body).ok().flatten()?;
+            Some((*comment, state.run_count, state.reviewed_shas.len() as u32))
+        })
+        .max_by_key(|(_, run_count, reviewed_count)| (*run_count, *reviewed_count))
+        .map(|(comment, _, _)| comment)
+        .or_else(|| reviewgate_comments.last().copied())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,12 +53,37 @@ pub enum SummaryCommentAction {
     Noop { id: u64 },
 }
 
-pub fn plan_summary_comment_upsert(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryCommentPublishPlan {
+    pub action: SummaryCommentAction,
+    pub duplicate_comment_ids: Vec<u64>,
+}
+
+impl SummaryCommentPublishPlan {
+    pub fn primary_id(&self) -> Option<u64> {
+        match &self.action {
+            SummaryCommentAction::Create { .. } => None,
+            SummaryCommentAction::Update { id, .. } | SummaryCommentAction::Noop { id } => {
+                Some(*id)
+            }
+        }
+    }
+}
+
+pub fn plan_summary_comment_publish(
     comments: &[ExistingSummaryComment],
     rendered_summary: impl Into<String>,
-) -> SummaryCommentAction {
+) -> SummaryCommentPublishPlan {
     let body = rendered_summary.into();
-    if let Some(existing) = find_summary_comment(comments) {
+    let existing = select_primary_summary_comment(comments);
+    let duplicate_comment_ids = comments
+        .iter()
+        .filter(|comment| is_reviewgate_summary_comment(comment))
+        .filter(|comment| Some(comment.id) != existing.map(|existing| existing.id))
+        .map(|comment| comment.id)
+        .collect();
+
+    let action = if let Some(existing) = existing {
         if existing.body == body {
             SummaryCommentAction::Noop { id: existing.id }
         } else {
@@ -40,7 +94,19 @@ pub fn plan_summary_comment_upsert(
         }
     } else {
         SummaryCommentAction::Create { body }
+    };
+
+    SummaryCommentPublishPlan {
+        action,
+        duplicate_comment_ids,
     }
+}
+
+pub fn plan_summary_comment_upsert(
+    comments: &[ExistingSummaryComment],
+    rendered_summary: impl Into<String>,
+) -> SummaryCommentAction {
+    plan_summary_comment_publish(comments, rendered_summary).action
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -152,6 +218,7 @@ pub fn plan_inline_comment_drafts(
     findings
         .iter()
         .filter(|finding| finding.confidence >= min_confidence)
+        .filter(|finding| finding.scope == FindingScope::Line)
         .filter(|finding| finding.severity.is_at_or_above(inline_min_severity))
         .filter_map(|finding| {
             let path = finding.file.as_ref()?;
@@ -182,6 +249,7 @@ mod tests {
     fn finds_canonical_summary_comment_by_marker() {
         let comments = vec![ExistingSummaryComment {
             id: 1,
+            author_login: Some("github-actions[bot]".to_string()),
             body: format!("{}\n# ReviewGate: 4/5", SUMMARY_MARKER),
         }];
 
@@ -189,6 +257,57 @@ mod tests {
             find_summary_comment(&comments).map(|comment| comment.id),
             Some(1)
         );
+    }
+
+    #[test]
+    fn ignores_user_authored_summary_markers_when_finding_canonical_comment() {
+        let comments = vec![
+            ExistingSummaryComment {
+                id: 1,
+                author_login: Some("maintainer".to_string()),
+                body: format!("{SUMMARY_MARKER}\n# ReviewGate: forged"),
+            },
+            ExistingSummaryComment {
+                id: 2,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5"),
+            },
+        ];
+
+        assert_eq!(
+            find_summary_comment(&comments).map(|comment| comment.id),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn plans_duplicate_cleanup_only_for_bot_owned_summary_comments() {
+        let comments = vec![
+            ExistingSummaryComment {
+                id: 1,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{SUMMARY_MARKER}\n\n<!-- reviewgate-state {{\"version\":1,\"last_reviewed_sha\":\"a\",\"reviewed_shas\":[\"a\"],\"run_count\":1,\"cumulative_cost_usd\":0,\"cost_history\":[]}} -->"
+                ),
+            },
+            ExistingSummaryComment {
+                id: 2,
+                author_login: Some("maintainer".to_string()),
+                body: format!("{SUMMARY_MARKER}\nuser-written audit note"),
+            },
+            ExistingSummaryComment {
+                id: 3,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{SUMMARY_MARKER}\n\n<!-- reviewgate-state {{\"version\":1,\"last_reviewed_sha\":\"b\",\"reviewed_shas\":[\"a\",\"b\"],\"run_count\":2,\"cumulative_cost_usd\":0,\"cost_history\":[]}} -->"
+                ),
+            },
+        ];
+
+        let plan = plan_summary_comment_publish(&comments, format!("{SUMMARY_MARKER}\nnew"));
+
+        assert_eq!(plan.primary_id(), Some(3));
+        assert_eq!(plan.duplicate_comment_ids, vec![1]);
     }
 
     #[test]
@@ -207,6 +326,7 @@ mod tests {
     fn plans_update_when_summary_comment_exists_with_old_body() {
         let comments = vec![ExistingSummaryComment {
             id: 42,
+            author_login: Some("github-actions[bot]".to_string()),
             body: format!("{SUMMARY_MARKER}\n# ReviewGate: 3/5"),
         }];
 
@@ -227,6 +347,7 @@ mod tests {
         let body = format!("{SUMMARY_MARKER}\n# ReviewGate: 5/5");
         let comments = vec![ExistingSummaryComment {
             id: 42,
+            author_login: Some("github-actions[bot]".to_string()),
             body: body.clone(),
         }];
 
@@ -261,6 +382,7 @@ mod tests {
         let mut client = MockSummaryCommentClient::default();
         let comments = vec![ExistingSummaryComment {
             id: 42,
+            author_login: Some("github-actions[bot]".to_string()),
             body: format!("{SUMMARY_MARKER}\n# ReviewGate: 4/5"),
         }];
 
@@ -292,6 +414,7 @@ mod tests {
     fn plans_inline_comment_for_eligible_line_finding() {
         let finding = Finding {
             id: "rg_001".to_string(),
+            scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.92,
             file: Some("src/lib.rs".to_string()),
@@ -339,6 +462,7 @@ mod tests {
     fn skips_ineligible_and_duplicate_inline_comments() {
         let duplicate = Finding {
             id: "rg_dup".to_string(),
+            scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
             file: Some("src/lib.rs".to_string()),
@@ -373,6 +497,32 @@ mod tests {
     }
 
     #[test]
+    fn skips_file_and_pr_scope_findings_for_inline_comments() {
+        let file_scope = Finding {
+            id: "rg_file".to_string(),
+            scope: reviewgate_core::FindingScope::File,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "File-level concern".to_string(),
+            detail: None,
+            agent_instruction: "Handle at file scope.".to_string(),
+        };
+        let pr_scope = Finding {
+            id: "rg_pr".to_string(),
+            scope: reviewgate_core::FindingScope::Pr,
+            title: "PR-level concern".to_string(),
+            agent_instruction: "Handle at PR scope.".to_string(),
+            ..file_scope.clone()
+        };
+
+        let drafts = plan_inline_comment_drafts(&[file_scope, pr_scope], &[], Severity::P2, 0.8);
+
+        assert!(drafts.is_empty());
+    }
+
+    #[test]
     fn inline_marker_payload_round_trips_schema_valid_ids() {
         assert_eq!(
             inline_comment_marker("missing auth check"),
@@ -388,6 +538,7 @@ mod tests {
     fn dedupes_inline_comments_with_encoded_markers() {
         let finding = Finding {
             id: "A-->B\nC".to_string(),
+            scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
             file: Some("src/lib.rs".to_string()),

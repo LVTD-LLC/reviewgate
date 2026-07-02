@@ -3,6 +3,13 @@
 ## Unreleased
 
 - Documented and dogfooded a fork-safe ReviewGate workflow guard so required checks do not fail when GitHub withholds `OPENROUTER_API_KEY` from forked or Dependabot PR events.
+- Moved GitHub summary, start-signal, inline-comment, check-run, and enforcement publishing from Bash/JQ in the composite action into Rust CLI commands.
+- Added `scope: line|file|pr` to review findings, updated the schema/prompts, and limited inline comment publishing to `scope: line` findings.
+- Implemented `gate_mode: check` with a dedicated GitHub Check Run publisher, while keeping `gate_mode: job` and `gate_mode: report` behavior explicit.
+- Fixed PR reviewed SHA handling to prefer the pull request head SHA over the checkout merge SHA in GitHub Actions.
+- Tightened canonical summary comment selection to ignore user-authored ReviewGate markers and delete only bot-authored duplicate summary comments.
+- Added workflow concurrency guidance to reduce duplicate ReviewGate runs on rapid PR updates.
+- Updated `anyhow` to 1.0.103 to avoid the RustSec advisory affecting 1.0.102.
 - Changed the default canonical PR summary to concise output with a compact verdict/status line, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
 - Fixed concise summaries to keep line-specific fallback findings visible when inline PR comments are disabled or cannot be published.
 - Fixed action enforcement so summary publishing failures cannot skip the configured score gate.

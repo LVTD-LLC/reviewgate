@@ -99,9 +99,30 @@ impl Severity {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingScope {
+    #[default]
+    Line,
+    File,
+    Pr,
+}
+
+impl FindingScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FindingScope::Line => "line",
+            FindingScope::File => "file",
+            FindingScope::Pr => "pr",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Finding {
     pub id: String,
+    #[serde(default)]
+    pub scope: FindingScope,
     pub severity: Severity,
     pub confidence: f64,
     pub file: Option<String>,
@@ -384,7 +405,8 @@ pub fn is_inline_comment_eligible(
     inline_min_severity: Severity,
     inline_min_confidence: f64,
 ) -> bool {
-    finding.file.is_some()
+    finding.scope == FindingScope::Line
+        && finding.file.is_some()
         && finding.line.is_some()
         && finding.confidence >= inline_min_confidence
         && finding.severity.is_at_or_above(inline_min_severity)
@@ -1133,7 +1155,9 @@ fn fallback_summary_findings(artifact: &ReviewArtifact, options: SummaryOptions)
 }
 
 fn inline_skip_reason(finding: &Finding, options: SummaryOptions) -> &'static str {
-    if finding.file.is_none() || finding.line.is_none() {
+    if finding.scope != FindingScope::Line {
+        "not a line-specific finding"
+    } else if finding.file.is_none() || finding.line.is_none() {
         "no eligible line anchor"
     } else if !finding.severity.is_at_or_above(options.inline_min_severity) {
         "below the inline severity floor"
@@ -1176,6 +1200,7 @@ mod tests {
     fn computes_score_from_highest_severity() {
         let findings = vec![Finding {
             id: "rg_001".to_string(),
+            scope: FindingScope::Line,
             severity: Severity::P2,
             confidence: 0.9,
             file: Some("src/lib.rs".to_string()),
@@ -1192,6 +1217,7 @@ mod tests {
     fn p0_findings_cap_score_at_one() {
         let findings = vec![Finding {
             id: "rg_001".to_string(),
+            scope: FindingScope::Line,
             severity: Severity::P0,
             confidence: 0.98,
             file: Some("src/auth.rs".to_string()),
@@ -1205,10 +1231,47 @@ mod tests {
     }
 
     #[test]
+    fn non_line_scope_findings_are_not_inline_eligible() {
+        let finding = Finding {
+            id: "rg_001".to_string(),
+            scope: FindingScope::File,
+            severity: Severity::P2,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(42),
+            title: "Module-level behavior needs a test".to_string(),
+            detail: None,
+            agent_instruction: "Add coverage for the broader module behavior.".to_string(),
+        };
+
+        assert!(!is_inline_comment_eligible(&finding, Severity::P2, 0.8));
+
+        let artifact = ReviewArtifact {
+            score: 3,
+            target_score: 5,
+            fail_under: 4,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Failed,
+            verdict: "One file-scoped issue remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            findings: vec![finding],
+            notes: vec![],
+        };
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("not a line-specific finding"));
+    }
+
+    #[test]
     fn computes_score_without_relying_on_enum_ordering() {
         let findings = vec![
             Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 0.9,
                 file: None,
@@ -1219,6 +1282,7 @@ mod tests {
             },
             Finding {
                 id: "rg_002".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.9,
                 file: None,
@@ -1398,6 +1462,7 @@ mod tests {
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
+                    scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
                     file: None,
@@ -1408,6 +1473,7 @@ mod tests {
                 },
                 Finding {
                     id: "rg_002".to_string(),
+                    scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.9,
                     file: None,
@@ -1451,6 +1517,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
@@ -1528,6 +1595,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
@@ -1576,6 +1644,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
@@ -1621,6 +1690,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.9,
                 file: None,
@@ -1663,6 +1733,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
@@ -1698,6 +1769,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.95,
                 file: Some("src/lib.rs".to_string()),
@@ -1760,6 +1832,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 1.2,
                 file: None,
@@ -1817,6 +1890,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
@@ -1941,6 +2015,7 @@ mod tests {
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
+                    scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
                     file: Some("src/lib.rs".to_string()),
@@ -1951,6 +2026,7 @@ mod tests {
                 },
                 Finding {
                     id: "rg_002".to_string(),
+                    scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.8,
                     file: None,
@@ -2001,6 +2077,7 @@ mod tests {
             review_stages: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
                 file: Some("src/lib.rs".to_string()),
