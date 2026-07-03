@@ -7,6 +7,7 @@
 - Clarified concise summary inline-comment wording so inline candidates, posted comments, and unposted fallback findings are not conflated.
 - Tightened model prompt/schema guidance so concrete defects named in verdict prose must also be emitted as structured findings.
 - Repaired inline PR comment anchors to matching changed lines before falling back when model-provided line numbers are stale or imprecise.
+- Updated the canonical PR summary layout with a Review Gate Summary title, centered confidence score, collapsed Important Files Changed and Mermaid Flowchart sections, and a compact run/cost/latest-commit footer.
 - Filter inline PR comments to added right-side diff lines and keep only unposted findings in the canonical summary fallback list.
 - Updated the dogfood ReviewGate workflow to remove the obsolete score-floor input and grant `checks: write` for check-run publishing.
 - Documented and dogfooded a fork-safe ReviewGate workflow guard so required checks do not fail when GitHub withholds `OPENROUTER_API_KEY` from forked or Dependabot PR events.
