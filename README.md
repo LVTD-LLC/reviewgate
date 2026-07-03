@@ -59,6 +59,7 @@ jobs:
     steps:
       - name: Resolve pull request
         id: pr
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
