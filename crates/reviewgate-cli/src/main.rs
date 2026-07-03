@@ -2158,7 +2158,7 @@ mod tests {
         assert!(dogfood_workflow.contains("checks: write"));
         assert!(dogfood_workflow.contains("issue_comment:"));
         assert!(dogfood_workflow.contains("types: [created]"));
-        assert!(dogfood_workflow.contains("github.event.comment.body == '/reviewgate'"));
+        assert!(dogfood_workflow.contains("github.event.comment.body == '@reviewgate review'"));
         assert!(dogfood_workflow.contains("REVIEWGATE_PR_NUMBER"));
         assert!(dogfood_workflow.contains("REVIEWGATE_PR_HEAD_SHA"));
         assert!(dogfood_workflow.contains("REVIEWGATE_BASE_REF"));

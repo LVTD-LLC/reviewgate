@@ -58,7 +58,7 @@ Canonical summary publishing is not silent: GitHub API or permission failures em
 
 ## Trigger Guidance
 
-The default install is comment-triggered. Comment `/reviewgate` on a pull request to run ReviewGate; the workflow should not run on every commit.
+The default install is comment-triggered. Comment `@reviewgate review` on a pull request to run ReviewGate; the workflow should not run on every commit.
 
 For public repositories, guard the ReviewGate job so it only runs for PR comments from maintainer-style authors:
 
@@ -73,8 +73,8 @@ jobs:
       ${{
         github.event.issue.pull_request != null &&
         (
-          github.event.comment.body == '/reviewgate' ||
-          startsWith(github.event.comment.body, '/reviewgate ')
+          github.event.comment.body == '@reviewgate review' ||
+          startsWith(github.event.comment.body, '@reviewgate review ')
         ) &&
         (
           github.event.comment.author_association == 'OWNER' ||

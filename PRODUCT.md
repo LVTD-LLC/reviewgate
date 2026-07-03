@@ -7,7 +7,7 @@ ReviewGate is a free, fully open-source credibility project. The initial goal is
 1. A maintainer installs the GitHub Action.
 2. They add `OPENROUTER_API_KEY` to GitHub Actions secrets.
 3. They optionally add `.reviewgate.yml`.
-4. A maintainer comments `/reviewgate` on a PR.
+4. A maintainer comments `@reviewgate review` on a PR.
 5. ReviewGate posts one top-level summary comment with a clear `0-5` score.
 6. ReviewGate emits structured JSON for humans or external agent loops.
 7. ReviewGate posts inline comments only for specific, high-confidence issues.

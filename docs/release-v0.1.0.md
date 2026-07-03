@@ -6,7 +6,7 @@ Release only after these checks pass:
 - ReviewGate dogfood workflow posts one canonical summary and updates it on rerun.
 - Inline comments are best-effort and do not fail the workflow when a finding cannot map to a diff line.
 - Low-score reviews report `needs_changes` without failing the workflow.
-- Commenting `/reviewgate` on a PR starts a ReviewGate run and updates the canonical summary on rerun.
+- Commenting `@reviewgate review` on a PR starts a ReviewGate run and updates the canonical summary on rerun.
 - `eval-fixtures` has been run against at least 20 historical PR artifacts.
 - A smoke-test repository can install a pinned tag and receive a review without Marketplace publishing.
 

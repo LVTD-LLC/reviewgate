@@ -17,7 +17,7 @@ External agent loops can be documented and supported, but they are separate from
 Default installation should be explicit and cost-controlled:
 
 - Run on `issue_comment` events for `created` comments on pull requests.
-- Require a `/reviewgate` PR comment command from an owner, member, or collaborator.
+- Require an `@reviewgate review` PR comment command from an owner, member, or collaborator.
 - Resolve the PR with the GitHub API, skip cross-repository PR branches before exposing model secrets, check out the PR head SHA, and fetch the base branch before running ReviewGate.
 - Pass `REVIEWGATE_PR_NUMBER`, `REVIEWGATE_PR_HEAD_SHA`, and `REVIEWGATE_BASE_REF` to the action so publishing and diff collection work from an `issue_comment` event.
 

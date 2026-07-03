@@ -9,7 +9,7 @@ Recommended loop:
 3. Fix the highest blocking severity first.
 4. Reply to or resolve inline comments only after the referenced issue is fixed.
 5. Push commits.
-6. Comment `/reviewgate` on the PR to rerun the ReviewGate workflow.
+6. Comment `@reviewgate review` on the PR to rerun the ReviewGate workflow.
 7. Stop when ReviewGate and the chosen human review gate are both passing.
 
 ReviewGate does not run this loop inside CI. This keeps secrets, repository writes, and repair authority outside the review action.

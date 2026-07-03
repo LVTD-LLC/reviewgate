@@ -46,8 +46,8 @@ jobs:
       ${{
         github.event.issue.pull_request != null &&
         (
-          github.event.comment.body == '/reviewgate' ||
-          startsWith(github.event.comment.body, '/reviewgate ')
+          github.event.comment.body == '@reviewgate review' ||
+          startsWith(github.event.comment.body, '@reviewgate review ')
         ) &&
         (
           github.event.comment.author_association == 'OWNER' ||
@@ -107,7 +107,7 @@ jobs:
           preset: balanced
 ```
 
-Comment `/reviewgate` on a pull request to run the review. The job-level `if` and PR resolution step keep the default install fork-safe and cost-controlled: only maintainer-style comment authors can trigger it, fork PRs are skipped before `OPENROUTER_API_KEY` is passed to the action, and Dependabot PRs are skipped instead of running with unavailable repository secrets. Do not move this workflow to `pull_request_target` for untrusted fork code.
+Comment `@reviewgate review` on a pull request to run the review. The job-level `if` and PR resolution step keep the default install fork-safe and cost-controlled: only maintainer-style comment authors can trigger it, fork PRs are skipped before `OPENROUTER_API_KEY` is passed to the action, and Dependabot PRs are skipped instead of running with unavailable repository secrets. Do not move this workflow to `pull_request_target` for untrusted fork code.
 
 The action:
 
@@ -123,7 +123,7 @@ The action:
 - publishes a check-run status for review availability when permissions allow;
 - exits non-zero only when ReviewGate cannot complete the review or a required publishing step fails.
 
-The default workflow does not run on every commit. Re-run ReviewGate by adding another `/reviewgate` PR comment.
+The default workflow does not run on every commit. Re-run ReviewGate by adding another `@reviewgate review` PR comment.
 
 ## Local Milestone
 
@@ -185,7 +185,7 @@ Agents should consume the JSON artifact first and use the canonical PR summary a
 1. Read `.reviewgate/review.json` or the latest summary comment containing `<!-- reviewgate-summary -->`.
 2. Treat any finding with a score ceiling below `target_score` as target-blocking.
 3. Apply focused fixes, commit, and push.
-4. Comment `/reviewgate` to rerun ReviewGate and update the same summary comment.
+4. Comment `@reviewgate review` to rerun ReviewGate and update the same summary comment.
 5. Stop when `score >= target_score` and `status == "passed"`, or when human judgment is needed.
 
 `status == "needs_changes"` means the review completed but the configured target score has not been reached. The action does not fail CI for this status, and the ReviewGate check run uses a neutral conclusion.
@@ -250,6 +250,6 @@ skills/reviewgate-loop/      Public agent loop skill draft
 
 ## Security Posture
 
-ReviewGate treats model output as untrusted text. The default workflow reviews diffs and context only after a `/reviewgate` PR comment; it does not run arbitrary PR code and should not use `pull_request_target` for untrusted forks. GitHub token permissions should stay least-privilege.
+ReviewGate treats model output as untrusted text. The default workflow reviews diffs and context only after an `@reviewgate review` PR comment; it does not run arbitrary PR code and should not use `pull_request_target` for untrusted forks. GitHub token permissions should stay least-privilege.
 
 The checked-in lockfile is generated from crates.io with `cargo generate-lockfile` and audited in CI before project build/test steps run.
