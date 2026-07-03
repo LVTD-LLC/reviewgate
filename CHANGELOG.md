@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Left-aligned the concise summary confidence score, added changed-line analysis counts to review metrics and the summary footer, and tightened review prompts around deploy-time data-sync risks.
 - Pinned the dogfood ReviewGate workflow to the main-branch action implementation so PRs cannot affect their own review score by changing ReviewGate code under review.
 - Changed completed `needs_changes` ReviewGate check runs to use a neutral conclusion while keeping passed reviews green and unavailable reviews failing.
 - Clarified concise summary inline-comment wording so inline candidates, posted comments, and unposted fallback findings are not conflated.

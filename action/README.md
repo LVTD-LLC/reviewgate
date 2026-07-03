@@ -50,7 +50,7 @@ Scores below `target_score` are reported as `needs_changes` in the JSON artifact
 
 The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible inline comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
 
-When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
+When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count that the concise footer renders as the number of changed lines analyzed for the report.
 
 Inline comments are best-effort and deduped by hidden `<!-- reviewgate-finding:... -->` markers. Stale model-provided line anchors are repaired to matching changed lines when possible. Findings with no publishable changed line stay as compact fallback entries in the concise summary. If GitHub rejects a line comment, the workflow emits a warning and the full finding remains in `.reviewgate/review.json`; use `summary_style: detailed` when you want all finding detail in the summary comment.
 

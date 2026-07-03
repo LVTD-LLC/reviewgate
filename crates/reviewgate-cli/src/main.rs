@@ -413,6 +413,8 @@ struct ReviewContext {
     reviewed_sha: String,
     changed_files: Vec<String>,
     diff: String,
+    analyzed_line_count: u32,
+    data_integrity_review_needed: bool,
     context_files: Vec<ContextFile>,
 }
 
@@ -491,11 +493,9 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     }
     artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
     let mut artifact = artifact.with_computed_score()?;
-    artifact.metrics = Some(compute_metrics(
-        &artifact,
-        inline_min_severity,
-        inline_min_confidence,
-    ));
+    let mut metrics = compute_metrics(&artifact, inline_min_severity, inline_min_confidence);
+    metrics.analyzed_line_count = Some(context.analyzed_line_count);
+    artifact.metrics = Some(metrics);
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
@@ -547,6 +547,12 @@ fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage
     }
     if changed.contains("migration") || changed.contains("schema") {
         add_stage("migrations", "Changed paths touch migrations or schemas.");
+    }
+    if context.data_integrity_review_needed {
+        add_stage(
+            "data_integrity",
+            "Changed paths and diff include deploy-time, startup, or ORM write behavior.",
+        );
     }
     if changed.contains("security") || changed.contains("auth") || changed.contains("token") {
         add_stage(
@@ -1534,11 +1540,15 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
-        .collect();
+        .collect::<Vec<_>>();
+    let analyzed_line_count = count_changed_diff_lines(&diff);
+    let data_integrity_review_needed = operational_data_sync_review_needed(&changed_files, &diff);
 
     Ok(ReviewContext {
         reviewed_sha,
         changed_files,
+        analyzed_line_count,
+        data_integrity_review_needed,
         diff,
         context_files: collect_context_files(repo)?,
     })
@@ -1656,6 +1666,17 @@ fn truncate_context_contents(contents: &mut String, max_bytes: usize) {
     contents.push_str("\n[truncated]\n");
 }
 
+fn count_changed_diff_lines(diff: &str) -> u32 {
+    diff.lines()
+        .filter(|line| {
+            (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
 fn safe_relative_path(path: &str) -> Option<PathBuf> {
     let candidate = Path::new(path);
     if candidate.is_absolute()
@@ -1677,6 +1698,17 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt.push_str(
         "Every concrete defect mentioned in the verdict or notes must also appear as a separate finding with an actionable agent_instruction. Do not mention specific problems only in prose. If a diff changes scoring, review publishing, GitHub token permissions, comment ownership checks, marker encoding, secret handling, or workflow triggers, review each changed behavior independently and emit separate findings for distinct regressions.\n\n",
     );
+    prompt.push_str(
+        "Err on the side of surfacing concrete, evidence-backed risks instead of returning a clean 5/5. If a risk is plausible from the diff but lower confidence, emit it as a lower-severity file or PR finding with the confidence value calibrated honestly instead of omitting it.\n\n",
+    );
+    prompt.push_str(
+        "For deploy hooks, startup tasks, background jobs, data sync code, and ORM/database writes, explicitly check concurrency, idempotency, transaction boundaries, database-enforced uniqueness, partial failure behavior, and retry safety.\n\n",
+    );
+    if context.data_integrity_review_needed {
+        prompt.push_str(
+            "This PR appears to touch deploy-time or startup data sync behavior. Do not mark it clean until you have checked for read-then-write races, missing unique constraints around natural keys, all-or-nothing transaction needs, and whether failures can leave durable partial state.\n\n",
+        );
+    }
     prompt.push_str(
         "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line in the new/right side of the diff, and safe to post as an inline PR comment. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
     );
@@ -1702,6 +1734,30 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt.push_str(&context.diff);
     prompt.push_str("\n```\n");
     prompt
+}
+
+fn operational_data_sync_review_needed(changed_files: &[String], diff: &str) -> bool {
+    let path_signal = changed_files.iter().any(|path| {
+        let path = path.to_ascii_lowercase();
+        path.contains("deployment/")
+            || path.contains("entrypoint")
+            || path.contains("management/commands")
+            || path.ends_with("services.py")
+            || path.ends_with("models.py")
+            || path.contains("/tasks")
+            || path.contains("worker")
+            || path.contains("sync")
+    });
+    let lower_diff = diff.to_ascii_lowercase();
+    let django_orm_signal = lower_diff.contains(".objects.")
+        || lower_diff.contains("update_or_create")
+        || lower_diff.contains("get_or_create")
+        || lower_diff.contains("transaction.atomic");
+    let deploy_startup_signal = lower_diff.contains("manage.py")
+        || lower_diff.contains("migrate --noinput")
+        || lower_diff.contains("gunicorn");
+
+    path_signal && (django_orm_signal || deploy_startup_signal)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2328,12 +2384,45 @@ Thanks {also not json}."#;
             reviewed_sha: "abc123".to_string(),
             changed_files: vec!["CHANGELOG.md".to_string(), "src/lib.rs".to_string()],
             diff: String::new(),
+            analyzed_line_count: 0,
+            data_integrity_review_needed: false,
             context_files: vec![],
         };
 
         let stages = select_review_stages(&context, "deepseek/deepseek-v4-flash");
 
         assert!(stages.iter().any(|stage| stage.name == "docs"));
+    }
+
+    #[test]
+    fn selects_data_integrity_stage_for_deploy_orm_sync() {
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            changed_files: vec![
+                "apps/blog/services.py".to_string(),
+                "deployment/entrypoint.sh".to_string(),
+            ],
+            diff: "BlogPost.objects.create(slug=source.slug)\n./manage.py migrate --noinput"
+                .to_string(),
+            analyzed_line_count: 2,
+            data_integrity_review_needed: true,
+            context_files: vec![],
+        };
+
+        let stages = select_review_stages(&context, "deepseek/deepseek-v4-flash");
+
+        assert!(stages.iter().any(|stage| stage.name == "data_integrity"));
+    }
+
+    #[test]
+    fn data_integrity_signal_ignores_broad_sync_substrings_without_orm_or_deploy_signal() {
+        let changed_files = vec!["src/worker/sync_queue.rs".to_string()];
+        let diff = "\
+let async_result = SyncSender::new();
+let resync_state = state.clone();
+";
+
+        assert!(!operational_data_sync_review_needed(&changed_files, diff));
     }
 
     #[test]
@@ -2384,11 +2473,29 @@ Thanks {also not json}."#;
     }
 
     #[test]
+    fn counts_changed_diff_lines_without_file_headers() {
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ context
+-old line
++new line
++another new line
+";
+
+        assert_eq!(count_changed_diff_lines(diff), 3);
+    }
+
+    #[test]
     fn prompt_contains_target_score_schema_and_diff_without_failure_floor() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
             changed_files: vec!["src/lib.rs".to_string()],
             diff: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+            analyzed_line_count: 0,
+            data_integrity_review_needed: false,
             context_files: vec![ContextFile {
                 path: "README.md".to_string(),
                 contents: "Read me".to_string(),
@@ -2404,6 +2511,8 @@ Thanks {also not json}."#;
         assert!(prompt.contains("Every concrete defect mentioned in the verdict or notes"));
         assert!(prompt.contains("comment ownership checks"));
         assert!(prompt.contains("marker encoding"));
+        assert!(prompt.contains("Err on the side of surfacing concrete"));
+        assert!(prompt.contains("transaction boundaries"));
         assert!(prompt.contains("Finding scope guidance"));
         assert!(prompt.contains("set scope to line only"));
         assert!(prompt.contains("new/right side of the diff"));
