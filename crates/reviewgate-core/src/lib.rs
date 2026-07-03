@@ -186,6 +186,7 @@ pub struct ReviewMetrics {
     pub p2_count: u32,
     pub p3_count: u32,
     pub p4_count: u32,
+    pub analyzed_line_count: Option<u32>,
     pub current_run_cost_usd: Option<f64>,
     pub cost_source: CostSource,
 }
@@ -354,6 +355,10 @@ pub fn compute_metrics(
         p2_count: 0,
         p3_count: 0,
         p4_count: 0,
+        analyzed_line_count: artifact
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.analyzed_line_count),
         current_run_cost_usd: artifact
             .cost_summary
             .as_ref()
@@ -951,7 +956,7 @@ fn render_concise_summary_body(
 
     output.push('\n');
     render_summary_details(output, artifact);
-    render_summary_footer(output, state);
+    render_summary_footer(output, state, artifact);
 }
 
 fn render_detailed_summary_body(
@@ -1130,12 +1135,12 @@ fn render_detailed_summary_body(
 
     output.push('\n');
     render_summary_details(output, artifact);
-    render_summary_footer(output, state);
+    render_summary_footer(output, state, artifact);
 }
 
 fn render_score_block(output: &mut String, artifact: &ReviewArtifact) {
     output.push_str(&format!(
-        "<h2 align=\"center\">Confidence Score: {}/5</h2>\n\n",
+        "<h2 align=\"left\">Confidence Score: {}/5</h2>\n\n",
         artifact.score
     ));
 }
@@ -1188,10 +1193,23 @@ fn render_flowchart(output: &mut String, artifact: &ReviewArtifact) {
     output.push_str("</details>\n\n");
 }
 
-fn render_summary_footer(output: &mut String, state: &SummaryState) {
+fn render_summary_footer(output: &mut String, state: &SummaryState, artifact: &ReviewArtifact) {
     output.push_str(&format!(
-        "<sub>Reviews on this PR: {}. Total cost: {}. Latest commit analyzed: <code>{}</code>.</sub>\n",
-        format_run_count(state.run_count),
+        "<sub>Reviews on this PR: {}. ",
+        format_run_count(state.run_count)
+    ));
+    if let Some(line_count) = artifact
+        .metrics
+        .as_ref()
+        .and_then(|metrics| metrics.analyzed_line_count)
+    {
+        output.push_str(&format!(
+            "Changed lines analyzed: {}. ",
+            format_line_count(line_count)
+        ));
+    }
+    output.push_str(&format!(
+        "Total cost: {}. Latest commit analyzed: <code>{}</code>.</sub>\n",
         format_cost(state.cumulative_cost_usd),
         escape_html_text(&state.last_reviewed_sha)
     ));
@@ -1354,6 +1372,18 @@ fn format_cost(cost: f64) -> String {
     }
 }
 
+fn format_line_count(line_count: u32) -> String {
+    let raw = line_count.to_string();
+    let mut formatted = String::new();
+    for (index, character) in raw.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(character);
+    }
+    formatted.chars().rev().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1485,7 +1515,7 @@ mod tests {
         .expect("summary renders");
         assert!(summary.starts_with(SUMMARY_MARKER));
         assert!(summary.contains("# Review Gate Summary"));
-        assert!(summary.contains("<h2 align=\"center\">Confidence Score: 4/5</h2>"));
+        assert!(summary.contains("<h2 align=\"left\">Confidence Score: 4/5</h2>"));
     }
 
     #[test]
@@ -1502,7 +1532,7 @@ mod tests {
             summary
                 .contains("Good structure, but not ready for merge because one test gap remains.")
         );
-        assert!(summary.contains("<h2 align=\"center\">Confidence Score: 3/5</h2>"));
+        assert!(summary.contains("<h2 align=\"left\">Confidence Score: 3/5</h2>"));
         assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline candidates"));
         assert!(!summary.contains("Cost: $0.08 (1 run)"));
         assert!(!summary.contains("Status: `"));
@@ -2337,6 +2367,7 @@ mod tests {
                 p2_count: 1,
                 p3_count: 0,
                 p4_count: 0,
+                analyzed_line_count: Some(1_234),
                 current_run_cost_usd: None,
                 cost_source: CostSource::Unknown,
             }),
@@ -2367,6 +2398,7 @@ mod tests {
         .expect("summary renders");
 
         assert!(summary.contains("Findings: 1 total, 0 blocking, 0 inline candidates"));
+        assert!(summary.contains("Changed lines analyzed: 1,234."));
     }
 
     #[test]

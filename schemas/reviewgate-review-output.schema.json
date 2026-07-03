@@ -71,6 +71,11 @@
         "p2_count": { "type": "integer", "minimum": 0 },
         "p3_count": { "type": "integer", "minimum": 0 },
         "p4_count": { "type": "integer", "minimum": 0 },
+        "analyzed_line_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Number of added and deleted diff lines ReviewGate included as changed code for this report. ReviewGate may recompute this value from local diff context."
+        },
         "current_run_cost_usd": { "type": ["number", "null"], "minimum": 0 },
         "cost_source": {
           "type": "string",
