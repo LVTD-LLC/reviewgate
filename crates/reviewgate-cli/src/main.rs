@@ -770,8 +770,8 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
 
 fn publish_start_signal(repo: PathBuf) -> Result<()> {
     let repo = repo.canonicalize().unwrap_or(repo);
-    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
-        println!("ReviewGate start signal skipped: not a pull_request event.");
+    if !is_pull_request_review_event() {
+        println!("ReviewGate start signal skipped: not a pull request review event.");
         return Ok(());
     }
     if !github_token_available() {
@@ -865,8 +865,8 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         println!("ReviewGate inline comments skipped: publish_inline_comments=false.");
         return Ok(false);
     }
-    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
-        println!("ReviewGate inline comments skipped: not a pull_request event.");
+    if !is_pull_request_review_event() {
+        println!("ReviewGate inline comments skipped: not a pull request review event.");
         return Ok(false);
     }
     if !options.input.is_file() {
@@ -943,7 +943,7 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     let mut posted = 0u32;
     let mut failed = 0u32;
     for draft in drafts {
-        let payload = build_inline_comment_payload(&draft, commit_id);
+        let payload = build_inline_comment_payload(&draft, &commit_id);
         if gh_api_json(
             &repo,
             "POST",
@@ -987,8 +987,8 @@ fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> 
 
 fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
     let repo = options.repo.canonicalize().unwrap_or(options.repo);
-    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
-        println!("ReviewGate summary comment skipped: not a pull_request event.");
+    if !is_pull_request_review_event() {
+        println!("ReviewGate summary comment skipped: not a pull request review event.");
         return Ok(());
     }
     if !options.input.is_file() {
@@ -1093,8 +1093,7 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> Result<()> 
             let head_sha = event
                 .as_ref()
                 .and_then(pull_request_head_sha)
-                .unwrap_or(&artifact.reviewed_sha)
-                .to_string();
+                .unwrap_or_else(|| artifact.reviewed_sha.clone());
             let conclusion = check_run_conclusion_for_status(&artifact.status);
             (
                 head_sha,
@@ -1111,7 +1110,6 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> Result<()> 
             let head_sha = event
                 .as_ref()
                 .and_then(pull_request_head_sha)
-                .map(str::to_string)
                 .or_else(|| git(&repo, ["rev-parse", "HEAD"]).ok())
                 .context("ReviewGate check run failed: could not determine head SHA")?;
             (
@@ -1194,6 +1192,13 @@ fn github_token_available() -> bool {
         .unwrap_or(false)
 }
 
+fn is_pull_request_review_event() -> bool {
+    matches!(
+        std::env::var("GITHUB_EVENT_NAME").as_deref(),
+        Ok("pull_request" | "issue_comment")
+    )
+}
+
 fn github_repository() -> Result<String> {
     std::env::var("GITHUB_REPOSITORY").context("GITHUB_REPOSITORY is required")
 }
@@ -1202,13 +1207,35 @@ fn pull_request_number(event: &serde_json::Value) -> Option<u64> {
     event
         .pointer("/pull_request/number")
         .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            event
+                .pointer("/issue/pull_request")
+                .and_then(|_| event.pointer("/issue/number"))
+                .and_then(serde_json::Value::as_u64)
+        })
+        .or_else(|| {
+            nonempty_env("REVIEWGATE_PR_NUMBER").and_then(|value| value.parse::<u64>().ok())
+        })
 }
 
-fn pull_request_head_sha(event: &serde_json::Value) -> Option<&str> {
+fn pull_request_head_sha(event: &serde_json::Value) -> Option<String> {
+    event_pull_request_head_sha(event)
+        .map(ToOwned::to_owned)
+        .or_else(|| nonempty_env("REVIEWGATE_PR_HEAD_SHA"))
+}
+
+fn event_pull_request_head_sha(event: &serde_json::Value) -> Option<&str> {
     event
         .pointer("/pull_request/head/sha")
         .and_then(serde_json::Value::as_str)
         .filter(|sha| !sha.trim().is_empty())
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn fetch_issue_comments(
@@ -1506,7 +1533,7 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
     let checkout_sha = git(repo, ["rev-parse", "HEAD"])?;
     let github_event = read_github_event()?;
     let reviewed_sha = select_reviewed_sha(&checkout_sha, github_event.as_ref());
-    let base_ref = std::env::var("GITHUB_BASE_REF").ok();
+    let base_ref = ci_base_ref();
     let diff_base = if let Some(base) = base_ref.as_ref() {
         Some(
             git(repo, ["merge-base", "HEAD", &format!("origin/{base}")]).with_context(|| {
@@ -1545,7 +1572,7 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
 }
 
 fn collect_changed_lines(repo: &Path) -> Result<ChangedLineSet> {
-    let base_ref = std::env::var("GITHUB_BASE_REF").ok();
+    let base_ref = ci_base_ref();
     let diff = if let Some(base) = base_ref.as_ref() {
         let diff_base = git(repo, ["merge-base", "HEAD", &format!("origin/{base}")])
             .with_context(|| {
@@ -1580,11 +1607,14 @@ fn read_github_event() -> Result<Option<serde_json::Value>> {
 
 fn select_reviewed_sha(checkout_sha: &str, github_event: Option<&serde_json::Value>) -> String {
     github_event
-        .and_then(|event| event.pointer("/pull_request/head/sha"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|sha| !sha.trim().is_empty())
-        .unwrap_or(checkout_sha)
-        .to_string()
+        .and_then(event_pull_request_head_sha)
+        .map(ToOwned::to_owned)
+        .or_else(|| nonempty_env("REVIEWGATE_PR_HEAD_SHA"))
+        .unwrap_or_else(|| checkout_sha.to_string())
+}
+
+fn ci_base_ref() -> Option<String> {
+    nonempty_env("REVIEWGATE_BASE_REF").or_else(|| nonempty_env("GITHUB_BASE_REF"))
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
@@ -2126,7 +2156,15 @@ mod tests {
 
         let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
         assert!(dogfood_workflow.contains("checks: write"));
+        assert!(dogfood_workflow.contains("issue_comment:"));
+        assert!(dogfood_workflow.contains("types: [created]"));
+        assert!(dogfood_workflow.contains("github.event.comment.body == '/reviewgate'"));
+        assert!(dogfood_workflow.contains("REVIEWGATE_PR_NUMBER"));
+        assert!(dogfood_workflow.contains("REVIEWGATE_PR_HEAD_SHA"));
+        assert!(dogfood_workflow.contains("REVIEWGATE_BASE_REF"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@main"));
+        assert!(!dogfood_workflow.contains("pull_request:"));
+        assert!(!dogfood_workflow.contains("workflow_dispatch:"));
         assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
@@ -2372,6 +2410,31 @@ Thanks {also not json}."#;
             select_reviewed_sha("checkout-sha", Some(&event)),
             "checkout-sha".to_string()
         );
+    }
+
+    #[test]
+    fn pull_request_number_supports_issue_comment_events() {
+        let event = serde_json::json!({
+            "issue": {
+                "number": 17,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/LVTD-LLC/reviewgate/pulls/17"
+                }
+            }
+        });
+
+        assert_eq!(pull_request_number(&event), Some(17));
+    }
+
+    #[test]
+    fn pull_request_number_ignores_plain_issue_comments() {
+        let event = serde_json::json!({
+            "issue": {
+                "number": 17
+            }
+        });
+
+        assert_eq!(pull_request_number(&event), None);
     }
 
     #[test]

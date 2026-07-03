@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Changed the ReviewGate workflow guidance and dogfood workflow to run only from `/reviewgate` PR comments instead of every PR update.
 - Pinned the dogfood ReviewGate workflow to the main-branch action implementation so PRs cannot affect their own review score by changing ReviewGate code under review.
 - Changed completed `needs_changes` ReviewGate check runs to use a neutral conclusion while keeping passed reviews green and unavailable reviews failing.
 - Clarified concise summary inline-comment wording so inline candidates, posted comments, and unposted fallback findings are not conflated.

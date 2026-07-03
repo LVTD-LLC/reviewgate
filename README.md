@@ -2,7 +2,7 @@
 
 Open-source AI pre-merge checks for agent-written PRs.
 
-ReviewGate is a GitHub Actions-first, OpenRouter/BYOK PR review tool. The goal is simple: every PR gets a visible 0-5 review score, one canonical summary comment that updates in place, and machine-readable JSON that humans or external coding agents can use to decide what to fix next.
+ReviewGate is a GitHub Actions-first, OpenRouter/BYOK PR review tool. The goal is simple: every requested PR review gets a visible 0-5 review score, one canonical summary comment that updates in place, and machine-readable JSON that humans or external coding agents can use to decide what to fix next.
 
 ReviewGate itself is review-only. It does not autonomously repair code inside CI.
 
@@ -27,9 +27,8 @@ This repository is in an early build milestone. The current CLI can validate and
 name: ReviewGate
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -38,31 +37,76 @@ permissions:
   checks: write
 
 concurrency:
-  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: reviewgate-${{ github.workflow }}-${{ github.event.issue.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
     if: >-
       ${{
-        github.event_name == 'workflow_dispatch' ||
+        github.event.issue.pull_request != null &&
         (
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          github.actor != 'dependabot[bot]'
+          github.event.comment.body == '/reviewgate' ||
+          startsWith(github.event.comment.body, '/reviewgate ')
+        ) &&
+        (
+          github.event.comment.author_association == 'OWNER' ||
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR'
         )
       }}
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          pr_data="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.repo.full_name, .head.ref, .head.sha, .base.ref, (.user.login // "")] | @tsv')"
+          IFS=$'\t' read -r head_repo head_ref head_sha base_ref pr_author <<< "$pr_data"
+
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            echo "ReviewGate skipped: comment-triggered reviews only run for same-repository PR branches."
+            exit 0
+          fi
+
+          if [ "$pr_author" = "dependabot[bot]" ]; then
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            echo "ReviewGate skipped: Dependabot PRs do not receive repository secrets."
+            exit 0
+          fi
+
+          {
+            echo "reviewable=true"
+            echo "number=$PR_NUMBER"
+            echo "head_ref=$head_ref"
+            echo "head_sha=$head_sha"
+            echo "base_ref=$base_ref"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        if: steps.pr.outputs.reviewable == 'true'
         with:
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+      - name: Fetch base branch
+        if: steps.pr.outputs.reviewable == 'true'
+        run: git fetch --no-tags origin "${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}"
       - uses: LVTD-LLC/reviewgate@v0
+        if: steps.pr.outputs.reviewable == 'true'
+        env:
+          REVIEWGATE_PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REVIEWGATE_PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          REVIEWGATE_BASE_REF: ${{ steps.pr.outputs.base_ref }}
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           preset: balanced
 ```
 
-The job-level `if` keeps the default install fork-safe: GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so ReviewGate skips those events instead of passing an empty model key into a required review check. Do not move this workflow to `pull_request_target` for untrusted fork code.
+Comment `/reviewgate` on a pull request to run the review. The job-level `if` and PR resolution step keep the default install fork-safe and cost-controlled: only maintainer-style comment authors can trigger it, fork PRs are skipped before `OPENROUTER_API_KEY` is passed to the action, and Dependabot PRs are skipped instead of running with unavailable repository secrets. Do not move this workflow to `pull_request_target` for untrusted fork code.
 
 The action:
 
@@ -78,7 +122,7 @@ The action:
 - publishes a check-run status for review availability when permissions allow;
 - exits non-zero only when ReviewGate cannot complete the review or a required publishing step fails.
 
-The default workflow runs on PR updates because that is the lowest-friction install path. For teams that want tighter cost control, the next control surface is an explicit recheck path such as `workflow_dispatch`, a PR comment command, or a CLI helper.
+The default workflow does not run on every commit. Re-run ReviewGate by adding another `/reviewgate` PR comment.
 
 ## Local Milestone
 
@@ -127,12 +171,6 @@ cargo run --locked -p reviewgate-cli -- render-summary \
   --summary-min-severity P2
 ```
 
-Re-run the latest ReviewGate workflow run for the current PR branch:
-
-```bash
-cargo run --locked -p reviewgate-cli -- recheck
-```
-
 Evaluate committed artifacts without publishing:
 
 ```bash
@@ -146,7 +184,7 @@ Agents should consume the JSON artifact first and use the canonical PR summary a
 1. Read `.reviewgate/review.json` or the latest summary comment containing `<!-- reviewgate-summary -->`.
 2. Treat any finding with a score ceiling below `target_score` as target-blocking.
 3. Apply focused fixes, commit, and push.
-4. Trigger or wait for ReviewGate to rerun and update the same summary comment. The `reviewgate recheck` helper reruns the latest ReviewGate workflow run for a PR branch when GitHub CLI auth is available.
+4. Comment `/reviewgate` to rerun ReviewGate and update the same summary comment.
 5. Stop when `score >= target_score` and `status == "passed"`, or when human judgment is needed.
 
 `status == "needs_changes"` means the review completed but the configured target score has not been reached. The action does not fail CI for this status, and the ReviewGate check run uses a neutral conclusion.
@@ -211,6 +249,6 @@ skills/reviewgate-loop/      Public agent loop skill draft
 
 ## Security Posture
 
-ReviewGate treats model output as untrusted text. The default workflow reviews diffs and context; it does not run arbitrary PR code and should not use `pull_request_target` for untrusted forks. GitHub token permissions should stay least-privilege.
+ReviewGate treats model output as untrusted text. The default workflow reviews diffs and context only after a `/reviewgate` PR comment; it does not run arbitrary PR code and should not use `pull_request_target` for untrusted forks. GitHub token permissions should stay least-privilege.
 
 The checked-in lockfile is generated from crates.io with `cargo generate-lockfile` and audited in CI before project build/test steps run.

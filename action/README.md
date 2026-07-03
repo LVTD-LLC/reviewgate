@@ -28,7 +28,7 @@ Required secret:
 OPENROUTER_API_KEY
 ```
 
-The action must update the existing PR summary comment containing `<!-- reviewgate-summary -->` instead of creating duplicate summary comments on every commit.
+The action must update the existing PR summary comment containing `<!-- reviewgate-summary -->` instead of creating duplicate summary comments on repeated comment-triggered runs.
 
 ## Inputs
 
@@ -48,7 +48,7 @@ Scores below `target_score` are reported as `needs_changes` in the JSON artifact
 
 ## Runtime
 
-The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible inline comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible inline comments when running on a pull request event or PR comment event, and publishes a check-run status for review availability when permissions allow.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns.
 
@@ -58,21 +58,30 @@ Canonical summary publishing is not silent: GitHub API or permission failures em
 
 ## Trigger Guidance
 
-The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `reviewgate recheck` helper to rerun the latest ReviewGate workflow run for a PR branch.
+The default install is comment-triggered. Comment `/reviewgate` on a pull request to run ReviewGate; the workflow should not run on every commit.
 
-For public repositories, guard the ReviewGate job so it only runs on same-repository PR branches or explicit maintainer-triggered dispatches:
+For public repositories, guard the ReviewGate job so it only runs for PR comments from maintainer-style authors:
 
 ```yaml
+on:
+  issue_comment:
+    types: [created]
+
 jobs:
   reviewgate:
     if: >-
       ${{
-        github.event_name == 'workflow_dispatch' ||
+        github.event.issue.pull_request != null &&
         (
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          github.actor != 'dependabot[bot]'
+          github.event.comment.body == '/reviewgate' ||
+          startsWith(github.event.comment.body, '/reviewgate ')
+        ) &&
+        (
+          github.event.comment.author_association == 'OWNER' ||
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR'
         )
       }}
 ```
 
-GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so this guard prevents a ReviewGate run from failing only because `OPENROUTER_API_KEY` is unavailable. Keep untrusted fork review workflows on `pull_request`; do not switch to `pull_request_target` to get secret access.
+For comment-triggered workflows, resolve the PR with `gh api`, skip cross-repository PRs before passing `OPENROUTER_API_KEY` to ReviewGate, check out the PR head SHA, fetch the base branch, and pass `REVIEWGATE_PR_NUMBER`, `REVIEWGATE_PR_HEAD_SHA`, and `REVIEWGATE_BASE_REF` to the action. Keep untrusted fork review workflows off `pull_request_target`; do not switch to it to get secret access.

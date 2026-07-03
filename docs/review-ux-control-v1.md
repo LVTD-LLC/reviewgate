@@ -14,14 +14,14 @@ External agent loops can be documented and supported, but they are separate from
 
 ## Trigger Direction
 
-Default installation should remain low-headache:
+Default installation should be explicit and cost-controlled:
 
-- Run on `pull_request` events for `opened`, `synchronize`, `reopened`, and `ready_for_review`.
-- Support `workflow_dispatch` for manual reruns.
-- Use the `reviewgate recheck` CLI helper to rerun the latest ReviewGate workflow run for a PR branch when GitHub CLI auth is available.
-- Add PR comment or label-based recheck commands later if users want an in-GitHub control surface.
+- Run on `issue_comment` events for `created` comments on pull requests.
+- Require a `/reviewgate` PR comment command from an owner, member, or collaborator.
+- Resolve the PR with the GitHub API, skip cross-repository PR branches before exposing model secrets, check out the PR head SHA, and fetch the base branch before running ReviewGate.
+- Pass `REVIEWGATE_PR_NUMBER`, `REVIEWGATE_PR_HEAD_SHA`, and `REVIEWGATE_BASE_REF` to the action so publishing and diff collection work from an `issue_comment` event.
 
-Running on every push is acceptable as the simplest default while the project is early. It should remain configurable because some repos will prefer explicit reruns to control cost and noise.
+ReviewGate should not run on every commit by default. Comment-triggered reruns are the default cost and noise control surface.
 
 ## Status Direction
 

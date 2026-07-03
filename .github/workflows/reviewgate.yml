@@ -1,21 +1,11 @@
 name: ReviewGate
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
-    inputs:
-      summary_min_severity:
-        description: Lowest severity shown in the canonical summary.
-        required: false
-        default: P4
-      inline_min_severity:
-        description: Lowest severity eligible for inline comments.
-        required: false
-        default: P2
+  issue_comment:
+    types: [created]
 
 concurrency:
-  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: reviewgate-${{ github.workflow }}-${{ github.event.issue.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -28,22 +18,65 @@ jobs:
   reviewgate:
     if: >-
       ${{
-        github.event_name == 'workflow_dispatch' ||
+        github.event.issue.pull_request != null &&
         (
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          github.actor != 'dependabot[bot]'
+          github.event.comment.body == '/reviewgate' ||
+          startsWith(github.event.comment.body, '/reviewgate ')
+        ) &&
+        (
+          github.event.comment.author_association == 'OWNER' ||
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR'
         )
       }}
     runs-on: ubuntu-latest
-    env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
+      - name: Resolve pull request
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          pr_data="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '[.head.repo.full_name, .head.ref, .head.sha, .base.ref, (.user.login // "")] | @tsv')"
+          IFS=$'\t' read -r head_repo head_ref head_sha base_ref pr_author <<< "$pr_data"
+
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            echo "ReviewGate skipped: comment-triggered reviews only run for same-repository PR branches."
+            exit 0
+          fi
+
+          if [ "$pr_author" = "dependabot[bot]" ]; then
+            echo "reviewable=false" >> "$GITHUB_OUTPUT"
+            echo "ReviewGate skipped: Dependabot PRs do not receive repository secrets."
+            exit 0
+          fi
+
+          {
+            echo "reviewable=true"
+            echo "number=$PR_NUMBER"
+            echo "head_ref=$head_ref"
+            echo "head_sha=$head_sha"
+            echo "base_ref=$base_ref"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        if: steps.pr.outputs.reviewable == 'true'
         with:
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+      - name: Fetch base branch
+        if: steps.pr.outputs.reviewable == 'true'
+        shell: bash
+        run: git fetch --no-tags origin "${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}"
       - name: Check OpenRouter secret
         id: openrouter
+        if: steps.pr.outputs.reviewable == 'true'
         shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           if [ -n "${OPENROUTER_API_KEY:-}" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
@@ -52,13 +85,17 @@ jobs:
             echo "ReviewGate skipped: OPENROUTER_API_KEY secret is not configured."
           fi
       - name: Run ReviewGate
-        if: steps.openrouter.outputs.configured == 'true'
+        if: steps.pr.outputs.reviewable == 'true' && steps.openrouter.outputs.configured == 'true'
         # ReviewGate reviews this repository with the main-branch action so PRs
         # cannot change the reviewer implementation that scores the same PR.
         uses: LVTD-LLC/reviewgate@main
+        env:
+          REVIEWGATE_PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REVIEWGATE_PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          REVIEWGATE_BASE_REF: ${{ steps.pr.outputs.base_ref }}
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml
           target_score: "5"
-          summary_min_severity: ${{ inputs.summary_min_severity || 'P4' }}
-          inline_min_severity: ${{ inputs.inline_min_severity || 'P2' }}
+          summary_min_severity: P4
+          inline_min_severity: P2

@@ -21,7 +21,7 @@ Prove a fresh consumer workflow resolves `LVTD-LLC/reviewgate@v0` to the newly m
 ```
 
 4. Confirm the workflow logs show the action checkout for the new release SHA, not the previous `v0` target.
-5. Confirm the PR gets one `ReviewGate: running` placeholder that is replaced by one concise `<!-- reviewgate-summary -->` comment.
+5. Comment `/reviewgate` on the PR and confirm the PR gets one `ReviewGate: running` placeholder that is replaced by one concise `<!-- reviewgate-summary -->` comment.
 6. Confirm the summary shows the score, compact verdict/status line, one-line cost such as `Cost: $0.08 (1 run)`, and no default Metrics, Blocking Findings, Non-Blocking Notes, or Agent Instructions sections.
 7. Confirm eligible findings publish as inline PR comments with `<!-- reviewgate-finding:... -->` markers and do not duplicate on a fresh rerun.
 8. Record the consumer repo, PR, workflow run URL, resolved action SHA, and any blockers in the release notes or dogfood log.

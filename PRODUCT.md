@@ -7,7 +7,7 @@ ReviewGate is a free, fully open-source credibility project. The initial goal is
 1. A maintainer installs the GitHub Action.
 2. They add `OPENROUTER_API_KEY` to GitHub Actions secrets.
 3. They optionally add `.reviewgate.yml`.
-4. A PR opens or updates.
+4. A maintainer comments `/reviewgate` on a PR.
 5. ReviewGate posts one top-level summary comment with a clear `0-5` score.
 6. ReviewGate emits structured JSON for humans or external agent loops.
 7. ReviewGate posts inline comments only for specific, high-confidence issues.
@@ -42,7 +42,7 @@ Do not position ReviewGate as a generic open-source PR reviewer. The sharper wed
 ## Success Criteria
 
 - A user can install the action with one workflow file and one OpenRouter secret.
-- PRs get a stable summary comment that updates in place.
+- Requested PR reviews get a stable summary comment that updates in place.
 - Humans can quickly understand merge readiness from the `0-5` score.
 - Agents can consume JSON artifacts and loop on blocking findings outside the GitHub Action.
 - The tool feels reliable enough for public open-source maintainers to try without a hosted account.

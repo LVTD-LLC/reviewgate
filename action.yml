@@ -144,7 +144,7 @@ runs:
         if [ -z "$REVIEWGATE_SUMMARY_STYLE" ]; then
           REVIEWGATE_SUMMARY_STYLE=concise
         fi
-        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ ! -f "$GITHUB_WORKSPACE/.reviewgate/review.json" ]; then
+        if { [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] || [ "${GITHUB_EVENT_NAME:-}" = "issue_comment" ]; } && [ ! -f "$GITHUB_WORKSPACE/.reviewgate/review.json" ]; then
           echo "::error title=ReviewGate summary missing::ReviewGate did not produce $GITHUB_WORKSPACE/.reviewgate/review.json." >&2
           exit 1
         fi
