@@ -414,6 +414,7 @@ struct ReviewContext {
     changed_files: Vec<String>,
     diff: String,
     analyzed_line_count: u32,
+    data_integrity_review_needed: bool,
     context_files: Vec<ContextFile>,
 }
 
@@ -525,7 +526,6 @@ fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage
     }];
 
     let changed = context.changed_files.join("\n").to_ascii_lowercase();
-    let diff = context.diff.to_ascii_lowercase();
     let changed_path_matches = |predicate: fn(&str) -> bool| {
         context
             .changed_files
@@ -548,7 +548,7 @@ fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage
     if changed.contains("migration") || changed.contains("schema") {
         add_stage("migrations", "Changed paths touch migrations or schemas.");
     }
-    if operational_data_sync_review_needed(context, &diff) {
+    if context.data_integrity_review_needed {
         add_stage(
             "data_integrity",
             "Changed paths and diff include deploy-time, startup, or ORM write behavior.",
@@ -1540,12 +1540,15 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
-        .collect();
+        .collect::<Vec<_>>();
+    let analyzed_line_count = count_changed_diff_lines(&diff);
+    let data_integrity_review_needed = operational_data_sync_review_needed(&changed_files, &diff);
 
     Ok(ReviewContext {
         reviewed_sha,
         changed_files,
-        analyzed_line_count: count_changed_diff_lines(&diff),
+        analyzed_line_count,
+        data_integrity_review_needed,
         diff,
         context_files: collect_context_files(repo)?,
     })
@@ -1701,7 +1704,7 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt.push_str(
         "For deploy hooks, startup tasks, background jobs, data sync code, and ORM/database writes, explicitly check concurrency, idempotency, transaction boundaries, database-enforced uniqueness, partial failure behavior, and retry safety.\n\n",
     );
-    if operational_data_sync_review_needed(context, &context.diff.to_ascii_lowercase()) {
+    if context.data_integrity_review_needed {
         prompt.push_str(
             "This PR appears to touch deploy-time or startup data sync behavior. Do not mark it clean until you have checked for read-then-write races, missing unique constraints around natural keys, all-or-nothing transaction needs, and whether failures can leave durable partial state.\n\n",
         );
@@ -1733,8 +1736,8 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt
 }
 
-fn operational_data_sync_review_needed(context: &ReviewContext, lower_diff: &str) -> bool {
-    let path_signal = context.changed_files.iter().any(|path| {
+fn operational_data_sync_review_needed(changed_files: &[String], diff: &str) -> bool {
+    let path_signal = changed_files.iter().any(|path| {
         let path = path.to_ascii_lowercase();
         path.contains("deployment/")
             || path.contains("entrypoint")
@@ -1745,16 +1748,16 @@ fn operational_data_sync_review_needed(context: &ReviewContext, lower_diff: &str
             || path.contains("worker")
             || path.contains("sync")
     });
-    let diff_signal = lower_diff.contains(".objects.create")
-        || lower_diff.contains(".save(")
+    let lower_diff = diff.to_ascii_lowercase();
+    let django_orm_signal = lower_diff.contains(".objects.")
         || lower_diff.contains("update_or_create")
         || lower_diff.contains("get_or_create")
-        || lower_diff.contains("transaction.atomic")
+        || lower_diff.contains("transaction.atomic");
+    let deploy_startup_signal = lower_diff.contains("manage.py")
         || lower_diff.contains("migrate --noinput")
-        || lower_diff.contains("gunicorn")
-        || lower_diff.contains("sync_");
+        || lower_diff.contains("gunicorn");
 
-    path_signal && diff_signal
+    path_signal && (django_orm_signal || deploy_startup_signal)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2382,6 +2385,7 @@ Thanks {also not json}."#;
             changed_files: vec!["CHANGELOG.md".to_string(), "src/lib.rs".to_string()],
             diff: String::new(),
             analyzed_line_count: 0,
+            data_integrity_review_needed: false,
             context_files: vec![],
         };
 
@@ -2401,12 +2405,24 @@ Thanks {also not json}."#;
             diff: "BlogPost.objects.create(slug=source.slug)\n./manage.py migrate --noinput"
                 .to_string(),
             analyzed_line_count: 2,
+            data_integrity_review_needed: true,
             context_files: vec![],
         };
 
         let stages = select_review_stages(&context, "deepseek/deepseek-v4-flash");
 
         assert!(stages.iter().any(|stage| stage.name == "data_integrity"));
+    }
+
+    #[test]
+    fn data_integrity_signal_ignores_broad_sync_substrings_without_orm_or_deploy_signal() {
+        let changed_files = vec!["src/worker/sync_queue.rs".to_string()];
+        let diff = "\
+let async_result = SyncSender::new();
+let resync_state = state.clone();
+";
+
+        assert!(!operational_data_sync_review_needed(&changed_files, diff));
     }
 
     #[test]
@@ -2479,6 +2495,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             changed_files: vec!["src/lib.rs".to_string()],
             diff: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
             analyzed_line_count: 0,
+            data_integrity_review_needed: false,
             context_files: vec![ContextFile {
                 path: "README.md".to_string(),
                 contents: "Read me".to_string(),
