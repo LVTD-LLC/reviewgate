@@ -5,7 +5,7 @@ ReviewGate's GitHub Action reviews pull requests and reports results. It must no
 The intended workflow is:
 
 1. ReviewGate reviews the PR diff and context.
-2. ReviewGate updates one concise canonical PR summary comment, writes a JSON artifact, and posts eligible line-specific findings inline.
+2. ReviewGate updates one concise canonical PR summary comment, writes a JSON artifact, and posts eligible findings inline or as standalone PR comments.
 3. A human or external coding agent reads the findings.
 4. The human or agent ships fixes.
 5. ReviewGate is rerun and updates the same summary.
@@ -27,34 +27,32 @@ Running on every push is acceptable as the simplest default while the project is
 
 ReviewGate's action should remain review-only. It reports score quality and publishes findings, but a low score should not fail the GitHub Actions job.
 
-`target_score` is the status policy:
+The status policy is fixed:
 
-- `passed`: the score meets or exceeds `target_score`.
-- `needs_changes`: the review completed, but the score is below `target_score`.
+- `passed`: the score is `5/5`.
+- `needs_changes`: the review completed, but the score is below `5/5`.
 
 Non-zero action exits are reserved for execution failures, such as being unable to collect context, call the model, validate the artifact, write outputs, or publish the required summary.
 
 ## Severity Visibility
 
-Users need separate controls for what is visible and what should be fixed before the target score is expected:
+Users need one control for how much ReviewGate publishes back to the PR:
 
-- `summary_min_severity`: lowest severity shown in the summary.
-- `inline_min_severity`: lowest severity posted as inline PR review comments.
-- `target_score`: policy used to compute review status and target-blocking finding counts.
+- `min_severity`: lowest severity published as ReviewGate PR comments.
 
-Defaults should avoid noise:
+Defaults should avoid hiding findings:
 
-- Keep the summary concise by default: verdict, score, status, one-line cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
-- Use `summary_style: detailed` when a repo wants the old full summary with cost details, metrics, findings, notes, and agent instructions.
-- Post inline comments only for high-confidence P0-P2 findings with `scope: line`.
-- Keep all findings in the JSON artifact even when the visible summary filters lower-severity items.
+- Keep the summary concise: verdict, score, compact finding counts, collapsed context sections, and the run/cost/latest-commit footer.
+- Post line-scoped findings inline when they can be anchored to a changed line.
+- Post file/PR-scoped or unanchored line findings as standalone PR comments.
+- Keep all findings in the JSON artifact even when `min_severity` filters lower-severity PR comments.
 
 ## Cost Direction
 
 The default canonical summary should show:
 
-- Cumulative PR estimated cost as a single line, for example `Cost: $0.08 (3 runs)`.
-- Detailed cost components only when `summary_style: detailed` is enabled.
+- Cumulative PR estimated cost in the compact footer.
+- Detailed cost components in the JSON artifact.
 
 ReviewGate has no external database in the action-first architecture, so cumulative state should be stored in the canonical summary's hidden metadata and preserved on update.
 
@@ -62,13 +60,7 @@ The summary stores versioned hidden state with reviewed SHAs, run count, cumulat
 
 ## Model Defaults
 
-Model config should use preset aliases so defaults can improve over time:
-
-- `cheap`: `qwen/qwen3-coder`
-- `balanced`: `deepseek/deepseek-v4-flash`
-- `strong`: `anthropic/claude-sonnet-4`
-
-Users can pin exact OpenRouter model IDs when they want stability.
+The action should expose an exact `model` input for users who want stability. If unset, ReviewGate uses its built-in default model so the action surface stays small.
 
 ## Security
 

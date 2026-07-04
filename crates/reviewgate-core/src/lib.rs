@@ -5,6 +5,7 @@ pub const SUMMARY_MARKER: &str = "<!-- reviewgate-summary -->";
 pub const SUMMARY_STATE_PREFIX: &str = "<!-- reviewgate-state ";
 pub const SUMMARY_STATE_SUFFIX: &str = " -->";
 pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
+pub const DEFAULT_TARGET_SCORE: u8 = 5;
 pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -12,6 +13,10 @@ pub const OPENROUTER_MODELS_PATH: &str = "/models";
 pub const OPENROUTER_APP_REFERER: &str = "https://github.com/LVTD-LLC/reviewgate";
 pub const OPENROUTER_APP_TITLE: &str = "ReviewGate";
 pub const OPENROUTER_APP_CATEGORIES: &str = "cli-agent,cloud-agent";
+
+fn default_target_score() -> u8 {
+    DEFAULT_TARGET_SCORE
+}
 
 #[derive(Debug, Error)]
 pub enum ReviewGateError {
@@ -259,6 +264,7 @@ impl ReviewStage {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReviewArtifact {
     pub score: u8,
+    #[serde(default = "default_target_score", skip_serializing)]
     pub target_score: u8,
     pub reviewed_sha: String,
     pub status: ReviewStatus,
@@ -299,7 +305,8 @@ impl ReviewArtifact {
 
     pub fn with_computed_score(mut self) -> Result<Self, ReviewGateError> {
         self.score = compute_score(&self.findings);
-        self.status = if self.score >= self.target_score {
+        self.target_score = DEFAULT_TARGET_SCORE;
+        self.status = if self.score >= DEFAULT_TARGET_SCORE {
             ReviewStatus::Passed
         } else {
             ReviewStatus::NeedsChanges
@@ -341,11 +348,7 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
         .unwrap_or(5)
 }
 
-pub fn compute_metrics(
-    artifact: &ReviewArtifact,
-    inline_min_severity: Severity,
-    inline_min_confidence: f64,
-) -> ReviewMetrics {
+pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> ReviewMetrics {
     let mut metrics = ReviewMetrics {
         finding_count: artifact.findings.len() as u32,
         blocking_finding_count: 0,
@@ -372,10 +375,10 @@ pub fn compute_metrics(
     };
 
     for finding in &artifact.findings {
-        if finding.is_blocking(artifact.target_score) {
+        if finding.is_blocking(DEFAULT_TARGET_SCORE) {
             metrics.blocking_finding_count += 1;
         }
-        if is_inline_comment_eligible(finding, inline_min_severity, inline_min_confidence) {
+        if is_inline_comment_eligible(finding, min_severity) {
             metrics.inline_eligible_count += 1;
         }
         match finding.severity {
@@ -390,16 +393,11 @@ pub fn compute_metrics(
     metrics
 }
 
-pub fn is_inline_comment_eligible(
-    finding: &Finding,
-    inline_min_severity: Severity,
-    inline_min_confidence: f64,
-) -> bool {
+pub fn is_inline_comment_eligible(finding: &Finding, min_severity: Severity) -> bool {
     finding.scope == FindingScope::Line
         && finding.file.is_some()
         && finding.line.is_some()
-        && finding.confidence >= inline_min_confidence
-        && finding.severity.is_at_or_above(inline_min_severity)
+        && finding.severity.is_at_or_above(min_severity)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -612,42 +610,17 @@ impl SummaryState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SummaryStyle {
-    Concise,
-    Detailed,
-}
-
-impl SummaryStyle {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SummaryStyle::Concise => "concise",
-            SummaryStyle::Detailed => "detailed",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryOptions {
-    pub summary_min_severity: Severity,
-    pub inline_min_severity: Severity,
-    pub inline_min_confidence: f64,
-    pub inline_comments_available: bool,
-    pub inline_posted_finding_ids: Option<Vec<String>>,
+    pub min_severity: Severity,
     pub cost_history_limit: usize,
-    pub summary_style: SummaryStyle,
 }
 
 impl Default for SummaryOptions {
     fn default() -> Self {
         Self {
-            summary_min_severity: Severity::P4,
-            inline_min_severity: Severity::P2,
-            inline_min_confidence: 0.8,
-            inline_comments_available: true,
-            inline_posted_finding_ids: None,
+            min_severity: Severity::P4,
             cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
-            summary_style: SummaryStyle::Concise,
         }
     }
 }
@@ -830,21 +803,13 @@ pub fn render_summary_with_options(
     previous_state: Option<&SummaryState>,
 ) -> Result<String, ReviewGateError> {
     artifact.validate()?;
-    validate_confidence(options.inline_min_confidence)?;
     let state = SummaryState::for_artifact(artifact, previous_state, options.cost_history_limit)?;
     let state_json = serde_json::to_string(&state)
         .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
 
     let mut output = String::new();
     render_summary_header(&mut output, &state_json);
-    match options.summary_style {
-        SummaryStyle::Concise => {
-            render_concise_summary_body(&mut output, artifact, &options, &state);
-        }
-        SummaryStyle::Detailed => {
-            render_detailed_summary_body(&mut output, artifact, &options, &state);
-        }
-    }
+    render_concise_summary_body(&mut output, artifact, &options, &state);
 
     Ok(output)
 }
@@ -865,12 +830,7 @@ fn render_concise_summary_body(
     options: &SummaryOptions,
     state: &SummaryState,
 ) {
-    let metrics = compute_metrics(
-        artifact,
-        options.inline_min_severity,
-        options.inline_min_confidence,
-    );
-    let fallback_findings = fallback_summary_findings(artifact, options);
+    let metrics = compute_metrics(artifact, options.min_severity);
 
     output.push_str(artifact.verdict.trim());
     output.push_str("\n\n");
@@ -879,11 +839,6 @@ fn render_concise_summary_body(
         "Findings: {} total, {} blocking, {} inline candidates\n",
         metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
     ));
-    if let Some(posted_ids) = &options.inline_posted_finding_ids
-        && !posted_ids.is_empty()
-    {
-        output.push_str(&format!("Inline comments: {} posted.\n", posted_ids.len()));
-    }
     if !artifact.notes.is_empty() {
         output.push_str(&format!(
             "Notes: {} note(s) in the JSON artifact.\n",
@@ -891,250 +846,18 @@ fn render_concise_summary_body(
         ));
     }
 
-    if fallback_findings.is_empty() {
-        output.push('\n');
-        if metrics.finding_count == 0 {
-            output.push_str("No findings. Re-run ReviewGate if new commits land.\n");
-        } else if metrics.inline_eligible_count > 0 {
-            output.push_str(
-                "Eligible line-specific findings are posted inline. See the JSON artifact for the full machine-readable review.\n",
-            );
-        } else {
-            output.push_str(
-                "No fallback findings meet the summary visibility floor. See the JSON artifact for the full machine-readable review.\n",
-            );
-        }
+    output.push('\n');
+    if metrics.finding_count == 0 {
+        output.push_str("No findings. Re-run ReviewGate if new commits land.\n");
     } else {
-        output.push('\n');
-        let inline_visibility_reason = if has_posted_inline_comments(options) {
-            format!(
-                "{} not posted inline",
-                if fallback_findings.len() == 1 {
-                    "it was"
-                } else {
-                    "they were"
-                }
-            )
-        } else if options.inline_comments_available {
-            format!(
-                "{} not eligible for inline comments",
-                if fallback_findings.len() == 1 {
-                    "it is"
-                } else {
-                    "they are"
-                }
-            )
-        } else {
-            "inline comments are not available for this run".to_string()
-        };
         output.push_str(&format!(
-            "{} {} kept here because {}.\n\n",
-            fallback_findings.len(),
-            if fallback_findings.len() == 1 {
-                "finding is"
-            } else {
-                "findings are"
-            },
-            inline_visibility_reason
+            "Findings at or above {} are published as inline or standalone PR comments when ReviewGate runs in GitHub Actions. See the JSON artifact for the full machine-readable review.\n",
+            options.min_severity.as_str()
         ));
-        output.push_str("Fallback findings:\n");
-        for finding in fallback_findings {
-            output.push_str(&format!(
-                "- {}: {}",
-                finding.severity.as_str(),
-                finding.title
-            ));
-            append_finding_location(output, finding);
-            output.push_str(&format!(" - {}", inline_skip_reason(finding, options)));
-            let instruction = finding.agent_instruction.trim();
-            if !instruction.is_empty() {
-                output.push_str(&format!(". {instruction}"));
-            }
-            output.push('\n');
-        }
     }
 
     output.push('\n');
-    render_summary_details(output, artifact);
-    render_summary_footer(output, state, artifact);
-}
-
-fn render_detailed_summary_body(
-    output: &mut String,
-    artifact: &ReviewArtifact,
-    options: &SummaryOptions,
-    state: &SummaryState,
-) {
-    render_score_block(output, artifact);
-    output.push_str(&format!("Reviewed commit: `{}`  \n", artifact.reviewed_sha));
-    output.push_str(&format!("Status: `{}`  \n", artifact.status.as_str()));
-    output.push_str(&format!("Target: {}/5  \n", artifact.target_score));
-    output.push_str(&format!(
-        "Summary visibility: {} and above  \n",
-        options.summary_min_severity.as_str()
-    ));
-    output.push_str(&format!("Models: {}  \n", artifact.models.join(", ")));
-    if let Some(cost_summary) = &artifact.cost_summary {
-        output.push_str(&format!(
-            "Current run cost: ${:.4}  \n",
-            cost_summary.current_run_usd
-        ));
-    } else if let Some(cost) = artifact.estimated_cost_usd {
-        output.push_str(&format!("Estimated model cost: ${cost:.4}\n"));
-    }
-    output.push('\n');
-    output.push_str("## Verdict\n\n");
-    output.push_str(&artifact.verdict);
-    output.push_str("\n\n");
-
-    if let Some(cost_summary) = &artifact.cost_summary {
-        output.push_str("## Cost\n\n");
-        output.push_str(&format!(
-            "- Current run: ${:.4}\n",
-            cost_summary.current_run_usd
-        ));
-        output.push_str(&format!(
-            "- Cumulative PR review cost: ${:.4} across {} run(s)\n",
-            state.cumulative_cost_usd, state.run_count
-        ));
-        if !cost_summary.components.is_empty() {
-            output.push_str("- Components:\n");
-            for component in &cost_summary.components {
-                output.push_str(&format!(
-                    "  - {} (`{}`): ${:.4}",
-                    component.label, component.model, component.estimated_cost_usd
-                ));
-                if let (Some(prompt), Some(completion)) =
-                    (component.prompt_tokens, component.completion_tokens)
-                {
-                    output.push_str(&format!(
-                        " ({prompt} prompt, {completion} completion tokens)"
-                    ));
-                }
-                output.push('\n');
-            }
-        }
-        if let Some(source) = cost_summary.source {
-            output.push_str(&format!("- Source: `{}`\n", source.as_str()));
-        }
-        output.push('\n');
-    }
-
-    let computed_metrics = compute_metrics(
-        artifact,
-        options.inline_min_severity,
-        options.inline_min_confidence,
-    );
-    let metrics = &computed_metrics;
-    {
-        output.push_str("## Metrics\n\n");
-        output.push_str(&format!(
-            "- Findings: {} total, {} blocking, {} inline candidates\n",
-            metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
-        ));
-        output.push_str(&format!(
-            "- Severity mix: P0 {}, P1 {}, P2 {}, P3 {}, P4 {}\n",
-            metrics.p0_count,
-            metrics.p1_count,
-            metrics.p2_count,
-            metrics.p3_count,
-            metrics.p4_count
-        ));
-        output.push('\n');
-    }
-
-    let blocking: Vec<&Finding> = artifact
-        .findings
-        .iter()
-        .filter(|finding| finding.is_blocking(artifact.target_score))
-        .collect();
-    output.push_str("## Target-Blocking Findings\n\n");
-    if blocking.is_empty() {
-        output.push_str("None.\n\n");
-    } else {
-        for (index, finding) in blocking.iter().enumerate() {
-            output.push_str(&format!(
-                "{}. {}: {}",
-                index + 1,
-                finding.severity.as_str(),
-                finding.title
-            ));
-            if let (Some(file), Some(line)) = (&finding.file, finding.line) {
-                output.push_str(&format!(" (`{}:{}`)", file, line));
-            }
-            output.push('\n');
-        }
-        output.push('\n');
-    }
-
-    let non_blocking: Vec<&Finding> = artifact
-        .findings
-        .iter()
-        .filter(|finding| {
-            finding
-                .severity
-                .is_at_or_above(options.summary_min_severity)
-        })
-        .filter(|finding| !finding.is_blocking(artifact.target_score))
-        .collect();
-    output.push_str("## Non-Blocking Notes\n\n");
-    if non_blocking.is_empty() && artifact.notes.is_empty() {
-        output.push_str("None.\n\n");
-    } else {
-        for finding in non_blocking {
-            output.push_str(&format!(
-                "- {}: {}\n",
-                finding.severity.as_str(),
-                finding.title
-            ));
-        }
-        for note in &artifact.notes {
-            output.push_str(&format!("- {note}\n"));
-        }
-        output.push('\n');
-    }
-
-    output.push_str("## Agent Instructions\n\n");
-    let visible_findings: Vec<&Finding> = artifact
-        .findings
-        .iter()
-        .filter(|finding| {
-            let is_blocking = finding.is_blocking(artifact.target_score);
-            let is_visible = finding
-                .severity
-                .is_at_or_above(options.summary_min_severity);
-            is_blocking || is_visible
-        })
-        .collect();
-    if visible_findings.is_empty() {
-        output.push_str(
-            "No visible findings remain at the configured summary severity floor. Re-run ReviewGate if new commits land.\n",
-        );
-    } else {
-        for (index, finding) in visible_findings.iter().enumerate() {
-            output.push_str(&format!(
-                "{}. {}: {}",
-                index + 1,
-                finding.severity.as_str(),
-                finding.agent_instruction
-            ));
-            if let (Some(file), Some(line)) = (&finding.file, finding.line) {
-                output.push_str(&format!(" (`{}:{}`)", file, line));
-            }
-            output.push('\n');
-        }
-        output.push('\n');
-        if blocking.is_empty() {
-            output.push_str("Re-run ReviewGate after pushing if new commits land.\n");
-        } else {
-            output.push_str(
-                "Fix the target-blocking findings first. Re-run ReviewGate after pushing.\n",
-            );
-        }
-    }
-
-    output.push('\n');
-    render_summary_details(output, artifact);
+    render_summary_details(output, artifact, options);
     render_summary_footer(output, state, artifact);
 }
 
@@ -1145,14 +868,22 @@ fn render_score_block(output: &mut String, artifact: &ReviewArtifact) {
     ));
 }
 
-fn render_summary_details(output: &mut String, artifact: &ReviewArtifact) {
-    render_important_files_changed(output, artifact);
+fn render_summary_details(
+    output: &mut String,
+    artifact: &ReviewArtifact,
+    options: &SummaryOptions,
+) {
+    render_important_files_changed(output, artifact, options.min_severity);
     render_flowchart(output, artifact);
 }
 
-fn render_important_files_changed(output: &mut String, artifact: &ReviewArtifact) {
+fn render_important_files_changed(
+    output: &mut String,
+    artifact: &ReviewArtifact,
+    min_severity: Severity,
+) {
     output.push_str("<details>\n<summary>Important Files Changed</summary>\n\n");
-    let files = important_file_summaries(artifact);
+    let files = important_file_summaries(artifact, min_severity);
     if files.is_empty() {
         output.push_str("No files require special attention from this review.\n\n");
     } else {
@@ -1221,10 +952,16 @@ struct ImportantFileSummary {
     overviews: Vec<String>,
 }
 
-fn important_file_summaries(artifact: &ReviewArtifact) -> Vec<ImportantFileSummary> {
+fn important_file_summaries(
+    artifact: &ReviewArtifact,
+    min_severity: Severity,
+) -> Vec<ImportantFileSummary> {
     let mut files: Vec<ImportantFileSummary> = Vec::new();
     for finding in &artifact.findings {
-        if !is_important_file_finding(finding, artifact.target_score) {
+        if !finding.severity.is_at_or_above(min_severity) {
+            continue;
+        }
+        if !is_important_file_finding(finding) {
             continue;
         }
         let Some(path) = finding.file.as_deref().and_then(normalize_finding_path) else {
@@ -1243,8 +980,8 @@ fn important_file_summaries(artifact: &ReviewArtifact) -> Vec<ImportantFileSumma
     files
 }
 
-fn is_important_file_finding(finding: &Finding, target_score: u8) -> bool {
-    finding.is_blocking(target_score) || finding.severity.is_at_or_above(Severity::P3)
+fn is_important_file_finding(finding: &Finding) -> bool {
+    finding.is_blocking(DEFAULT_TARGET_SCORE) || finding.severity.is_at_or_above(Severity::P3)
 }
 
 fn normalize_finding_path(path: &str) -> Option<String> {
@@ -1266,12 +1003,7 @@ fn normalize_finding_path(path: &str) -> Option<String> {
 }
 
 fn finding_overview(finding: &Finding) -> String {
-    let title = finding.title.trim();
-    if title.is_empty() {
-        format!("{} finding", finding.severity.as_str())
-    } else {
-        format!("{}: {title}", finding.severity.as_str())
-    }
+    format!("{} finding", finding.severity.as_str())
 }
 
 fn markdown_table_cell(value: &str) -> String {
@@ -1295,65 +1027,6 @@ fn escape_html_text(value: &str) -> String {
         }
     }
     escaped
-}
-
-fn has_posted_inline_comments(options: &SummaryOptions) -> bool {
-    options
-        .inline_posted_finding_ids
-        .as_ref()
-        .is_some_and(|posted_ids| !posted_ids.is_empty())
-}
-
-fn fallback_summary_findings<'a>(
-    artifact: &'a ReviewArtifact,
-    options: &SummaryOptions,
-) -> Vec<&'a Finding> {
-    artifact
-        .findings
-        .iter()
-        .filter(|finding| {
-            finding.is_blocking(artifact.target_score)
-                || finding
-                    .severity
-                    .is_at_or_above(options.summary_min_severity)
-        })
-        .filter(|finding| {
-            if let Some(posted_ids) = &options.inline_posted_finding_ids {
-                !posted_ids.iter().any(|id| id == &finding.id)
-            } else {
-                !options.inline_comments_available
-                    || !is_inline_comment_eligible(
-                        finding,
-                        options.inline_min_severity,
-                        options.inline_min_confidence,
-                    )
-            }
-        })
-        .collect()
-}
-
-fn inline_skip_reason(finding: &Finding, options: &SummaryOptions) -> &'static str {
-    if finding.scope != FindingScope::Line {
-        "not a line-specific finding"
-    } else if finding.file.is_none() || finding.line.is_none() {
-        "no eligible line anchor"
-    } else if !finding.severity.is_at_or_above(options.inline_min_severity) {
-        "below the inline severity floor"
-    } else if finding.confidence < options.inline_min_confidence {
-        "below the inline confidence floor"
-    } else if has_posted_inline_comments(options) {
-        "not posted inline"
-    } else if !options.inline_comments_available {
-        "inline comments were disabled or could not be published"
-    } else {
-        "not posted inline"
-    }
-}
-
-fn append_finding_location(output: &mut String, finding: &Finding) {
-    if let (Some(file), Some(line)) = (&finding.file, finding.line) {
-        output.push_str(&format!(" (`{}:{}`)", file, line));
-    }
 }
 
 fn format_run_count(run_count: u32) -> String {
@@ -1436,7 +1109,7 @@ mod tests {
             agent_instruction: "Add coverage for the broader module behavior.".to_string(),
         };
 
-        assert!(!is_inline_comment_eligible(&finding, Severity::P2, 0.8));
+        assert!(!is_inline_comment_eligible(&finding, Severity::P2));
 
         let artifact = ReviewArtifact {
             score: 3,
@@ -1454,7 +1127,8 @@ mod tests {
         };
         let summary = render_summary(&artifact).expect("summary renders");
 
-        assert!(summary.contains("not a line-specific finding"));
+        assert!(summary.contains("standalone PR comments"));
+        assert!(!summary.contains("Module-level behavior needs a test"));
     }
 
     #[test]
@@ -1504,15 +1178,7 @@ mod tests {
             notes: vec![],
         };
 
-        let summary = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                summary_style: SummaryStyle::Detailed,
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("summary renders");
+        let summary = render_summary(&artifact).expect("summary renders");
         assert!(summary.starts_with(SUMMARY_MARKER));
         assert!(summary.contains("# Review Gate Summary"));
         assert!(summary.contains("<h2 align=\"left\">Confidence Score: 4/5</h2>"));
@@ -1533,7 +1199,7 @@ mod tests {
                 .contains("Good structure, but not ready for merge because one test gap remains.")
         );
         assert!(summary.contains("<h2 align=\"left\">Confidence Score: 3/5</h2>"));
-        assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline candidates"));
+        assert!(summary.contains("Findings: 2 total, 1 blocking, 2 inline candidates"));
         assert!(!summary.contains("Cost: $0.08 (1 run)"));
         assert!(!summary.contains("Status: `"));
         assert!(!summary.contains("Target:"));
@@ -1544,13 +1210,12 @@ mod tests {
         assert!(!summary.contains("## Non-Blocking Notes"));
         assert!(!summary.contains("## Agent Instructions"));
         assert!(!summary.contains("- P2: Missing regression test for retry exhaustion"));
-        assert!(summary.contains("Helper name is slightly vague"));
-        assert!(summary.contains("below the inline severity floor"));
+        assert!(!summary.contains("Helper name is slightly vague"));
+        assert!(!summary.contains("Fallback findings:"));
+        assert!(summary.contains("Findings at or above P4 are published"));
         assert!(summary.contains("<details>\n<summary>Important Files Changed</summary>"));
         assert!(summary.contains("| Filename | Overview |"));
-        assert!(summary.contains(
-            "| app/webhooks/retry.py | P2: Missing regression test for retry exhaustion |"
-        ));
+        assert!(summary.contains("| app/webhooks/retry.py | P2 finding |"));
         assert!(!summary.contains(
             "| app/webhooks/retry.py | P2: Missing regression test for retry exhaustion; P4: Helper name is slightly vague |"
         ));
@@ -1590,14 +1255,12 @@ mod tests {
 
         let summary = render_summary(&artifact).expect("summary renders");
 
-        assert!(
-            summary.contains("| src/a\\|b.rs | P2: Pipe \\| &quot;&lt;tag&gt;&quot; &amp; issue |")
-        );
+        assert!(summary.contains("| src/a\\|b.rs | P2 finding |"));
         assert!(!summary.contains("| ./src//a|b.rs | P2: Pipe | \"<tag>\" & issue |"));
     }
 
     #[test]
-    fn renders_structured_cost_summary() {
+    fn renders_cost_summary_in_footer_only() {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 5,
@@ -1623,23 +1286,12 @@ mod tests {
             notes: vec![],
         };
 
-        let summary = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                summary_style: SummaryStyle::Detailed,
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("summary renders");
+        let summary = render_summary(&artifact).expect("summary renders");
 
-        assert!(summary.contains("Current run cost: $0.0123"));
-        assert!(summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
-
-        let concise = render_summary(&artifact).expect("concise summary renders");
-        assert!(concise.contains("Total cost: $0.01"));
-        assert!(!concise.contains("## Cost"));
-        assert!(!concise.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
+        assert!(summary.contains("Total cost: $0.01"));
+        assert!(!summary.contains("## Cost"));
+        assert!(!summary.contains("Current run cost: $0.0123"));
+        assert!(!summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
     }
 
     #[test]
@@ -1693,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_visibility_floor_hides_lower_severity_findings() {
+    fn min_severity_filters_inline_candidate_count_without_listing_findings() {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
@@ -1735,20 +1387,21 @@ mod tests {
         let summary = render_summary_with_options(
             &artifact,
             SummaryOptions {
-                summary_min_severity: Severity::P2,
+                min_severity: Severity::P2,
                 ..SummaryOptions::default()
             },
             None,
         )
         .expect("summary renders");
 
-        assert!(summary.contains("Visible reliability issue"));
-        assert!(summary.contains("no eligible line anchor"));
+        assert!(summary.contains("Findings: 2 total, 1 blocking, 0 inline candidates"));
+        assert!(summary.contains("Findings at or above P2 are published"));
+        assert!(!summary.contains("Visible reliability issue"));
         assert!(!summary.contains("Hidden style note"));
     }
 
     #[test]
-    fn summary_visibility_floor_never_hides_target_blocking_findings() {
+    fn min_severity_can_hide_lower_severity_finding_details_from_summary() {
         let artifact = ReviewArtifact {
             score: 4,
             target_score: 5,
@@ -1777,7 +1430,7 @@ mod tests {
         let summary = render_summary_with_options(
             &artifact,
             SummaryOptions {
-                summary_min_severity: Severity::P2,
+                min_severity: Severity::P2,
                 ..SummaryOptions::default()
             },
             None,
@@ -1785,9 +1438,10 @@ mod tests {
         .expect("summary renders");
 
         assert!(!summary.contains("## Target-Blocking Findings"));
-        assert!(summary.contains("Fallback findings:"));
-        assert!(summary.contains("P3: Target-blocking advisory finding"));
-        assert!(summary.contains("Fix this issue before expecting the target score."));
+        assert!(!summary.contains("Fallback findings:"));
+        assert!(summary.contains("Findings at or above P2 are published"));
+        assert!(!summary.contains("P3: Target-blocking advisory finding"));
+        assert!(!summary.contains("Fix this issue before expecting the target score."));
     }
 
     #[test]
@@ -1824,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_agent_instructions_for_findings() {
+    fn summary_does_not_render_agent_instructions_for_findings() {
         let artifact = ReviewArtifact {
             score: 3,
             target_score: 5,
@@ -1853,169 +1507,8 @@ mod tests {
         let summary = render_summary(&artifact).expect("summary renders");
 
         assert!(!summary.contains("## Agent Instructions"));
-        assert!(summary.contains("Eligible line-specific findings are posted inline."));
-
-        let detailed = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                summary_style: SummaryStyle::Detailed,
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("detailed summary renders");
-        assert!(detailed.contains("## Agent Instructions"));
-        assert!(
-            detailed
-                .contains("1. P2: Add a regression test for the missing branch. (`src/lib.rs:42`)")
-        );
-    }
-
-    #[test]
-    fn concise_summary_falls_back_when_inline_comments_are_unavailable() {
-        let artifact = ReviewArtifact {
-            score: 3,
-            target_score: 5,
-            reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::NeedsChanges,
-            verdict: "One line-specific issue remains.".to_string(),
-            models: vec!["balanced".to_string()],
-            estimated_cost_usd: None,
-            cost_summary: None,
-            metrics: None,
-            review_stages: vec![],
-            findings: vec![Finding {
-                id: "rg_001".to_string(),
-                scope: FindingScope::Line,
-                severity: Severity::P2,
-                confidence: 0.9,
-                file: Some("src/lib.rs".to_string()),
-                line: Some(42),
-                title: "Missing regression test".to_string(),
-                detail: None,
-                agent_instruction: "Add a regression test for the missing branch.".to_string(),
-            }],
-            notes: vec![],
-        };
-
-        let summary = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                inline_comments_available: false,
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("summary renders");
-
-        assert!(summary.contains("Fallback findings:"));
-        assert!(summary.contains(
-            "1 finding is kept here because inline comments are not available for this run."
-        ));
-        assert!(summary.contains("P2: Missing regression test (`src/lib.rs:42`)"));
-        assert!(summary.contains("inline comments were disabled or could not be published"));
-    }
-
-    #[test]
-    fn concise_summary_keeps_only_unposted_inline_findings_when_posted_ids_are_known() {
-        let artifact = ReviewArtifact {
-            score: 1,
-            target_score: 5,
-            reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::NeedsChanges,
-            verdict: "Several issues remain.".to_string(),
-            models: vec!["balanced".to_string()],
-            estimated_cost_usd: None,
-            cost_summary: None,
-            metrics: None,
-            review_stages: vec![],
-            findings: vec![
-                Finding {
-                    id: "F001".to_string(),
-                    scope: FindingScope::Line,
-                    severity: Severity::P0,
-                    confidence: 0.95,
-                    file: Some("crates/reviewgate-core/src/lib.rs".to_string()),
-                    line: Some(280),
-                    title: "Score computation uses wrong line".to_string(),
-                    detail: None,
-                    agent_instruction: "Keep this visible as fallback.".to_string(),
-                },
-                Finding {
-                    id: "F002".to_string(),
-                    scope: FindingScope::Line,
-                    severity: Severity::P0,
-                    confidence: 0.95,
-                    file: Some("crates/reviewgate-cli/src/main.rs".to_string()),
-                    line: Some(1630),
-                    title: "API key leak already posted inline".to_string(),
-                    detail: None,
-                    agent_instruction: "Do not duplicate this in the summary.".to_string(),
-                },
-            ],
-            notes: vec![],
-        };
-
-        let summary = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                inline_comments_available: false,
-                inline_posted_finding_ids: Some(vec!["F002".to_string()]),
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("summary renders");
-
-        assert!(summary.contains("1 finding is kept here because it was not posted inline."));
-        assert!(summary.contains("Inline comments: 1 posted."));
-        assert!(summary.contains("P0: Score computation uses wrong line"));
-        assert!(summary.contains("not posted inline"));
-        assert!(!summary.contains("- P0: API key leak already posted inline"));
-        assert!(!summary.contains("Do not duplicate this in the summary"));
-    }
-
-    #[test]
-    fn renders_non_blocking_instruction_footer_without_blocking_language() {
-        let artifact = ReviewArtifact {
-            score: 4,
-            target_score: 4,
-            reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Passed,
-            verdict: "One advisory issue remains.".to_string(),
-            models: vec!["balanced".to_string()],
-            estimated_cost_usd: None,
-            cost_summary: None,
-            metrics: None,
-            review_stages: vec![],
-            findings: vec![Finding {
-                id: "rg_001".to_string(),
-                scope: FindingScope::Line,
-                severity: Severity::P3,
-                confidence: 0.9,
-                file: None,
-                line: None,
-                title: "Consider clearer docs".to_string(),
-                detail: None,
-                agent_instruction: "Clarify the README example.".to_string(),
-            }],
-            notes: vec![],
-        };
-
-        let summary = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                summary_style: SummaryStyle::Detailed,
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("summary renders");
-
-        assert!(summary.contains("1. P3: Clarify the README example."));
-        assert!(summary.contains("Re-run ReviewGate after pushing if new commits land."));
-        assert!(!summary.contains("Fix the blocking findings first."));
-        assert!(!summary.contains("Fix the target-blocking findings first."));
+        assert!(summary.contains("Findings at or above P4 are published"));
+        assert!(!summary.contains("Add a regression test for the missing branch."));
     }
 
     #[test]
@@ -2082,7 +1575,7 @@ mod tests {
     }
 
     #[test]
-    fn computed_status_uses_target_score_only() {
+    fn computed_status_uses_fixed_five_point_target() {
         let artifact = ReviewArtifact {
             score: 5,
             target_score: 4,
@@ -2097,7 +1590,7 @@ mod tests {
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 scope: FindingScope::Line,
-                severity: Severity::P1,
+                severity: Severity::P3,
                 confidence: 0.95,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -2112,7 +1605,8 @@ mod tests {
             .with_computed_score()
             .expect("computed artifact is valid");
 
-        assert_eq!(artifact.score, 2);
+        assert_eq!(artifact.score, 4);
+        assert_eq!(artifact.target_score, DEFAULT_TARGET_SCORE);
         assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
     }
 
@@ -2170,49 +1664,6 @@ mod tests {
             artifact.validate(),
             Err(ReviewGateError::InvalidEstimatedCost(value)) if value == -0.01
         ));
-    }
-
-    #[test]
-    fn renders_non_target_blocking_findings_as_notes() {
-        let artifact = ReviewArtifact {
-            score: 3,
-            target_score: 3,
-            reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Passed,
-            verdict: "One recoverable issue remains.".to_string(),
-            models: vec!["balanced".to_string()],
-            estimated_cost_usd: None,
-            cost_summary: None,
-            metrics: None,
-            review_stages: vec![],
-            findings: vec![Finding {
-                id: "rg_001".to_string(),
-                scope: FindingScope::Line,
-                severity: Severity::P2,
-                confidence: 0.9,
-                file: Some("src/lib.rs".to_string()),
-                line: Some(42),
-                title: "Missing regression test".to_string(),
-                detail: None,
-                agent_instruction: "Add the regression test.".to_string(),
-            }],
-            notes: vec![],
-        };
-
-        let summary = render_summary_with_options(
-            &artifact,
-            SummaryOptions {
-                summary_style: SummaryStyle::Detailed,
-                ..SummaryOptions::default()
-            },
-            None,
-        )
-        .expect("summary renders");
-
-        assert!(summary.contains("## Target-Blocking Findings\n\nNone."));
-        assert!(summary.contains("- P2: Missing regression test"));
-        assert!(!summary.contains("Fix the blocking findings first."));
-        assert!(!summary.contains("Fix the target-blocking findings first."));
     }
 
     #[test]
@@ -2336,7 +1787,7 @@ mod tests {
             notes: vec![],
         };
 
-        let metrics = compute_metrics(&artifact, Severity::P2, 0.8);
+        let metrics = compute_metrics(&artifact, Severity::P2);
 
         assert_eq!(metrics.finding_count, 2);
         assert_eq!(metrics.blocking_finding_count, 1);
@@ -2389,15 +1840,14 @@ mod tests {
         let summary = render_summary_with_options(
             &artifact,
             SummaryOptions {
-                inline_min_severity: Severity::P1,
-                summary_style: SummaryStyle::Detailed,
+                min_severity: Severity::P1,
                 ..SummaryOptions::default()
             },
             None,
         )
         .expect("summary renders");
 
-        assert!(summary.contains("Findings: 1 total, 0 blocking, 0 inline candidates"));
+        assert!(summary.contains("Findings: 1 total, 1 blocking, 0 inline candidates"));
         assert!(summary.contains("Changed lines analyzed: 1,234."));
     }
 

@@ -5,14 +5,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
-      summary_min_severity:
-        description: Lowest severity shown in the canonical summary.
+      min_severity:
+        description: Lowest severity published as ReviewGate finding comments.
         required: false
         default: P4
-      inline_min_severity:
-        description: Lowest severity eligible for inline comments.
-        required: false
-        default: P2
 
 concurrency:
   group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -59,6 +55,4 @@ jobs:
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml
-          target_score: "5"
-          summary_min_severity: ${{ inputs.summary_min_severity || 'P4' }}
-          inline_min_severity: ${{ inputs.inline_min_severity || 'P2' }}
+          min_severity: ${{ inputs.min_severity || 'P4' }}

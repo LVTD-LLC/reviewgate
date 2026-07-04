@@ -16,8 +16,8 @@ This repository is in an early build milestone. The current CLI can validate and
 - Keeps one concise PR summary comment updated with `<!-- reviewgate-summary -->`.
 - Emits a visible score like `Confidence Score: 4/5`.
 - Produces a JSON artifact for humans and external agent loops.
-- Posts high-confidence, line-specific findings as inline PR comments by default, deduped by stable ReviewGate finding markers.
-- Reports whether the review reached the configured target score without failing CI for low scores.
+- Posts line-specific findings as inline PR comments and file/PR-level or unanchored findings as standalone PR comments, deduped by stable ReviewGate finding markers.
+- Reports whether the review reached a clean `5/5` without failing CI for low scores.
 - Publishes a dedicated GitHub check run for review availability when `checks: write` is granted; `needs_changes` reviews conclude `neutral` rather than green `success`.
 - Shows cumulative review count, changed lines analyzed, model cost, and latest analyzed commit in the PR summary footer, with full cost/metrics data in the JSON artifact.
 
@@ -59,7 +59,6 @@ jobs:
       - uses: LVTD-LLC/reviewgate@v0
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-          preset: balanced
 ```
 
 The job-level `if` keeps the default install fork-safe: GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so ReviewGate skips those events instead of passing an empty model key into a required review check. Do not move this workflow to `pull_request_target` for untrusted fork code.
@@ -74,7 +73,7 @@ The action:
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
 - replaces the running placeholder with one concise PR comment containing `<!-- reviewgate-summary -->`;
-- posts eligible line-specific findings as best-effort inline PR review comments;
+- posts findings at or above `min_severity` as inline PR review comments when possible and standalone PR comments otherwise;
 - publishes a check-run status for review availability when permissions allow;
 - exits non-zero only when ReviewGate cannot complete the review or a required publishing step fails.
 
@@ -104,8 +103,7 @@ cargo run --locked -p reviewgate-cli -- review-pr \
   --repo . \
   --mock-artifact fixtures/simple-review.json \
   --json-out .reviewgate/review.json \
-  --summary-out .reviewgate/summary.md \
-  --target-score 5
+  --summary-out .reviewgate/summary.md
 ```
 
 Run the live OpenRouter path locally:
@@ -124,7 +122,7 @@ cargo run --locked -p reviewgate-cli -- render-summary \
   --input .reviewgate/review.json \
   --previous-summary .reviewgate/previous-summary.md \
   --summary-out .reviewgate/summary.md \
-  --summary-min-severity P2
+  --min-severity P2
 ```
 
 Re-run the latest ReviewGate workflow run for the current PR branch:
@@ -141,27 +139,21 @@ cargo run --locked -p reviewgate-cli -- eval-fixtures --dir fixtures
 
 ## External Agent Contract
 
-Agents should consume the JSON artifact first and use the canonical PR summary as the human-readable fallback. The optional external loop is:
+Agents should consume the JSON artifact first and use ReviewGate PR comments as the human-readable fallback. The optional external loop is:
 
 1. Read `.reviewgate/review.json` or the latest summary comment containing `<!-- reviewgate-summary -->`.
-2. Treat any finding with a score ceiling below `target_score` as target-blocking.
+2. Treat any finding with a score ceiling below `5` as score-affecting.
 3. Apply focused fixes, commit, and push.
 4. Trigger or wait for ReviewGate to rerun and update the same summary comment. The `reviewgate recheck` helper reruns the latest ReviewGate workflow run for a PR branch when GitHub CLI auth is available.
-5. Stop when `score >= target_score` and `status == "passed"`, or when human judgment is needed.
+5. Stop when `score == 5` and `status == "passed"`, or when human judgment is needed.
 
-`status == "needs_changes"` means the review completed but the configured target score has not been reached. The action does not fail CI for this status, and the ReviewGate check run uses a neutral conclusion.
+`status == "needs_changes"` means the review completed but the score is below `5/5`. The action does not fail CI for this status, and the ReviewGate check run uses a neutral conclusion.
 
-Finding `scope` controls publishing. Only `scope: "line"` findings with a file and line are inline comment candidates; ReviewGate repairs stale line anchors to changed lines when possible. `scope: "file"` and `scope: "pr"` findings remain in the summary and JSON artifact.
+Finding `scope` controls publishing. `scope: "line"` findings with a file and line are inline comment candidates; ReviewGate repairs stale line anchors to changed lines when possible. Findings that cannot be attached to a changed line, plus `scope: "file"` and `scope: "pr"` findings, are published as standalone PR comments.
 
 ## OpenRouter Boundary
 
-ReviewGate is BYOK. The action reads the model key from `OPENROUTER_API_KEY` and must not log the key, request headers, or raw secret values. Model presets are explicit:
-
-- `cheap`: `qwen/qwen3-coder`
-- `balanced`: `deepseek/deepseek-v4-flash`
-- `strong`: `anthropic/claude-sonnet-4`
-
-Users can pin exact OpenRouter model IDs when they want stability. Preset aliases are intentionally allowed to improve over time.
+ReviewGate is BYOK. The action reads the model key from `OPENROUTER_API_KEY` and must not log the key, request headers, or raw secret values. The default model is `deepseek/deepseek-v4-flash`; users can pin an exact OpenRouter model ID with the `model` action input when they want stability.
 
 The current Rust boundary builds deterministic chat-completion requests and is tested with a mock transport. Live HTTP transport is intentionally isolated from scoring and summary rendering.
 
@@ -171,24 +163,21 @@ ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing
 
 ## Configuration
 
-`.reviewgate.yml` and action inputs currently support:
+`.reviewgate.yml` currently supports one scalar key:
 
-- `target_score`: score required for a fully passing review.
-- `summary_min_severity`: lowest severity shown in the canonical summary (`P0` through `P4`).
-- `summary_style`: summary detail level. `concise` is the default PR UX; `detailed` restores full cost, metrics, findings, notes, and agent-instruction sections.
-- `inline_min_severity`: lowest severity eligible for inline comments (`P0` through `P4`).
-- `inline_min_confidence`: minimum confidence required before posting an inline PR comment.
-- `publish_inline_comments`: whether eligible line-specific findings should become PR review comments.
+- `min_severity`: lowest severity published as ReviewGate PR comments (`P0` through `P4`). Defaults to `P4`, the least restrictive supported severity.
 
-Review scores below `target_score` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
+Action inputs currently support `openrouter_api_key`, `config`, `model`, and `min_severity`.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The default visible summary is intentionally short: title, verdict, left-aligned confidence score, compact finding counts, posted inline-comment count when available, short fallback entries only for findings that were not posted inline, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, changed lines analyzed when known, total cost, and latest analyzed commit.
+Review scores below `5` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
+
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The visible summary is intentionally short: title, verdict, left-aligned confidence score, compact finding counts, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, changed lines analyzed when known, total cost, and latest analyzed commit. Finding detail lives in inline or standalone ReviewGate PR comments and the JSON artifact.
 
 ## Current Limitations
 
-- Config parsing intentionally supports the stable scalar fields above; richer nested config support comes later.
+- Config parsing intentionally supports only the stable scalar field above; richer nested config support comes later.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
-- Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible; findings with no publishable changed line stay as compact fallback entries, and inline API failures are surfaced as workflow warnings while the full finding remains in JSON.
+- Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible; findings with no publishable changed line are published as standalone PR comments, and inline API failures fall back to standalone comments while the full finding remains in JSON.
 - Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
 
