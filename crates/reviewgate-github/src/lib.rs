@@ -458,7 +458,7 @@ pub fn render_inline_comment_body(finding: &Finding) -> String {
 fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
     body.push_str(&format!(
         "**{}: {}**\n\n",
-        finding.severity.as_str(),
+        finding_comment_heading_prefix(finding),
         finding.title
     ));
     if let Some(detail) = &finding.detail
@@ -474,6 +474,33 @@ fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
     }
     body.push_str("Agent instruction: ");
     body.push_str(finding.agent_instruction.trim());
+}
+
+fn finding_comment_heading_prefix(finding: &Finding) -> String {
+    match finding.angle_id.as_deref().and_then(format_angle_label) {
+        Some(label) => format!("{label} / {}", finding.severity.as_str()),
+        None => finding.severity.as_str().to_string(),
+    }
+}
+
+fn format_angle_label(angle_id: &str) -> Option<String> {
+    let trimmed = angle_id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let label = trimmed
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if label.is_empty() { None } else { Some(label) }
 }
 
 fn finding_location(finding: &Finding) -> Option<String> {
@@ -747,6 +774,7 @@ mod tests {
     fn plans_inline_comment_for_eligible_line_finding() {
         let finding = Finding {
             id: "rg_001".to_string(),
+            angle_id: None,
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.92,
@@ -811,6 +839,7 @@ mod tests {
         let findings = vec![
             Finding {
                 id: "rg_file".to_string(),
+                angle_id: None,
                 scope: reviewgate_core::FindingScope::File,
                 severity: Severity::P2,
                 confidence: 0.72,
@@ -822,6 +851,7 @@ mod tests {
             },
             Finding {
                 id: "rg_pr".to_string(),
+                angle_id: None,
                 scope: reviewgate_core::FindingScope::Pr,
                 severity: Severity::P1,
                 confidence: 0.9,
@@ -876,6 +906,28 @@ mod tests {
         ];
 
         assert_eq!(stale_finding_comment_ids(&comments), vec![7, 9]);
+    }
+
+    #[test]
+    fn renders_finding_comment_with_angle_label_when_present() {
+        let raw = r#"{
+          "id": "adversarial:rg_001",
+          "angle_id": "adversarial",
+          "scope": "line",
+          "severity": "P2",
+          "confidence": 0.9,
+          "file": "src/lib.rs",
+          "line": 42,
+          "title": "Missing error handling",
+          "detail": "The error path is dropped.",
+          "agent_instruction": "Handle and test the error path."
+        }"#;
+        let finding: Finding = serde_json::from_str(raw).expect("finding parses");
+
+        let body = render_inline_comment_body(&finding);
+
+        assert!(body.contains(&inline_comment_marker("adversarial:rg_001")));
+        assert!(body.contains("**Adversarial / P2: Missing error handling**"));
     }
 
     #[test]
@@ -998,6 +1050,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
     fn skips_duplicates_and_low_severity_without_confidence_filtering() {
         let duplicate = Finding {
             id: "rg_dup".to_string(),
+            angle_id: None,
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
@@ -1042,6 +1095,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
     fn falls_back_to_first_pr_anchor_when_finding_file_has_no_changed_lines() {
         let file_scope = Finding {
             id: "rg_file".to_string(),
+            angle_id: None,
             scope: reviewgate_core::FindingScope::File,
             severity: Severity::P1,
             confidence: 0.95,
@@ -1053,6 +1107,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         };
         let pr_scope = Finding {
             id: "rg_pr".to_string(),
+            angle_id: None,
             scope: reviewgate_core::FindingScope::Pr,
             title: "PR-level concern".to_string(),
             agent_instruction: "Handle at PR scope.".to_string(),
@@ -1077,6 +1132,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
     fn fallback_anchors_can_use_right_side_context_lines() {
         let finding = Finding {
             id: "rg_file".to_string(),
+            angle_id: None,
             scope: reviewgate_core::FindingScope::File,
             severity: Severity::P1,
             confidence: 0.95,
@@ -1118,6 +1174,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 id: 1,
                 body: render_inline_comment_body(&Finding {
                     id: "missing auth check".to_string(),
+                    angle_id: None,
                     scope: reviewgate_core::FindingScope::Line,
                     severity: Severity::P1,
                     confidence: 0.95,
@@ -1144,6 +1201,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
     fn dedupes_inline_comments_with_encoded_markers() {
         let finding = Finding {
             id: "A-->B\nC".to_string(),
+            angle_id: None,
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,

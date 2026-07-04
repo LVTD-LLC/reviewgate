@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a built-in adversarial review angle to the live PR flow, with per-angle scores in the canonical summary, `angle_results` in the JSON artifact, and angle-labeled finding comments.
+- Hardened multi-angle aggregation so failed angles are reflected as `0/5` angle results, generated finding IDs stay unique and bounded, and each angle resolves its own cost metadata.
 - Simplified ReviewGate configuration to a single `min_severity` control, removed public target-score, preset, summary-style, inline-confidence, and inline-publish action inputs/schema, and fixed the passing target at `5/5`.
 - Changed finding publishing so all findings at or above `min_severity` are posted as inline PR comments when possible; file-level, PR-level, unanchored, or stale-line findings are anchored to fallback right-side diff lines instead of standalone PR comments, and older standalone finding comments are cleaned up.
 - Left-aligned the concise summary confidence score, added changed-line analysis counts to review metrics and the summary footer, and tightened review prompts around deploy-time data-sync risks.

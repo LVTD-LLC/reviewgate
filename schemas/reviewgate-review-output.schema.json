@@ -85,6 +85,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/review_stage" }
     },
+    "angle_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/review_angle_result" },
+      "description": "Per-angle review outcomes. The top-level score remains the minimum effective score across all enabled angles."
+    },
     "findings": {
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }
@@ -119,6 +124,26 @@
         "estimated_cost_usd": { "type": ["number", "null"], "minimum": 0 }
       }
     },
+    "review_angle_result": {
+      "type": "object",
+      "required": ["id", "name", "score", "status", "verdict", "model", "finding_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "needs_changes"]
+        },
+        "verdict": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "finding_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "finding": {
       "type": "object",
       "required": [
@@ -135,6 +160,10 @@
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "minLength": 1 },
+        "angle_id": {
+          "type": ["string", "null"],
+          "description": "Review angle that produced this finding, such as general or adversarial."
+        },
         "scope": {
           "type": "string",
           "enum": ["line", "file", "pr"],
