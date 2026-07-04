@@ -7,17 +7,18 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
-    CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
-    OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE,
-    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
-    Severity, SummaryOptions, SummaryState, SummaryStyle, compute_metrics, estimate_model_cost_usd,
-    extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
-    render_summary_with_options,
+    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, ModelPreset, ModelPricing,
+    OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
+    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact,
+    ReviewStage, ReviewStatus, Severity, SummaryOptions, SummaryState, compute_metrics,
+    estimate_model_cost_usd, extract_summary_state, fallback_model_pricing,
+    parse_openrouter_model_pricing, render_summary, render_summary_with_options,
 };
 use reviewgate_github::{
-    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
-    SummaryCommentAction, plan_inline_comment_drafts, plan_summary_comment_publish,
-    posted_inline_finding_ids, resolve_inline_comment_drafts_to_changed_lines,
+    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, FindingCommentAction,
+    InlineCommentDraft, SummaryCommentAction, plan_finding_comment_publish,
+    plan_inline_comment_drafts, plan_summary_comment_publish, posted_inline_finding_ids,
+    resolve_inline_comment_drafts_to_changed_lines,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -66,7 +67,7 @@ enum Command {
         #[arg(long)]
         summary_out: Option<PathBuf>,
         #[arg(long)]
-        target_score: Option<u8>,
+        min_severity: Option<String>,
         #[arg(long, value_enum, default_value = "balanced")]
         preset: PresetArg,
         #[arg(long)]
@@ -75,16 +76,6 @@ enum Command {
         openrouter_base_url: Option<String>,
         #[arg(long)]
         mock_artifact: Option<PathBuf>,
-        #[arg(long)]
-        summary_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_confidence: Option<f64>,
-        #[arg(long, value_enum)]
-        summary_style: Option<SummaryStyleArg>,
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        inline_comments_available: bool,
     },
     /// Render a summary from an existing artifact, optionally carrying forward hidden state.
     RenderSummary {
@@ -95,15 +86,7 @@ enum Command {
         #[arg(long)]
         summary_out: Option<PathBuf>,
         #[arg(long)]
-        summary_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_confidence: Option<f64>,
-        #[arg(long, value_enum)]
-        summary_style: Option<SummaryStyleArg>,
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        inline_comments_available: bool,
+        min_severity: Option<String>,
     },
     /// Re-run the latest ReviewGate workflow run for a pull request branch.
     Recheck {
@@ -124,20 +107,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
-    /// Publish eligible ReviewGate findings as inline pull request comments.
-    PublishInlineComments {
+    /// Publish eligible ReviewGate findings as inline or standalone PR comments.
+    PublishFindings {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         input: PathBuf,
         #[arg(long)]
-        inline_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_confidence: Option<f64>,
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        publish_inline_comments: bool,
-        #[arg(long)]
-        github_output: Option<PathBuf>,
+        min_severity: Option<String>,
     },
     /// Publish the canonical ReviewGate summary comment.
     PublishSummary {
@@ -148,15 +125,7 @@ enum Command {
         #[arg(long)]
         summary_out: PathBuf,
         #[arg(long)]
-        summary_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_severity: Option<String>,
-        #[arg(long)]
-        inline_min_confidence: Option<f64>,
-        #[arg(long, value_enum)]
-        summary_style: Option<SummaryStyleArg>,
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        inline_comments_available: bool,
+        min_severity: Option<String>,
     },
     /// Publish a dedicated ReviewGate check run for review availability.
     PublishCheckRun {
@@ -167,6 +136,23 @@ enum Command {
         #[arg(long, default_value = "ReviewGate")]
         name: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PresetArg {
+    Cheap,
+    Balanced,
+    Strong,
+}
+
+impl From<PresetArg> for ModelPreset {
+    fn from(value: PresetArg) -> Self {
+        match value {
+            PresetArg::Cheap => ModelPreset::Cheap,
+            PresetArg::Balanced => ModelPreset::Balanced,
+            PresetArg::Strong => ModelPreset::Strong,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -183,121 +169,57 @@ fn main() -> Result<()> {
             config,
             json_out,
             summary_out,
-            target_score,
+            min_severity,
             preset,
             model,
             openrouter_base_url,
             mock_artifact,
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            summary_style,
-            inline_comments_available,
         } => review_pr(ReviewPrOptions {
             repo,
             config,
             json_out,
             summary_out,
-            target_score,
+            min_severity,
             preset: preset.into(),
             model,
             openrouter_base_url,
             mock_artifact,
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            summary_style: summary_style.map(Into::into),
-            inline_comments_available,
         }),
         Command::RenderSummary {
             input,
             previous_summary,
             summary_out,
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            summary_style,
-            inline_comments_available,
+            min_severity,
         } => render_summary_command(RenderSummaryOptions {
             input,
             previous_summary,
             summary_out,
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            summary_style: summary_style.map(Into::into),
-            inline_comments_available,
+            min_severity,
         }),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
         Command::EvalFixtures { dir } => eval_fixtures(dir),
         Command::PublishStartSignal { repo } => publish_start_signal(repo),
-        Command::PublishInlineComments {
+        Command::PublishFindings {
             repo,
             input,
-            inline_min_severity,
-            inline_min_confidence,
-            publish_inline_comments: publish_inline_comments_enabled,
-            github_output,
-        } => publish_inline_comments(PublishInlineCommentsOptions {
+            min_severity,
+        } => publish_findings(PublishFindingsOptions {
             repo,
             input,
-            inline_min_severity,
-            inline_min_confidence,
-            publish_inline_comments: publish_inline_comments_enabled,
-            github_output,
+            min_severity,
         }),
         Command::PublishSummary {
             repo,
             input,
             summary_out,
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            summary_style,
-            inline_comments_available,
+            min_severity,
         } => publish_summary(PublishSummaryOptions {
             repo,
             input,
             summary_out,
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            summary_style: summary_style.map(Into::into),
-            inline_comments_available,
+            min_severity,
         }),
         Command::PublishCheckRun { repo, input, name } => publish_check_run(repo, input, name),
-    }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum PresetArg {
-    Cheap,
-    Balanced,
-    Strong,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum SummaryStyleArg {
-    Concise,
-    Detailed,
-}
-
-impl From<PresetArg> for ModelPreset {
-    fn from(value: PresetArg) -> Self {
-        match value {
-            PresetArg::Cheap => ModelPreset::Cheap,
-            PresetArg::Balanced => ModelPreset::Balanced,
-            PresetArg::Strong => ModelPreset::Strong,
-        }
-    }
-}
-
-impl From<SummaryStyleArg> for SummaryStyle {
-    fn from(value: SummaryStyleArg) -> Self {
-        match value {
-            SummaryStyleArg::Concise => SummaryStyle::Concise,
-            SummaryStyleArg::Detailed => SummaryStyle::Detailed,
-        }
     }
 }
 
@@ -313,8 +235,7 @@ fn fixture_review(
     let mut artifact = artifact.with_computed_score()?;
     artifact.metrics = Some(compute_metrics(
         &artifact,
-        Severity::P2,
-        SummaryOptions::default().inline_min_confidence,
+        SummaryOptions::default().min_severity,
     ));
     let summary = render_summary(&artifact)?;
     let pretty_json = serde_json::to_string_pretty(&artifact)?;
@@ -347,16 +268,11 @@ struct ReviewPrOptions {
     config: PathBuf,
     json_out: Option<PathBuf>,
     summary_out: Option<PathBuf>,
-    target_score: Option<u8>,
+    min_severity: Option<String>,
     preset: ModelPreset,
     model: Option<String>,
     openrouter_base_url: Option<String>,
     mock_artifact: Option<PathBuf>,
-    summary_min_severity: Option<String>,
-    inline_min_severity: Option<String>,
-    inline_min_confidence: Option<f64>,
-    summary_style: Option<SummaryStyle>,
-    inline_comments_available: bool,
 }
 
 #[derive(Debug)]
@@ -364,21 +280,14 @@ struct RenderSummaryOptions {
     input: PathBuf,
     previous_summary: Option<PathBuf>,
     summary_out: Option<PathBuf>,
-    summary_min_severity: Option<String>,
-    inline_min_severity: Option<String>,
-    inline_min_confidence: Option<f64>,
-    summary_style: Option<SummaryStyle>,
-    inline_comments_available: bool,
+    min_severity: Option<String>,
 }
 
 #[derive(Debug)]
-struct PublishInlineCommentsOptions {
+struct PublishFindingsOptions {
     repo: PathBuf,
     input: PathBuf,
-    inline_min_severity: Option<String>,
-    inline_min_confidence: Option<f64>,
-    publish_inline_comments: bool,
-    github_output: Option<PathBuf>,
+    min_severity: Option<String>,
 }
 
 #[derive(Debug)]
@@ -386,20 +295,12 @@ struct PublishSummaryOptions {
     repo: PathBuf,
     input: PathBuf,
     summary_out: PathBuf,
-    summary_min_severity: Option<String>,
-    inline_min_severity: Option<String>,
-    inline_min_confidence: Option<f64>,
-    summary_style: Option<SummaryStyle>,
-    inline_comments_available: bool,
+    min_severity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct ReviewConfigValues {
-    target_score: Option<u8>,
-    summary_min_severity: Option<Severity>,
-    inline_min_severity: Option<Severity>,
-    inline_min_confidence: Option<f64>,
-    summary_style: Option<SummaryStyle>,
+    min_severity: Option<Severity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,31 +323,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
     let config_path = resolve_repo_path(&repo, &options.config);
     let config_values = read_config_values(&config_path)?;
-    let target_score = options
-        .target_score
-        .or(config_values.target_score)
-        .unwrap_or(5);
-    let summary_min_severity = parse_optional_severity(
-        options.summary_min_severity.as_deref(),
-        "summary_min_severity",
-    )?
-    .or(config_values.summary_min_severity)
-    .unwrap_or(Severity::P4);
-    let inline_min_severity = parse_optional_severity(
-        options.inline_min_severity.as_deref(),
-        "inline_min_severity",
-    )?
-    .or(config_values.inline_min_severity)
-    .unwrap_or(Severity::P2);
-    let inline_min_confidence = options
-        .inline_min_confidence
-        .or(config_values.inline_min_confidence)
-        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
-    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
-    let summary_style = options
-        .summary_style
-        .or(config_values.summary_style)
-        .unwrap_or(SummaryStyle::Concise);
+    let min_severity = resolve_min_severity(options.min_severity.as_deref(), config_values)?;
     let context = collect_review_context(&repo)?;
     let model = options
         .model
@@ -462,7 +339,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
             .openrouter_base_url
             .clone()
             .unwrap_or_else(|| OPENROUTER_DEFAULT_BASE_URL.to_string());
-        let prompt = build_review_prompt(&context, target_score);
+        let prompt = build_review_prompt(&context);
         let response = call_openrouter_with_curl(&base_url, &api_key, &model, &prompt)?;
         let mut artifact = parse_model_artifact(&response.content)?;
         let (model_pricing, cost_source) = if let Ok(Some(pricing)) =
@@ -487,23 +364,19 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
 
     let mut artifact = artifact;
     artifact.reviewed_sha = context.reviewed_sha.clone();
-    artifact.target_score = target_score;
+    artifact.target_score = DEFAULT_TARGET_SCORE;
     if artifact.models.is_empty() {
         artifact.models = vec![model];
     }
     artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
     let mut artifact = artifact.with_computed_score()?;
-    let mut metrics = compute_metrics(&artifact, inline_min_severity, inline_min_confidence);
+    let mut metrics = compute_metrics(&artifact, min_severity);
     metrics.analyzed_line_count = Some(context.analyzed_line_count);
     artifact.metrics = Some(metrics);
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            inline_comments_available: options.inline_comments_available,
-            summary_style,
+            min_severity,
             ..SummaryOptions::default()
         },
         None,
@@ -594,29 +467,12 @@ fn render_summary_command(options: RenderSummaryOptions) -> Result<()> {
     } else {
         None
     };
-    let summary_min_severity = parse_optional_severity(
-        options.summary_min_severity.as_deref(),
-        "summary_min_severity",
-    )?
-    .unwrap_or(Severity::P4);
-    let inline_min_severity = parse_optional_severity(
-        options.inline_min_severity.as_deref(),
-        "inline_min_severity",
-    )?
-    .unwrap_or(Severity::P2);
-    let inline_min_confidence = options
-        .inline_min_confidence
-        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
-    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
-    let summary_style = options.summary_style.unwrap_or(SummaryStyle::Concise);
+    let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
+        .unwrap_or(Severity::P4);
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            inline_comments_available: options.inline_comments_available,
-            summary_style,
+            min_severity,
             ..SummaryOptions::default()
         },
         previous_state.as_ref(),
@@ -729,11 +585,7 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
     let mut score_sum = 0u64;
     for (_, artifact) in &artifacts {
         score_sum += u64::from(artifact.score);
-        let metrics = compute_metrics(
-            artifact,
-            Severity::P2,
-            SummaryOptions::default().inline_min_confidence,
-        );
+        let metrics = compute_metrics(artifact, SummaryOptions::default().min_severity);
         finding_count += metrics.finding_count as usize;
         blocking_count += metrics.blocking_finding_count as usize;
         if let Some(cost) = metrics.current_run_cost_usd {
@@ -753,11 +605,7 @@ fn eval_fixtures(dir: PathBuf) -> Result<()> {
         "blocking_finding_count": blocking_count,
         "estimated_cost_usd": total_cost,
         "fixtures": artifacts.iter().map(|(path, artifact)| {
-            let metrics = compute_metrics(
-                artifact,
-                Severity::P2,
-                SummaryOptions::default().inline_min_confidence,
-            );
+            let metrics = compute_metrics(artifact, SummaryOptions::default().min_severity);
             serde_json::json!({
                 "path": path.display().to_string(),
                 "reviewed_sha": &artifact.reviewed_sha,
@@ -828,7 +676,7 @@ fn render_start_signal_body(existing: Option<&ExistingSummaryComment>) -> Result
     }
     body.push_str("# ReviewGate: running\n\n");
     body.push_str(
-        "ReviewGate is reviewing this PR. The final score, concise summary, and inline comments will replace this message when the run completes.\n",
+        "ReviewGate is reviewing this PR. The final score, concise summary, and finding comments will replace this message when the run completes.\n",
     );
     Ok(body)
 }
@@ -845,81 +693,60 @@ fn recover_summary_state(body: &str, context: &str) -> Option<SummaryState> {
     }
 }
 
-fn publish_inline_comments(options: PublishInlineCommentsOptions) -> Result<()> {
-    match publish_inline_comments_inner(&options) {
-        Ok(inline_available) => write_github_output(
-            options.github_output.as_deref(),
-            "inline_available",
-            if inline_available { "true" } else { "false" },
-        ),
+fn publish_findings(options: PublishFindingsOptions) -> Result<()> {
+    match publish_findings_inner(&options) {
+        Ok(()) => Ok(()),
         Err(error) => {
-            write_github_output(
-                options.github_output.as_deref(),
-                "inline_available",
-                "false",
-            )?;
             println!(
-                "::warning title=ReviewGate inline comments::Inline comment publishing exited early ({error}). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+                "::warning title=ReviewGate findings::Finding comment publishing exited early ({error}). The review JSON contains the full findings."
             );
             Ok(())
         }
     }
 }
 
-fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Result<bool> {
-    if !options.publish_inline_comments {
-        println!("ReviewGate inline comments skipped: publish_inline_comments=false.");
-        return Ok(false);
-    }
+fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
     if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
-        println!("ReviewGate inline comments skipped: not a pull_request event.");
-        return Ok(false);
+        println!("ReviewGate finding comments skipped: not a pull_request event.");
+        return Ok(());
     }
     if !options.input.is_file() {
         println!(
-            "ReviewGate inline comments skipped: missing {}.",
+            "ReviewGate finding comments skipped: missing {}.",
             options.input.display()
         );
-        return Ok(false);
+        return Ok(());
     }
     if !github_token_available() {
-        println!("ReviewGate inline comments skipped: GitHub token is empty.");
-        return Ok(false);
+        println!("ReviewGate finding comments skipped: GitHub token is empty.");
+        return Ok(());
     }
 
     let Some(event) = read_github_event()? else {
-        println!("ReviewGate inline comments skipped: missing GitHub event.");
-        return Ok(false);
+        println!("ReviewGate finding comments skipped: missing GitHub event.");
+        return Ok(());
     };
     let Some(pr_number) = pull_request_number(&event) else {
-        println!("ReviewGate inline comments skipped: missing PR number.");
-        return Ok(false);
+        println!("ReviewGate finding comments skipped: missing PR number.");
+        return Ok(());
     };
     let Some(commit_id) = pull_request_head_sha(&event) else {
-        println!("ReviewGate inline comments skipped: missing PR head SHA.");
-        return Ok(false);
+        println!("ReviewGate finding comments skipped: missing PR head SHA.");
+        return Ok(());
     };
 
     let artifact = read_artifact(&options.input)?;
-    let inline_min_severity = parse_optional_severity(
-        options.inline_min_severity.as_deref(),
-        "inline_min_severity",
-    )?
-    .unwrap_or(Severity::P2);
-    let inline_min_confidence = options
-        .inline_min_confidence
-        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
-    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
+    let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
+        .unwrap_or(Severity::P4);
 
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
     let repository = github_repository()?;
+    let existing_issue_comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let existing_comments = fetch_pull_comments(&repo, &repository, pr_number)?;
-    let drafts = plan_inline_comment_drafts(
-        &artifact.findings,
-        &existing_comments,
-        inline_min_severity,
-        inline_min_confidence,
-    );
+    let mut inline_posted_finding_ids: Vec<String> = posted_inline_finding_ids(&existing_comments)
+        .into_iter()
+        .collect();
+    let drafts = plan_inline_comment_drafts(&artifact.findings, &existing_comments, min_severity);
     let changed_lines = collect_changed_lines(&repo)?;
     let anchor_plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
     let repaired_anchors = anchor_plan.repaired_count;
@@ -932,18 +759,8 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     }
     if skipped_unanchored > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Skipped {skipped_unanchored} inline comment(s) with no added line in the finding file."
+            "ReviewGate finding comments: {skipped_unanchored} line finding(s) will be published as standalone comments because no changed-line anchor was available."
         );
-    }
-    if drafts.is_empty() {
-        if skipped_unanchored == 0 {
-            println!("ReviewGate inline comments: no new eligible findings.");
-            return Ok(true);
-        }
-        println!(
-            "ReviewGate inline comments: no publishable changed-line anchors after filtering."
-        );
-        return Ok(false);
     }
 
     let mut posted = 0u32;
@@ -959,26 +776,55 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         .is_ok()
         {
             posted += 1;
+            inline_posted_finding_ids.push(draft.finding_id);
         } else {
             failed += 1;
             eprintln!(
-                "ReviewGate inline comment could not be posted for finding {}. Keeping it as a compact fallback in the summary.",
+                "ReviewGate inline comment could not be posted for finding {}. Publishing it as a standalone finding comment instead.",
                 draft.finding_id
             );
         }
     }
 
-    println!(
-        "ReviewGate inline comments posted: {posted}; repaired anchors: {repaired_anchors}; skipped/failed: {}.",
-        failed + skipped_unanchored
+    let finding_comment_plan = plan_finding_comment_publish(
+        &artifact.findings,
+        &existing_issue_comments,
+        &inline_posted_finding_ids,
+        min_severity,
     );
-    if failed > 0 || skipped_unanchored > 0 {
+    let mut standalone_created = 0u32;
+    let mut standalone_updated = 0u32;
+    let mut standalone_noop = 0u32;
+    for action in finding_comment_plan.actions {
+        match action {
+            FindingCommentAction::Create { body } => {
+                create_issue_comment(&repo, &repository, pr_number, &body)?;
+                standalone_created += 1;
+            }
+            FindingCommentAction::Update { id, body } => {
+                update_issue_comment(&repo, &repository, id, &body)?;
+                standalone_updated += 1;
+            }
+            FindingCommentAction::Noop { .. } => {
+                standalone_noop += 1;
+            }
+        }
+    }
+    let mut standalone_deleted = 0u32;
+    for stale_id in finding_comment_plan.stale_comment_ids {
+        delete_issue_comment(&repo, &repository, stale_id)?;
+        standalone_deleted += 1;
+    }
+
+    println!(
+        "ReviewGate findings published: {posted} inline; {standalone_created} standalone created, {standalone_updated} updated, {standalone_noop} unchanged, {standalone_deleted} stale deleted; repaired anchors: {repaired_anchors}; inline failed: {failed}."
+    );
+    if failed > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Failed or skipped {} inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings.",
-            failed + skipped_unanchored
+            "::warning title=ReviewGate findings::Failed {failed} inline comment(s); ReviewGate attempted standalone finding comments for them."
         );
     }
-    Ok(failed == 0 && skipped_unanchored == 0)
+    Ok(())
 }
 
 fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> serde_json::Value {
@@ -1020,41 +866,13 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
     let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let previous_state = reviewgate_github::find_summary_comment(&comments)
         .and_then(|comment| recover_summary_state(&comment.body, "summary publish"));
-    let inline_posted_finding_ids = match fetch_pull_comments(&repo, &repository, pr_number) {
-        Ok(comments) => Some(posted_inline_finding_ids(&comments).into_iter().collect()),
-        Err(error) => {
-            println!(
-                "::warning title=ReviewGate summary::Could not inspect existing inline comments ({error}). The fallback summary may include findings that were posted inline."
-            );
-            None
-        }
-    };
-
     let artifact = read_artifact(&options.input)?.with_computed_score()?;
-    let summary_min_severity = parse_optional_severity(
-        options.summary_min_severity.as_deref(),
-        "summary_min_severity",
-    )?
-    .unwrap_or(Severity::P4);
-    let inline_min_severity = parse_optional_severity(
-        options.inline_min_severity.as_deref(),
-        "inline_min_severity",
-    )?
-    .unwrap_or(Severity::P2);
-    let inline_min_confidence = options
-        .inline_min_confidence
-        .unwrap_or_else(|| SummaryOptions::default().inline_min_confidence);
-    validate_confidence_threshold(inline_min_confidence, "inline_min_confidence")?;
-    let summary_style = options.summary_style.unwrap_or(SummaryStyle::Concise);
+    let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
+        .unwrap_or(Severity::P4);
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
-            summary_min_severity,
-            inline_min_severity,
-            inline_min_confidence,
-            inline_comments_available: options.inline_comments_available,
-            inline_posted_finding_ids,
-            summary_style,
+            min_severity,
             ..SummaryOptions::default()
         },
         previous_state.as_ref(),
@@ -1370,18 +1188,6 @@ fn gh_api_json(
     output
 }
 
-fn write_github_output(path: Option<&Path>, key: &str, value: &str) -> Result<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{key}={value}").with_context(|| format!("failed to write {}", path.display()))
-}
-
 fn append_step_summary(summary: &str) -> Result<()> {
     let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
         return Ok(());
@@ -1427,23 +1233,10 @@ fn read_config_values(path: &Path) -> Result<ReviewConfigValues> {
             .trim()
             .trim_matches('"');
         match key {
-            "target_score" => values.target_score = Some(parse_score(value, "target_score")?),
-            "summary_min_severity" => {
-                values.summary_min_severity = Some(parse_severity(value, "summary_min_severity")?)
-            }
-            "inline_min_severity" => {
-                values.inline_min_severity = Some(parse_severity(value, "inline_min_severity")?)
-            }
-            "inline_min_confidence" => {
-                values.inline_min_confidence =
-                    Some(parse_confidence(value, "inline_min_confidence")?)
-            }
-            "summary_style" => {
-                values.summary_style = Some(parse_summary_style(value, "summary_style")?)
-            }
+            "min_severity" => values.min_severity = Some(parse_severity(value, "min_severity")?),
             key if is_removed_config_key(key) => {
                 eprintln!(
-                    "warning: {} key `{key}` is no longer supported and was ignored; use `target_score` to set the review target.",
+                    "warning: {} key `{key}` is no longer supported and was ignored; use `min_severity` to choose which findings are published.",
                     path.display()
                 );
             }
@@ -1459,18 +1252,13 @@ fn is_removed_config_key(key: &str) -> bool {
         REMOVED_FAIL_UNDER_CONFIG_KEY
             | REMOVED_REPORT_ONLY_CONFIG_KEY
             | REMOVED_GATE_MODE_CONFIG_KEY
+            | "target_score"
+            | "summary_min_severity"
+            | "inline_min_severity"
+            | "inline_min_confidence"
+            | "summary_style"
+            | "publish_inline_comments"
     )
-}
-
-fn parse_score(value: &str, field: &str) -> Result<u8> {
-    let parsed = value
-        .parse::<u8>()
-        .with_context(|| format!("{field} must be an integer score, got {value:?}"))?;
-    if parsed <= 5 {
-        Ok(parsed)
-    } else {
-        bail!("{field} must be between 0 and 5, got {parsed}")
-    }
 }
 
 fn parse_optional_severity(value: Option<&str>, field: &str) -> Result<Option<Severity>> {
@@ -1484,28 +1272,13 @@ fn parse_severity(value: &str, field: &str) -> Result<Severity> {
     Severity::parse(value).with_context(|| format!("{field} must be one of P0, P1, P2, P3, P4"))
 }
 
-fn parse_confidence(value: &str, field: &str) -> Result<f64> {
-    let parsed = value
-        .parse::<f64>()
-        .with_context(|| format!("{field} must be a confidence between 0 and 1, got {value:?}"))?;
-    validate_confidence_threshold(parsed, field)?;
-    Ok(parsed)
-}
-
-fn validate_confidence_threshold(value: f64, field: &str) -> Result<()> {
-    if (0.0..=1.0).contains(&value) {
-        Ok(())
-    } else {
-        bail!("{field} must be between 0 and 1, got {value}")
-    }
-}
-
-fn parse_summary_style(value: &str, field: &str) -> Result<SummaryStyle> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "concise" => Ok(SummaryStyle::Concise),
-        "detailed" => Ok(SummaryStyle::Detailed),
-        _ => bail!("{field} must be one of concise or detailed"),
-    }
+fn resolve_min_severity(
+    cli_value: Option<&str>,
+    config_values: ReviewConfigValues,
+) -> Result<Severity> {
+    Ok(parse_optional_severity(cli_value, "min_severity")?
+        .or(config_values.min_severity)
+        .unwrap_or(Severity::P4))
 }
 
 fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
@@ -1690,7 +1463,7 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
     }
 }
 
-fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
+fn build_review_prompt(context: &ReviewContext) -> String {
     let schema = include_str!("../../../schemas/reviewgate-review-output.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
@@ -1712,10 +1485,7 @@ fn build_review_prompt(context: &ReviewContext, target_score: u8) -> String {
     prompt.push_str(
         "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line in the new/right side of the diff, and safe to post as an inline PR comment. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
     );
-    prompt.push_str(&format!(
-        "reviewed_sha: {}\ntarget_score: {}\n\n",
-        context.reviewed_sha, target_score
-    ));
+    prompt.push_str(&format!("reviewed_sha: {}\n\n", context.reviewed_sha));
     prompt.push_str("JSON schema:\n");
     prompt.push_str(schema);
     prompt.push_str("\n\nChanged files:\n");
@@ -2056,7 +1826,7 @@ mod tests {
 
     #[test]
     fn parses_simple_review_config_values() {
-        let raw = "review:\n  target_score: 5 # perfect review\n  summary_min_severity: P2\n  inline_min_severity: P1\n  inline_min_confidence: 0.75\n  summary_style: detailed\n";
+        let raw = "review:\n  min_severity: P2 # publish important findings and above\n";
         let path =
             std::env::temp_dir().join(format!("reviewgate-config-test-{}.yml", std::process::id()));
         fs::write(&path, raw).expect("write temp config");
@@ -2067,11 +1837,7 @@ mod tests {
         assert_eq!(
             values,
             ReviewConfigValues {
-                target_score: Some(5),
-                summary_min_severity: Some(Severity::P2),
-                inline_min_severity: Some(Severity::P1),
-                inline_min_confidence: Some(0.75),
-                summary_style: Some(SummaryStyle::Detailed),
+                min_severity: Some(Severity::P2),
             }
         );
     }
@@ -2081,51 +1847,19 @@ mod tests {
         assert!(is_removed_config_key(concat!("fail", "_under")));
         assert!(is_removed_config_key(concat!("report", "_only")));
         assert!(is_removed_config_key(concat!("gate", "_mode")));
-        assert!(!is_removed_config_key("target_score"));
+        assert!(is_removed_config_key("target_score"));
+        assert!(is_removed_config_key("summary_min_severity"));
+        assert!(is_removed_config_key("inline_min_confidence"));
+        assert!(!is_removed_config_key("min_severity"));
     }
 
     #[test]
     fn parses_severity_case_insensitively() {
         assert_eq!(
-            parse_severity("p3", "summary_min_severity").expect("valid severity"),
+            parse_severity("p3", "min_severity").expect("valid severity"),
             Severity::P3
         );
-        assert!(parse_severity("medium", "summary_min_severity").is_err());
-    }
-
-    #[test]
-    fn parses_summary_style_and_inline_confidence() {
-        assert_eq!(
-            parse_summary_style("Concise", "summary_style").expect("valid style"),
-            SummaryStyle::Concise
-        );
-        assert_eq!(
-            parse_confidence("0.8", "inline_min_confidence").expect("valid confidence"),
-            0.8
-        );
-        assert!(parse_summary_style("full", "summary_style").is_err());
-        assert!(parse_confidence("1.2", "inline_min_confidence").is_err());
-    }
-
-    #[test]
-    fn parses_inline_comments_available_as_boolean_value() {
-        let cli = Cli::try_parse_from([
-            "reviewgate",
-            "render-summary",
-            "--input",
-            "review.json",
-            "--inline-comments-available",
-            "false",
-        ])
-        .expect("inline availability accepts explicit boolean value");
-
-        match cli.command {
-            Command::RenderSummary {
-                inline_comments_available,
-                ..
-            } => assert!(!inline_comments_available),
-            _ => panic!("expected render-summary command"),
-        }
+        assert!(parse_severity("medium", "min_severity").is_err());
     }
 
     #[test]
@@ -2133,22 +1867,29 @@ mod tests {
         let action = include_str!("../../../action.yml");
         assert!(action.contains("- name: Publish ReviewGate start signal"));
         assert!(action.contains("publish-start-signal"));
-        assert!(action.contains("summary_style:"));
-        assert!(action.contains("default: concise"));
-        assert!(action.contains("REVIEWGATE_SUMMARY_STYLE=concise"));
-        assert!(action.contains("publish_inline_comments:"));
-        assert!(action.contains("default: \"true\""));
+        assert!(action.contains("min_severity:"));
+        assert!(action.contains("default: P4"));
+        assert!(!action.contains("target_score:"));
+        assert!(!action.contains("preset:"));
+        assert!(!action.contains("summary_style:"));
+        assert!(!action.contains("inline_min_severity:"));
+        assert!(!action.contains("inline_min_confidence:"));
+        assert!(!action.contains("publish_inline_comments:"));
         assert!(!action.contains(concat!("fail", "_under")));
         assert!(!action.contains(concat!("gate", "_mode")));
         assert!(!action.contains(concat!("report", "_only")));
+        assert!(!action.contains("--target-score"));
+        assert!(!action.contains("--preset"));
+        assert!(!action.contains("--summary-style"));
+        assert!(!action.contains("--inline-min-confidence"));
         assert!(!action.contains(concat!("--", "fail", "-under")));
         assert!(!action.contains(concat!("--gate", "-mode")));
         assert!(!action.contains(concat!("--report", "-only")));
         assert!(!action.contains(concat!("- name: Enforce ", "ReviewGate")));
 
         let inline_start = action
-            .find("- name: Publish ReviewGate inline comments")
-            .expect("inline step exists");
+            .find("- name: Publish ReviewGate findings")
+            .expect("findings step exists");
         let summary_start = action
             .find("- name: Publish ReviewGate summary")
             .expect("summary step exists");
@@ -2158,19 +1899,16 @@ mod tests {
         assert!(inline_start < summary_start);
         assert!(summary_start < check_run_start);
 
-        let inline_step = &action[inline_start..summary_start];
+        let findings_step = &action[inline_start..summary_start];
         let summary_step = &action[summary_start..check_run_start];
         let check_run_step = &action[check_run_start..];
 
-        assert!(inline_step.contains("id: inline-comments"));
-        assert!(inline_step.contains("publish-inline-comments"));
-        assert!(inline_step.contains("GITHUB_OUTPUT"));
-        assert!(!inline_step.contains("scan(\"<!-- reviewgate-finding:.*? -->\")"));
+        assert!(findings_step.contains("publish-findings"));
+        assert!(!findings_step.contains("GITHUB_OUTPUT"));
+        assert!(!findings_step.contains("scan(\"<!-- reviewgate-finding:.*? -->\")"));
         assert!(!summary_step.contains("continue-on-error: true"));
         assert!(summary_step.contains("publish-summary"));
-        assert!(summary_step.contains("steps.inline-comments.outputs.inline_available"));
-        assert!(summary_step.contains("outputs.inline_available || 'false'"));
-        assert!(summary_step.contains("--inline-comments-available"));
+        assert!(!summary_step.contains("inline-comments-available"));
         assert!(summary_step.contains("::error title=ReviewGate summary publish failed::"));
         assert!(summary_step.contains("::error title=ReviewGate summary missing::"));
         assert!(!summary_step.contains("capture(\"<!-- reviewgate-state"));
@@ -2184,6 +1922,7 @@ mod tests {
         assert!(dogfood_workflow.contains("checks: write"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@main"));
         assert!(!dogfood_workflow.contains("uses: ./"));
+        assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
 
@@ -2489,7 +2228,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[test]
-    fn prompt_contains_target_score_schema_and_diff_without_failure_floor() {
+    fn prompt_contains_schema_and_diff_without_target_score_or_failure_floor() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
             changed_files: vec!["src/lib.rs".to_string()],
@@ -2502,10 +2241,10 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
         };
 
-        let prompt = build_review_prompt(&context, 5);
+        let prompt = build_review_prompt(&context);
 
         assert!(prompt.contains("reviewed_sha: abc123"));
-        assert!(prompt.contains("target_score: 5"));
+        assert!(!prompt.contains("target_score"));
         assert!(!prompt.contains(concat!("fail", "_under")));
         assert!(prompt.contains("ReviewGate Review Output"));
         assert!(prompt.contains("Every concrete defect mentioned in the verdict or notes"));

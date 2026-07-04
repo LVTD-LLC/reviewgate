@@ -1,6 +1,5 @@
 {
   "score": 5,
-  "target_score": 5,
   "reviewed_sha": "abc123",
   "status": "passed",
   "verdict": "Good structure, but not ready for merge because one test gap remains.",

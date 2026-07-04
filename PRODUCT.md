@@ -10,8 +10,8 @@ ReviewGate is a free, fully open-source credibility project. The initial goal is
 4. A PR opens or updates.
 5. ReviewGate posts one top-level summary comment with a clear `0-5` score.
 6. ReviewGate emits structured JSON for humans or external agent loops.
-7. ReviewGate posts inline comments only for specific, high-confidence issues.
-8. A human or external agent fixes findings and pushes again until the review reaches the target score, ideally `5/5`.
+7. ReviewGate posts line-specific findings inline and broader or unanchored findings as standalone PR comments.
+8. A human or external agent fixes findings and pushes again until the review reaches `5/5`.
 
 ## Durable Product Constraints
 
@@ -24,7 +24,7 @@ ReviewGate is a free, fully open-source credibility project. The initial goal is
 - The summary must be canonical: create it once, then update the same comment on later runs.
 - Machine-readable JSON is part of the product contract, not a debug artifact.
 - Full-repo indexing is not required for v1; start with diff, changed files, nearby context, and instruction files.
-- Default model presets should optimize for price-to-value.
+- Default model selection should optimize for price-to-value.
 
 ## Positioning
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Simplified ReviewGate configuration to a single `min_severity` control, removed public target-score, preset, summary-style, inline-confidence, and inline-publish action inputs/schema, and fixed the passing target at `5/5`.
+- Changed finding publishing so line findings are posted inline when possible and unanchored, file-level, PR-level, or inline-failed findings are posted as standalone deduped PR comments instead of fallback entries in the canonical summary.
 - Left-aligned the concise summary confidence score, added changed-line analysis counts to review metrics and the summary footer, and tightened review prompts around deploy-time data-sync risks.
 - Pinned the dogfood ReviewGate workflow to the main-branch action implementation so PRs cannot affect their own review score by changing ReviewGate code under review.
 - Changed completed `needs_changes` ReviewGate check runs to use a neutral conclusion while keeping passed reviews green and unavailable reviews failing.

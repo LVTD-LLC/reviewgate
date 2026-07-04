@@ -40,8 +40,8 @@ The fixture command writes generated artifacts under `.reviewgate/`. Do not comm
 
 - The score and summary rendering are product-critical; add focused tests when behavior changes.
 - GitHub publishing must update the canonical `<!-- reviewgate-summary -->` comment instead of creating duplicate summary comments.
-- Inline comments should be reserved for high-confidence, line-specific findings.
-- Review status behavior should be deterministic and based on the configured target score.
+- Inline comments should be reserved for line-specific findings; `min_severity` controls which findings are published.
+- Review status behavior should be deterministic and based on the fixed `5/5` passing target.
 - Security-sensitive changes must keep GitHub token permissions least-privilege and must not use `pull_request_target` for untrusted fork code.
 
 ## Dependency Guidance
