@@ -278,6 +278,15 @@ impl ChangedLineSet {
             .and_then(|lines| lines.keys().next().copied())
     }
 
+    fn first_unused_line(&self, path: &str, used: &BTreeSet<(String, u32)>) -> Option<u32> {
+        self.fallback_lines_by_path.get(path).and_then(|lines| {
+            lines.keys().copied().find(|line| {
+                let key = (path.to_string(), *line);
+                !used.contains(&key)
+            })
+        })
+    }
+
     fn first_anchor(&self) -> Option<(String, u32)> {
         self.fallback_lines_by_path
             .iter()
@@ -287,6 +296,17 @@ impl ChangedLineSet {
                     .next()
                     .copied()
                     .map(|line| (path.clone(), line))
+            })
+    }
+
+    fn first_unused_anchor(&self, used: &BTreeSet<(String, u32)>) -> Option<(String, u32)> {
+        self.fallback_lines_by_path
+            .iter()
+            .find_map(|(path, lines)| {
+                lines.keys().find_map(|line| {
+                    let anchor = (path.clone(), *line);
+                    (!used.contains(&anchor)).then_some(anchor)
+                })
             })
     }
 }
@@ -305,43 +325,6 @@ fn parse_new_hunk_start(header: &str) -> Option<u32> {
         .find_map(|part| part.strip_prefix('+'))
         .and_then(|part| part.split(',').next())
         .and_then(|line| line.parse().ok())
-}
-
-pub fn resolve_inline_comment_drafts_to_changed_lines(
-    drafts: Vec<InlineCommentDraft>,
-    changed_lines: &ChangedLineSet,
-) -> InlineCommentAnchorPlan {
-    let mut resolved = Vec::new();
-    let mut repaired_count = 0u32;
-    let mut fallback_count = 0u32;
-    let mut skipped_count = 0u32;
-
-    for mut draft in drafts {
-        if let Some(line) = changed_lines.resolve_line(&draft.path, draft.line, &draft.body) {
-            if line != draft.line {
-                repaired_count += 1;
-                draft.line = line;
-            }
-        } else if let Some(line) = changed_lines.first_line(&draft.path) {
-            fallback_count += 1;
-            draft.line = line;
-        } else if let Some((path, line)) = changed_lines.first_anchor() {
-            fallback_count += 1;
-            draft.path = path;
-            draft.line = line;
-        } else {
-            skipped_count += 1;
-            continue;
-        }
-        resolved.push(draft);
-    }
-
-    InlineCommentAnchorPlan {
-        drafts: resolved,
-        repaired_count,
-        fallback_count,
-        skipped_count,
-    }
 }
 
 fn token_set(value: &str) -> BTreeSet<String> {
@@ -526,6 +509,7 @@ pub fn plan_inline_comment_drafts(
     let mut repaired_count = 0u32;
     let mut fallback_count = 0u32;
     let mut skipped_count = 0u32;
+    let mut fallback_anchors = FallbackAnchorAllocator::new(changed_lines);
 
     for finding in findings {
         if !finding.severity.is_at_or_above(min_severity)
@@ -537,14 +521,17 @@ pub fn plan_inline_comment_drafts(
 
         let body = render_inline_comment_body(finding);
         let Some((path, line, anchor_kind)) =
-            resolve_finding_inline_anchor(finding, &body, changed_lines)
+            resolve_finding_inline_anchor(finding, &body, &mut fallback_anchors)
         else {
             skipped_count += 1;
             continue;
         };
         match anchor_kind {
-            InlineAnchorKind::Exact => {}
-            InlineAnchorKind::Repaired => repaired_count += 1,
+            InlineAnchorKind::Exact => fallback_anchors.mark_used(&path, line),
+            InlineAnchorKind::Repaired => {
+                repaired_count += 1;
+                fallback_anchors.mark_used(&path, line);
+            }
             InlineAnchorKind::Fallback => fallback_count += 1,
         }
         drafts.push(InlineCommentDraft {
@@ -570,10 +557,47 @@ enum InlineAnchorKind {
     Fallback,
 }
 
+struct FallbackAnchorAllocator<'a> {
+    changed_lines: &'a ChangedLineSet,
+    used: BTreeSet<(String, u32)>,
+}
+
+impl<'a> FallbackAnchorAllocator<'a> {
+    fn new(changed_lines: &'a ChangedLineSet) -> Self {
+        Self {
+            changed_lines,
+            used: BTreeSet::new(),
+        }
+    }
+
+    fn file_anchor(&mut self, path: &str) -> Option<(String, u32)> {
+        let anchor = self
+            .changed_lines
+            .first_unused_line(path, &self.used)
+            .or_else(|| self.changed_lines.first_line(path))
+            .map(|line| (path.to_string(), line))?;
+        self.used.insert(anchor.clone());
+        Some(anchor)
+    }
+
+    fn global_anchor(&mut self) -> Option<(String, u32)> {
+        let anchor = self
+            .changed_lines
+            .first_unused_anchor(&self.used)
+            .or_else(|| self.changed_lines.first_anchor())?;
+        self.used.insert(anchor.clone());
+        Some(anchor)
+    }
+
+    fn mark_used(&mut self, path: &str, line: u32) {
+        self.used.insert((path.to_string(), line));
+    }
+}
+
 fn resolve_finding_inline_anchor(
     finding: &Finding,
     body: &str,
-    changed_lines: &ChangedLineSet,
+    fallback_anchors: &mut FallbackAnchorAllocator<'_>,
 ) -> Option<(String, u32, InlineAnchorKind)> {
     if let Some(path) = finding
         .file
@@ -581,7 +605,10 @@ fn resolve_finding_inline_anchor(
         .filter(|path| !path.trim().is_empty())
     {
         if let Some(preferred_line) = finding.line
-            && let Some(line) = changed_lines.resolve_line(path, preferred_line, body)
+            && let Some(line) =
+                fallback_anchors
+                    .changed_lines
+                    .resolve_line(path, preferred_line, body)
         {
             let kind = if line == preferred_line {
                 InlineAnchorKind::Exact
@@ -590,13 +617,13 @@ fn resolve_finding_inline_anchor(
             };
             return Some((path.to_string(), line, kind));
         }
-        if let Some(line) = changed_lines.first_line(path) {
-            return Some((path.to_string(), line, InlineAnchorKind::Fallback));
+        if let Some((path, line)) = fallback_anchors.file_anchor(path) {
+            return Some((path, line, InlineAnchorKind::Fallback));
         }
     }
 
-    changed_lines
-        .first_anchor()
+    fallback_anchors
+        .global_anchor()
         .map(|(path, line)| (path, line, InlineAnchorKind::Fallback))
 }
 
@@ -877,7 +904,7 @@ mod tests {
         assert!(plan.drafts[0].body.contains("Location: `src/lib.rs`"));
         assert_eq!(plan.drafts[1].finding_id, "rg_pr");
         assert_eq!(plan.drafts[1].path, "src/lib.rs");
-        assert_eq!(plan.drafts[1].line, 11);
+        assert_eq!(plan.drafts[1].line, 12);
         assert!(
             plan.drafts[1]
                 .body
@@ -978,22 +1005,41 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         let changed_lines = ChangedLineSet::from_unified_diff(
             "diff --git a/.github/workflows/reviewgate.yml b/.github/workflows/reviewgate.yml\n--- a/.github/workflows/reviewgate.yml\n+++ b/.github/workflows/reviewgate.yml\n@@ -5,0 +6,2 @@ on:\n+  pull_request_target:\n+    types: [opened, synchronize, reopened, ready_for_review]\n@@ -22 +24 @@ permissions:\n-  contents: read\n+  contents: write\n",
         );
-        let drafts = vec![
-            InlineCommentDraft {
-                finding_id: "fork".to_string(),
-                path: ".github/workflows/reviewgate.yml".to_string(),
-                line: 6,
-                body: "Removal of fork-safety guard enables credential theft via pull_request_target".to_string(),
+        let findings = vec![
+            Finding {
+                id: "fork".to_string(),
+                angle_id: None,
+                scope: reviewgate_core::FindingScope::Line,
+                severity: Severity::P1,
+                confidence: 0.95,
+                file: Some(".github/workflows/reviewgate.yml".to_string()),
+                line: Some(6),
+                title: "Fork-safety guard removed".to_string(),
+                detail: Some(
+                    "Removal of fork-safety guard enables credential theft via pull_request_target."
+                        .to_string(),
+                ),
+                agent_instruction: "Do not run untrusted fork code with writable credentials."
+                    .to_string(),
             },
-            InlineCommentDraft {
-                finding_id: "permissions".to_string(),
-                path: ".github/workflows/reviewgate.yml".to_string(),
-                line: 15,
-                body: "Elevation of GitHub token from read to write. Revert permissions.contents back to read.".to_string(),
+            Finding {
+                id: "permissions".to_string(),
+                angle_id: None,
+                scope: reviewgate_core::FindingScope::Line,
+                severity: Severity::P1,
+                confidence: 0.95,
+                file: Some(".github/workflows/reviewgate.yml".to_string()),
+                line: Some(15),
+                title: "Token permissions are writable".to_string(),
+                detail: Some(
+                    "Elevation of GitHub token from read to write. Revert permissions.contents back to read."
+                        .to_string(),
+                ),
+                agent_instruction: "Set contents permission back to read-only.".to_string(),
             },
         ];
 
-        let plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+        let plan = plan_inline_comment_drafts(&findings, &[], Severity::P2, &changed_lines);
 
         assert_eq!(plan.repaired_count, 1);
         assert_eq!(plan.skipped_count, 0);
@@ -1007,14 +1053,20 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         let changed_lines = ChangedLineSet::from_unified_diff(
             "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,0 +11,2 @@\n+first\n+second\n",
         );
-        let drafts = vec![InlineCommentDraft {
-            finding_id: "nearest".to_string(),
-            path: "src/lib.rs".to_string(),
-            line: 20,
-            body: "Unrelated text".to_string(),
-        }];
+        let finding = Finding {
+            id: "nearest".to_string(),
+            angle_id: None,
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(20),
+            title: "Unrelated text".to_string(),
+            detail: None,
+            agent_instruction: "Handle unrelated text.".to_string(),
+        };
 
-        let plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+        let plan = plan_inline_comment_drafts(&[finding], &[], Severity::P2, &changed_lines);
 
         assert_eq!(plan.repaired_count, 0);
         assert_eq!(plan.fallback_count, 1);
@@ -1029,14 +1081,20 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         let changed_lines = ChangedLineSet::from_unified_diff(
             "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,0 +11 @@\n+changed\n",
         );
-        let drafts = vec![InlineCommentDraft {
-            finding_id: "missing-file".to_string(),
-            path: "src/other.rs".to_string(),
-            line: 11,
-            body: "Changed".to_string(),
-        }];
+        let finding = Finding {
+            id: "missing-file".to_string(),
+            angle_id: None,
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/other.rs".to_string()),
+            line: Some(11),
+            title: "Changed".to_string(),
+            detail: None,
+            agent_instruction: "Handle changed behavior.".to_string(),
+        };
 
-        let plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+        let plan = plan_inline_comment_drafts(&[finding], &[], Severity::P2, &changed_lines);
 
         assert_eq!(plan.repaired_count, 0);
         assert_eq!(plan.fallback_count, 1);
@@ -1088,7 +1146,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         assert_eq!(plan.drafts.len(), 2);
         assert_eq!(plan.drafts[0].finding_id, "rg_low");
         assert_eq!(plan.drafts[1].finding_id, "rg_no_line");
-        assert_eq!(plan.drafts[1].line, 10);
+        assert_eq!(plan.drafts[1].line, 11);
     }
 
     #[test]
