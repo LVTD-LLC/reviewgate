@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,8 +12,8 @@ use reviewgate_core::{
     OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
     OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleResult,
     ReviewArtifact, ReviewStage, ReviewStatus, Severity, SummaryOptions, SummaryState,
-    compute_metrics, compute_score, estimate_model_cost_usd, extract_summary_state,
-    fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
+    compute_effective_score, compute_metrics, compute_score, estimate_model_cost_usd,
+    extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
     render_summary_with_options,
 };
 use reviewgate_github::{
@@ -37,6 +38,7 @@ const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
 const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
+const MAX_GENERATED_FINDING_ID_CHARS: usize = 256;
 
 #[derive(Debug, Parser)]
 #[command(name = "reviewgate")]
@@ -366,28 +368,10 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
             .openrouter_base_url
             .clone()
             .unwrap_or_else(|| OPENROUTER_DEFAULT_BASE_URL.to_string());
-        let (model_pricing, cost_source) = if let Ok(Some(pricing)) =
-            fetch_openrouter_model_pricing_with_curl(&base_url, &api_key, &model)
-        {
-            (Some(pricing), Some(CostSource::OpenRouterUsage))
-        } else {
-            (
-                fallback_model_pricing(&model),
-                Some(CostSource::FallbackPricing),
-            )
-        };
         let mut angle_artifacts = Vec::new();
         let mut failed_angles = Vec::new();
         for angle in builtin_review_angles() {
-            match run_live_angle_review(
-                &context,
-                angle,
-                &base_url,
-                &api_key,
-                &model,
-                model_pricing,
-                cost_source,
-            ) {
+            match run_live_angle_review(&context, angle, &base_url, &api_key, &model) {
                 Ok(artifact) => angle_artifacts.push((angle, artifact)),
                 Err(error) => failed_angles.push((angle, error.to_string())),
             }
@@ -1574,8 +1558,6 @@ fn run_live_angle_review(
     base_url: &str,
     api_key: &str,
     model: &str,
-    model_pricing: Option<ModelPricing>,
-    cost_source: Option<CostSource>,
 ) -> Result<ReviewArtifact> {
     let prompt = build_review_prompt_for_angle(context, angle);
     let response = call_openrouter_with_curl(base_url, api_key, model, &prompt)
@@ -1585,6 +1567,11 @@ fn run_live_angle_review(
     if artifact.models.is_empty() {
         artifact.models = vec![model.to_string()];
     }
+    let (model_pricing, cost_source) = if response.usage.is_some() {
+        resolve_model_cost_inputs(base_url, api_key, model)
+    } else {
+        (None, None)
+    };
     apply_usage_cost_summary(
         &mut artifact,
         model,
@@ -1594,6 +1581,21 @@ fn run_live_angle_review(
         angle.id,
     );
     Ok(artifact)
+}
+
+fn resolve_model_cost_inputs(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> (Option<ModelPricing>, Option<CostSource>) {
+    if let Ok(Some(pricing)) = fetch_openrouter_model_pricing_with_curl(base_url, api_key, model) {
+        (Some(pricing), Some(CostSource::OpenRouterUsage))
+    } else {
+        (
+            fallback_model_pricing(model),
+            Some(CostSource::FallbackPricing),
+        )
+    }
 }
 
 fn aggregate_angle_artifacts(
@@ -1611,8 +1613,13 @@ fn aggregate_angle_artifacts(
     let mut has_cost = false;
     let mut cost_source: Option<CostSource> = None;
     let mut mixed_cost_sources = false;
+    let mut seen_angle_ids = BTreeSet::new();
+    let mut seen_finding_ids = BTreeSet::new();
 
     for (angle, mut artifact) in angle_artifacts {
+        if !seen_angle_ids.insert(angle.id.to_string()) {
+            bail!("duplicate ReviewGate review angle id `{}`", angle.id);
+        }
         let model = artifact
             .models
             .first()
@@ -1623,7 +1630,8 @@ fn aggregate_angle_artifacts(
 
         let mut angle_findings = Vec::new();
         for mut finding in artifact.findings.drain(..) {
-            finding.id = prefixed_angle_finding_id(angle.id, &finding.id);
+            finding.id =
+                unique_prefixed_angle_finding_id(angle.id, &finding.id, &mut seen_finding_ids);
             finding.angle_id = Some(angle.id.to_string());
             angle_findings.push(finding);
         }
@@ -1640,6 +1648,7 @@ fn aggregate_angle_artifacts(
             .map(|summary| summary.current_run_usd)
             .or(artifact.estimated_cost_usd);
         if let Some(cost) = angle_cost {
+            // Built-in angles make independent OpenRouter calls, so per-angle costs are additive.
             has_cost = true;
             current_run_cost += cost;
         }
@@ -1689,7 +1698,7 @@ fn aggregate_angle_artifacts(
         });
     }
 
-    let score = compute_score(&findings);
+    let score = compute_effective_score(&findings, &angle_results);
     let status = status_for_score(score);
     let cost_summary = has_cost.then_some(CostSummary {
         current_run_usd: current_run_cost,
@@ -1730,17 +1739,28 @@ fn append_failed_angle_reviews(
     failed_angles: Vec<(ReviewAngle, String)>,
 ) {
     for (angle, error) in failed_angles {
+        let verdict = format!("{} review angle failed: {error}", angle.name);
         artifact.review_stages.push(ReviewStage {
             name: angle.id.to_string(),
             model: default_model.to_string(),
             status: "failed".to_string(),
-            reason: format!("{} review angle failed: {error}", angle.name),
+            reason: verdict.clone(),
             estimated_cost_usd: None,
         });
-        artifact
-            .notes
-            .push(format!("{} review angle failed: {error}", angle.name));
+        artifact.notes.push(verdict.clone());
+        artifact.angle_results.push(ReviewAngleResult {
+            id: angle.id.to_string(),
+            name: angle.name.to_string(),
+            score: 0,
+            status: ReviewStatus::NeedsChanges,
+            verdict,
+            model: default_model.to_string(),
+            finding_ids: vec![],
+        });
     }
+    artifact.score = compute_effective_score(&artifact.findings, &artifact.angle_results);
+    artifact.status = status_for_score(artifact.score);
+    artifact.verdict = aggregate_verdict(&artifact.angle_results);
 }
 
 fn append_missing_review_stages(stages: &mut Vec<ReviewStage>, candidates: Vec<ReviewStage>) {
@@ -1753,11 +1773,49 @@ fn append_missing_review_stages(stages: &mut Vec<ReviewStage>, candidates: Vec<R
 
 fn prefixed_angle_finding_id(angle_id: &str, finding_id: &str) -> String {
     let prefix = format!("{angle_id}:");
-    if finding_id.starts_with(&prefix) {
+    let id = if finding_id.starts_with(&prefix) {
         finding_id.to_string()
     } else {
         format!("{prefix}{finding_id}")
+    };
+    bounded_generated_finding_id(angle_id, &id)
+}
+
+fn unique_prefixed_angle_finding_id(
+    angle_id: &str,
+    finding_id: &str,
+    seen_finding_ids: &mut BTreeSet<String>,
+) -> String {
+    let base = prefixed_angle_finding_id(angle_id, finding_id);
+    if seen_finding_ids.insert(base.clone()) {
+        return base;
     }
+
+    for suffix in 2.. {
+        let candidate = bounded_generated_finding_id(angle_id, &format!("{base}~{suffix}"));
+        if seen_finding_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded suffix loop should always find a unique finding id")
+}
+
+fn bounded_generated_finding_id(angle_id: &str, id: &str) -> String {
+    if id.chars().count() <= MAX_GENERATED_FINDING_ID_CHARS {
+        return id.to_string();
+    }
+
+    format!("{angle_id}:finding:{}", stable_id_hash(id))
+}
+
+fn stable_id_hash(value: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn status_for_score(score: u8) -> ReviewStatus {
@@ -2678,8 +2736,21 @@ diff --git a/src/lib.rs b/src/lib.rs
             )],
         );
 
-        assert_eq!(aggregate.score, 5);
-        assert_eq!(aggregate.angle_results.len(), 1);
+        assert_eq!(aggregate.score, 0);
+        assert_eq!(aggregate.status, ReviewStatus::NeedsChanges);
+        assert_eq!(aggregate.angle_results.len(), 2);
+        assert_eq!(aggregate.angle_results[1].id, "adversarial");
+        assert_eq!(aggregate.angle_results[1].score, 0);
+        assert_eq!(
+            aggregate.angle_results[1].status,
+            ReviewStatus::NeedsChanges
+        );
+        assert!(
+            aggregate.angle_results[1]
+                .verdict
+                .contains("adversarial review angle returned invalid JSON")
+        );
+        assert!(aggregate.verdict.contains("Adversarial"));
         assert!(aggregate.review_stages.iter().any(|stage| {
             stage.name == "adversarial"
                 && stage.status == "failed"
@@ -2690,6 +2761,149 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(aggregate.notes.iter().any(|note| {
             note.contains("Adversarial review angle failed") && note.contains("invalid JSON")
         }));
+    }
+
+    #[test]
+    fn aggregate_angle_artifacts_makes_prefixed_finding_ids_unique() {
+        let adversarial = ReviewArtifact {
+            score: 3,
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "Adversarial review found duplicate model ids.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            findings: vec![
+                reviewgate_core::Finding {
+                    id: "rg_001".to_string(),
+                    angle_id: None,
+                    scope: reviewgate_core::FindingScope::Pr,
+                    severity: Severity::P2,
+                    confidence: 0.9,
+                    file: None,
+                    line: None,
+                    title: "First finding".to_string(),
+                    detail: None,
+                    agent_instruction: "Fix the first issue.".to_string(),
+                },
+                reviewgate_core::Finding {
+                    id: "adversarial:rg_001".to_string(),
+                    angle_id: None,
+                    scope: reviewgate_core::FindingScope::Pr,
+                    severity: Severity::P2,
+                    confidence: 0.9,
+                    file: None,
+                    line: None,
+                    title: "Second finding".to_string(),
+                    detail: None,
+                    agent_instruction: "Fix the second issue.".to_string(),
+                },
+            ],
+            notes: vec![],
+        };
+
+        let aggregate = aggregate_angle_artifacts(
+            "abc123",
+            "deepseek/deepseek-v4-flash",
+            vec![(ADVERSARIAL_REVIEW_ANGLE, adversarial)],
+        )
+        .expect("aggregate builds");
+
+        assert_eq!(aggregate.findings[0].id, "adversarial:rg_001");
+        assert_eq!(aggregate.findings[1].id, "adversarial:rg_001~2");
+        assert_eq!(
+            aggregate.angle_results[0].finding_ids,
+            vec![
+                "adversarial:rg_001".to_string(),
+                "adversarial:rg_001~2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn aggregate_angle_artifacts_bounds_long_generated_finding_ids() {
+        let long_id = "x".repeat(MAX_GENERATED_FINDING_ID_CHARS + 100);
+        let adversarial = ReviewArtifact {
+            score: 3,
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "Adversarial review found one issue.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            findings: vec![reviewgate_core::Finding {
+                id: long_id,
+                angle_id: None,
+                scope: reviewgate_core::FindingScope::Pr,
+                severity: Severity::P2,
+                confidence: 0.9,
+                file: None,
+                line: None,
+                title: "Long id".to_string(),
+                detail: None,
+                agent_instruction: "Keep generated IDs bounded.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let aggregate = aggregate_angle_artifacts(
+            "abc123",
+            "deepseek/deepseek-v4-flash",
+            vec![(ADVERSARIAL_REVIEW_ANGLE, adversarial)],
+        )
+        .expect("aggregate builds");
+
+        assert!(aggregate.findings[0].id.starts_with("adversarial:finding:"));
+        assert!(aggregate.findings[0].id.chars().count() <= MAX_GENERATED_FINDING_ID_CHARS);
+    }
+
+    #[test]
+    fn aggregate_angle_artifacts_rejects_duplicate_angle_ids() {
+        let artifact = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "Review found no issues.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+        let duplicate = ReviewAngle {
+            id: GENERAL_REVIEW_ANGLE.id,
+            name: "Duplicate",
+            prompt: GENERAL_REVIEW_ANGLE.prompt,
+            reason: "Duplicate angle id.",
+        };
+
+        let error = aggregate_angle_artifacts(
+            "abc123",
+            "deepseek/deepseek-v4-flash",
+            vec![
+                (GENERAL_REVIEW_ANGLE, artifact.clone()),
+                (duplicate, artifact),
+            ],
+        )
+        .expect_err("duplicate angle ids are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate ReviewGate review angle id")
+        );
     }
 
     #[test]

@@ -343,7 +343,7 @@ impl ReviewArtifact {
     }
 
     pub fn with_computed_score(mut self) -> Result<Self, ReviewGateError> {
-        self.score = compute_score(&self.findings);
+        self.score = compute_effective_score(&self.findings, &self.angle_results);
         self.target_score = DEFAULT_TARGET_SCORE;
         self.status = if self.score >= DEFAULT_TARGET_SCORE {
             ReviewStatus::Passed
@@ -385,6 +385,15 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
         .map(|finding| finding.severity.score_ceiling())
         .min()
         .unwrap_or(5)
+}
+
+pub fn compute_effective_score(findings: &[Finding], angle_results: &[ReviewAngleResult]) -> u8 {
+    let finding_score = compute_score(findings);
+    angle_results
+        .iter()
+        .map(|angle| angle.score)
+        .min()
+        .map_or(finding_score, |angle_score| angle_score.min(finding_score))
 }
 
 pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> ReviewMetrics {
@@ -1693,6 +1702,40 @@ mod tests {
             .expect("computed artifact is valid");
 
         assert_eq!(artifact.score, 3);
+        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
+    }
+
+    #[test]
+    fn computed_score_includes_failed_angle_results() {
+        let artifact = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "General review passed but another angle failed.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![ReviewAngleResult {
+                id: "adversarial".to_string(),
+                name: "Adversarial".to_string(),
+                score: 0,
+                status: ReviewStatus::NeedsChanges,
+                verdict: "Adversarial review angle failed.".to_string(),
+                model: "balanced".to_string(),
+                finding_ids: vec![],
+            }],
+            findings: vec![],
+            notes: vec![],
+        };
+
+        let artifact = artifact
+            .with_computed_score()
+            .expect("computed artifact is valid");
+
+        assert_eq!(artifact.score, 0);
         assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
     }
 
