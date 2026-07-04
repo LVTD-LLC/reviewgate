@@ -388,7 +388,7 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
         }
         let mut artifact =
             aggregate_angle_artifacts(&context.reviewed_sha, &model, angle_artifacts)?;
-        append_failed_angle_reviews(&mut artifact, &model, failed_angles);
+        append_failed_angle_reviews(&mut artifact, &model, failed_angles)?;
         artifact
     };
 
@@ -1496,11 +1496,6 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
     }
 }
 
-#[cfg(test)]
-fn build_review_prompt(context: &ReviewContext) -> String {
-    build_review_prompt_for_angle(context, GENERAL_REVIEW_ANGLE)
-}
-
 fn build_review_prompt_for_angle(context: &ReviewContext, angle: ReviewAngle) -> String {
     let schema = include_str!("../../../schemas/reviewgate-review-output.schema.json");
     let mut prompt = String::new();
@@ -1603,6 +1598,10 @@ fn aggregate_angle_artifacts(
     default_model: &str,
     angle_artifacts: Vec<(ReviewAngle, ReviewArtifact)>,
 ) -> Result<ReviewArtifact> {
+    if angle_artifacts.is_empty() {
+        bail!("at least one ReviewGate review angle artifact is required");
+    }
+
     let mut models = Vec::new();
     let mut findings = Vec::new();
     let mut angle_results = Vec::new();
@@ -1737,7 +1736,7 @@ fn append_failed_angle_reviews(
     artifact: &mut ReviewArtifact,
     default_model: &str,
     failed_angles: Vec<(ReviewAngle, String)>,
-) {
+) -> Result<()> {
     for (angle, error) in failed_angles {
         let verdict = format!("{} review angle failed: {error}", angle.name);
         artifact.review_stages.push(ReviewStage {
@@ -1761,6 +1760,8 @@ fn append_failed_angle_reviews(
     artifact.score = compute_effective_score(&artifact.findings, &artifact.angle_results);
     artifact.status = status_for_score(artifact.score);
     artifact.verdict = aggregate_verdict(&artifact.angle_results);
+    artifact.validate()?;
+    Ok(())
 }
 
 fn append_missing_review_stages(stages: &mut Vec<ReviewStage>, candidates: Vec<ReviewStage>) {
@@ -2592,7 +2593,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
         };
 
-        let prompt = build_review_prompt(&context);
+        let prompt = build_review_prompt_for_angle(&context, GENERAL_REVIEW_ANGLE);
 
         assert!(prompt.contains("reviewed_sha: abc123"));
         assert!(!prompt.contains("target_score"));
@@ -2734,7 +2735,8 @@ diff --git a/src/lib.rs b/src/lib.rs
                 ADVERSARIAL_REVIEW_ANGLE,
                 "adversarial review angle returned invalid JSON".to_string(),
             )],
-        );
+        )
+        .expect("failed angle append validates");
 
         assert_eq!(aggregate.score, 0);
         assert_eq!(aggregate.status, ReviewStatus::NeedsChanges);
@@ -2903,6 +2905,18 @@ diff --git a/src/lib.rs b/src/lib.rs
             error
                 .to_string()
                 .contains("duplicate ReviewGate review angle id")
+        );
+    }
+
+    #[test]
+    fn aggregate_angle_artifacts_rejects_empty_angle_artifacts() {
+        let error = aggregate_angle_artifacts("abc123", "deepseek/deepseek-v4-flash", vec![])
+            .expect_err("empty angle artifacts are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("at least one ReviewGate review angle artifact is required")
         );
     }
 

@@ -389,6 +389,8 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
 
 pub fn compute_effective_score(findings: &[Finding], angle_results: &[ReviewAngleResult]) -> u8 {
     let finding_score = compute_score(findings);
+    // Enabled angle results are part of the gate: an incomplete angle uses score 0 so missing
+    // coverage cannot be reported as a clean 5/5 just because another angle found no findings.
     angle_results
         .iter()
         .map(|angle| angle.score)
