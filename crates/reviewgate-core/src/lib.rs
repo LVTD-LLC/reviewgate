@@ -633,7 +633,7 @@ pub struct SummaryOptions {
     pub inline_min_severity: Severity,
     pub inline_min_confidence: f64,
     pub inline_comments_available: bool,
-    pub inline_posted_finding_ids: Option<Vec<String>>,
+    pub posted_finding_ids: Option<Vec<String>>,
     pub cost_history_limit: usize,
     pub summary_style: SummaryStyle,
 }
@@ -645,7 +645,7 @@ impl Default for SummaryOptions {
             inline_min_severity: Severity::P2,
             inline_min_confidence: 0.8,
             inline_comments_available: true,
-            inline_posted_finding_ids: None,
+            posted_finding_ids: None,
             cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
             summary_style: SummaryStyle::Concise,
         }
@@ -879,10 +879,10 @@ fn render_concise_summary_body(
         "Findings: {} total, {} blocking, {} inline candidates\n",
         metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
     ));
-    if let Some(posted_ids) = &options.inline_posted_finding_ids
+    if let Some(posted_ids) = &options.posted_finding_ids
         && !posted_ids.is_empty()
     {
-        output.push_str(&format!("Inline comments: {} posted.\n", posted_ids.len()));
+        output.push_str(&format!("Finding comments: {} posted.\n", posted_ids.len()));
     }
     if !artifact.notes.is_empty() {
         output.push_str(&format!(
@@ -895,6 +895,10 @@ fn render_concise_summary_body(
         output.push('\n');
         if metrics.finding_count == 0 {
             output.push_str("No findings. Re-run ReviewGate if new commits land.\n");
+        } else if has_posted_finding_comments(options) {
+            output.push_str(
+                "Findings are posted as individual comments. See the JSON artifact for the full machine-readable review.\n",
+            );
         } else if metrics.inline_eligible_count > 0 {
             output.push_str(
                 "Eligible line-specific findings are posted inline. See the JSON artifact for the full machine-readable review.\n",
@@ -906,15 +910,12 @@ fn render_concise_summary_body(
         }
     } else {
         output.push('\n');
-        let inline_visibility_reason = if has_posted_inline_comments(options) {
-            format!(
-                "{} not posted inline",
-                if fallback_findings.len() == 1 {
-                    "it was"
-                } else {
-                    "they were"
-                }
-            )
+        let inline_visibility_reason = if has_posted_finding_comments(options) {
+            if fallback_findings.len() == 1 {
+                "it was not posted as an individual finding comment".to_string()
+            } else {
+                "they were not posted as individual finding comments".to_string()
+            }
         } else if options.inline_comments_available {
             format!(
                 "{} not eligible for inline comments",
@@ -1297,9 +1298,9 @@ fn escape_html_text(value: &str) -> String {
     escaped
 }
 
-fn has_posted_inline_comments(options: &SummaryOptions) -> bool {
+fn has_posted_finding_comments(options: &SummaryOptions) -> bool {
     options
-        .inline_posted_finding_ids
+        .posted_finding_ids
         .as_ref()
         .is_some_and(|posted_ids| !posted_ids.is_empty())
 }
@@ -1318,7 +1319,7 @@ fn fallback_summary_findings<'a>(
                     .is_at_or_above(options.summary_min_severity)
         })
         .filter(|finding| {
-            if let Some(posted_ids) = &options.inline_posted_finding_ids {
+            if let Some(posted_ids) = &options.posted_finding_ids {
                 !posted_ids.iter().any(|id| id == &finding.id)
             } else {
                 !options.inline_comments_available
@@ -1341,12 +1342,12 @@ fn inline_skip_reason(finding: &Finding, options: &SummaryOptions) -> &'static s
         "below the inline severity floor"
     } else if finding.confidence < options.inline_min_confidence {
         "below the inline confidence floor"
-    } else if has_posted_inline_comments(options) {
-        "not posted inline"
+    } else if has_posted_finding_comments(options) {
+        "not posted as an individual finding comment"
     } else if !options.inline_comments_available {
         "inline comments were disabled or could not be published"
     } else {
-        "not posted inline"
+        "not posted as an individual finding comment"
     }
 }
 
@@ -1917,7 +1918,7 @@ mod tests {
     }
 
     #[test]
-    fn concise_summary_keeps_only_unposted_inline_findings_when_posted_ids_are_known() {
+    fn concise_summary_keeps_only_unposted_findings_when_posted_ids_are_known() {
         let artifact = ReviewArtifact {
             score: 1,
             target_score: 5,
@@ -1948,7 +1949,7 @@ mod tests {
                     confidence: 0.95,
                     file: Some("crates/reviewgate-cli/src/main.rs".to_string()),
                     line: Some(1630),
-                    title: "API key leak already posted inline".to_string(),
+                    title: "API key leak already posted separately".to_string(),
                     detail: None,
                     agent_instruction: "Do not duplicate this in the summary.".to_string(),
                 },
@@ -1960,18 +1961,20 @@ mod tests {
             &artifact,
             SummaryOptions {
                 inline_comments_available: false,
-                inline_posted_finding_ids: Some(vec!["F002".to_string()]),
+                posted_finding_ids: Some(vec!["F002".to_string()]),
                 ..SummaryOptions::default()
             },
             None,
         )
         .expect("summary renders");
 
-        assert!(summary.contains("1 finding is kept here because it was not posted inline."));
-        assert!(summary.contains("Inline comments: 1 posted."));
+        assert!(summary.contains(
+            "1 finding is kept here because it was not posted as an individual finding comment."
+        ));
+        assert!(summary.contains("Finding comments: 1 posted."));
         assert!(summary.contains("P0: Score computation uses wrong line"));
-        assert!(summary.contains("not posted inline"));
-        assert!(!summary.contains("- P0: API key leak already posted inline"));
+        assert!(summary.contains("not posted as an individual finding comment"));
+        assert!(!summary.contains("- P0: API key leak already posted separately"));
         assert!(!summary.contains("Do not duplicate this in the summary"));
     }
 

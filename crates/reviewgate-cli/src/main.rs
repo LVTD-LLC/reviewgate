@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,9 +16,11 @@ use reviewgate_core::{
     render_summary_with_options,
 };
 use reviewgate_github::{
-    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
-    SummaryCommentAction, plan_inline_comment_drafts, plan_summary_comment_publish,
-    posted_inline_finding_ids, resolve_inline_comment_drafts_to_changed_lines,
+    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, FindingCommentAction,
+    InlineCommentDraft, SummaryCommentAction, plan_finding_comment_drafts,
+    plan_finding_comment_publish, plan_inline_comment_drafts, plan_summary_comment_publish,
+    posted_inline_finding_ids, posted_issue_finding_ids,
+    resolve_inline_comment_drafts_to_changed_lines,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -124,12 +127,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
-    /// Publish eligible ReviewGate findings as inline pull request comments.
+    /// Publish eligible ReviewGate findings as inline or separate pull request comments.
     PublishInlineComments {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         input: PathBuf,
+        #[arg(long)]
+        summary_min_severity: Option<String>,
         #[arg(long)]
         inline_min_severity: Option<String>,
         #[arg(long)]
@@ -234,6 +239,7 @@ fn main() -> Result<()> {
         Command::PublishInlineComments {
             repo,
             input,
+            summary_min_severity,
             inline_min_severity,
             inline_min_confidence,
             publish_inline_comments: publish_inline_comments_enabled,
@@ -241,6 +247,7 @@ fn main() -> Result<()> {
         } => publish_inline_comments(PublishInlineCommentsOptions {
             repo,
             input,
+            summary_min_severity,
             inline_min_severity,
             inline_min_confidence,
             publish_inline_comments: publish_inline_comments_enabled,
@@ -375,6 +382,7 @@ struct RenderSummaryOptions {
 struct PublishInlineCommentsOptions {
     repo: PathBuf,
     input: PathBuf,
+    summary_min_severity: Option<String>,
     inline_min_severity: Option<String>,
     inline_min_confidence: Option<f64>,
     publish_inline_comments: bool,
@@ -828,7 +836,7 @@ fn render_start_signal_body(existing: Option<&ExistingSummaryComment>) -> Result
     }
     body.push_str("# ReviewGate: running\n\n");
     body.push_str(
-        "ReviewGate is reviewing this PR. The final score, concise summary, and inline comments will replace this message when the run completes.\n",
+        "ReviewGate is reviewing this PR. The final score, concise summary, and finding comments will replace this message when the run completes.\n",
     );
     Ok(body)
 }
@@ -859,7 +867,7 @@ fn publish_inline_comments(options: PublishInlineCommentsOptions) -> Result<()> 
                 "false",
             )?;
             println!(
-                "::warning title=ReviewGate inline comments::Inline comment publishing exited early ({error}). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
+                "::warning title=ReviewGate finding comments::Finding comment publishing exited early ({error}). The final summary will keep compact fallback entries, and the review JSON contains the full findings."
             );
             Ok(())
         }
@@ -868,39 +876,44 @@ fn publish_inline_comments(options: PublishInlineCommentsOptions) -> Result<()> 
 
 fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Result<bool> {
     if !options.publish_inline_comments {
-        println!("ReviewGate inline comments skipped: publish_inline_comments=false.");
+        println!("ReviewGate finding comments skipped: publish_inline_comments=false.");
         return Ok(false);
     }
     if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
-        println!("ReviewGate inline comments skipped: not a pull_request event.");
+        println!("ReviewGate finding comments skipped: not a pull_request event.");
         return Ok(false);
     }
     if !options.input.is_file() {
         println!(
-            "ReviewGate inline comments skipped: missing {}.",
+            "ReviewGate finding comments skipped: missing {}.",
             options.input.display()
         );
         return Ok(false);
     }
     if !github_token_available() {
-        println!("ReviewGate inline comments skipped: GitHub token is empty.");
+        println!("ReviewGate finding comments skipped: GitHub token is empty.");
         return Ok(false);
     }
 
     let Some(event) = read_github_event()? else {
-        println!("ReviewGate inline comments skipped: missing GitHub event.");
+        println!("ReviewGate finding comments skipped: missing GitHub event.");
         return Ok(false);
     };
     let Some(pr_number) = pull_request_number(&event) else {
-        println!("ReviewGate inline comments skipped: missing PR number.");
+        println!("ReviewGate finding comments skipped: missing PR number.");
         return Ok(false);
     };
     let Some(commit_id) = pull_request_head_sha(&event) else {
-        println!("ReviewGate inline comments skipped: missing PR head SHA.");
+        println!("ReviewGate finding comments skipped: missing PR head SHA.");
         return Ok(false);
     };
 
     let artifact = read_artifact(&options.input)?;
+    let summary_min_severity = parse_optional_severity(
+        options.summary_min_severity.as_deref(),
+        "summary_min_severity",
+    )?
+    .unwrap_or(Severity::P4);
     let inline_min_severity = parse_optional_severity(
         options.inline_min_severity.as_deref(),
         "inline_min_severity",
@@ -913,7 +926,9 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
 
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
     let repository = github_repository()?;
+    let issue_comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let existing_comments = fetch_pull_comments(&repo, &repository, pr_number)?;
+    let mut posted_inline_ids: BTreeSet<String> = posted_inline_finding_ids(&existing_comments);
     let drafts = plan_inline_comment_drafts(
         &artifact.findings,
         &existing_comments,
@@ -932,18 +947,15 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     }
     if skipped_unanchored > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Skipped {skipped_unanchored} inline comment(s) with no added line in the finding file."
+            "::warning title=ReviewGate inline comments::Skipped {skipped_unanchored} inline comment(s) with no added line in the finding file; ReviewGate will publish separate finding comments when possible."
         );
     }
-    if drafts.is_empty() {
-        if skipped_unanchored == 0 {
-            println!("ReviewGate inline comments: no new eligible findings.");
-            return Ok(true);
-        }
+    if drafts.is_empty() && skipped_unanchored == 0 {
+        println!("ReviewGate inline comments: no new eligible findings.");
+    } else if drafts.is_empty() {
         println!(
             "ReviewGate inline comments: no publishable changed-line anchors after filtering."
         );
-        return Ok(false);
     }
 
     let mut posted = 0u32;
@@ -958,11 +970,12 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
         )
         .is_ok()
         {
+            posted_inline_ids.insert(draft.finding_id.clone());
             posted += 1;
         } else {
             failed += 1;
             eprintln!(
-                "ReviewGate inline comment could not be posted for finding {}. Keeping it as a compact fallback in the summary.",
+                "ReviewGate inline comment could not be posted for finding {}. Publishing a separate finding comment when possible.",
                 draft.finding_id
             );
         }
@@ -974,11 +987,71 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     );
     if failed > 0 || skipped_unanchored > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Failed or skipped {} inline comment(s). The final summary will keep compact fallback entries, and the review JSON contains the full findings.",
+            "::warning title=ReviewGate inline comments::Failed or skipped {} inline comment(s). ReviewGate will publish separate finding comments when possible, and the review JSON contains the full findings.",
             failed + skipped_unanchored
         );
     }
-    Ok(failed == 0 && skipped_unanchored == 0)
+
+    let finding_comment_drafts = plan_finding_comment_drafts(
+        &artifact.findings,
+        artifact.target_score,
+        summary_min_severity,
+        &posted_inline_ids,
+    );
+    let finding_comment_plan =
+        plan_finding_comment_publish(finding_comment_drafts, &issue_comments);
+    let mut finding_created = 0u32;
+    let mut finding_updated = 0u32;
+    let mut finding_noop = 0u32;
+    let mut finding_failed = 0u32;
+    for action in finding_comment_plan.actions {
+        match action {
+            FindingCommentAction::Create { finding_id, body } => {
+                if create_issue_comment(&repo, &repository, pr_number, &body).is_ok() {
+                    finding_created += 1;
+                } else {
+                    finding_failed += 1;
+                    eprintln!(
+                        "ReviewGate finding comment could not be created for finding {finding_id}."
+                    );
+                }
+            }
+            FindingCommentAction::Update {
+                id,
+                finding_id,
+                body,
+            } => {
+                if update_issue_comment(&repo, &repository, id, &body).is_ok() {
+                    finding_updated += 1;
+                } else {
+                    finding_failed += 1;
+                    eprintln!(
+                        "ReviewGate finding comment {id} could not be updated for finding {finding_id}."
+                    );
+                }
+            }
+            FindingCommentAction::Noop { .. } => {
+                finding_noop += 1;
+            }
+        }
+    }
+    let mut stale_delete_failed = 0u32;
+    for stale_id in finding_comment_plan.stale_comment_ids {
+        if delete_issue_comment(&repo, &repository, stale_id).is_err() {
+            stale_delete_failed += 1;
+            eprintln!("ReviewGate stale finding comment {stale_id} could not be deleted.");
+        }
+    }
+    println!(
+        "ReviewGate separate finding comments created: {finding_created}; updated: {finding_updated}; already current: {finding_noop}; failed: {finding_failed}; stale delete failures: {stale_delete_failed}."
+    );
+    if finding_failed > 0 || stale_delete_failed > 0 {
+        println!(
+            "::warning title=ReviewGate finding comments::Failed to publish or clean up {} separate finding comment(s). The final summary will keep compact fallback entries for findings without comments.",
+            finding_failed + stale_delete_failed
+        );
+    }
+    Ok(finding_failed == 0 && stale_delete_failed == 0)
 }
 
 fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> serde_json::Value {
@@ -1020,15 +1093,7 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
     let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let previous_state = reviewgate_github::find_summary_comment(&comments)
         .and_then(|comment| recover_summary_state(&comment.body, "summary publish"));
-    let inline_posted_finding_ids = match fetch_pull_comments(&repo, &repository, pr_number) {
-        Ok(comments) => Some(posted_inline_finding_ids(&comments).into_iter().collect()),
-        Err(error) => {
-            println!(
-                "::warning title=ReviewGate summary::Could not inspect existing inline comments ({error}). The fallback summary may include findings that were posted inline."
-            );
-            None
-        }
-    };
+    let posted_finding_ids = collect_posted_finding_ids(&repo, &repository, pr_number, &comments);
 
     let artifact = read_artifact(&options.input)?.with_computed_score()?;
     let summary_min_severity = parse_optional_severity(
@@ -1053,7 +1118,7 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
             inline_min_severity,
             inline_min_confidence,
             inline_comments_available: options.inline_comments_available,
-            inline_posted_finding_ids,
+            posted_finding_ids,
             summary_style,
             ..SummaryOptions::default()
         },
@@ -1085,6 +1150,31 @@ fn publish_summary(options: PublishSummaryOptions) -> Result<()> {
         println!("Deleted duplicate ReviewGate summary comment {duplicate_id}.");
     }
     Ok(())
+}
+
+fn collect_posted_finding_ids(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    issue_comments: &[ExistingSummaryComment],
+) -> Option<Vec<String>> {
+    let mut posted_ids = posted_issue_finding_ids(issue_comments);
+    match fetch_pull_comments(repo, repository, pr_number) {
+        Ok(comments) => {
+            posted_ids.extend(posted_inline_finding_ids(&comments));
+            Some(posted_ids.into_iter().collect())
+        }
+        Err(error) => {
+            println!(
+                "::warning title=ReviewGate summary::Could not inspect existing inline comments ({error}). The fallback summary may include findings that were already posted as comments."
+            );
+            if posted_ids.is_empty() {
+                None
+            } else {
+                Some(posted_ids.into_iter().collect())
+            }
+        }
+    }
 }
 
 fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> Result<()> {
@@ -2147,8 +2237,8 @@ mod tests {
         assert!(!action.contains(concat!("- name: Enforce ", "ReviewGate")));
 
         let inline_start = action
-            .find("- name: Publish ReviewGate inline comments")
-            .expect("inline step exists");
+            .find("- name: Publish ReviewGate finding comments")
+            .expect("finding comment step exists");
         let summary_start = action
             .find("- name: Publish ReviewGate summary")
             .expect("summary step exists");
@@ -2164,6 +2254,7 @@ mod tests {
 
         assert!(inline_step.contains("id: inline-comments"));
         assert!(inline_step.contains("publish-inline-comments"));
+        assert!(inline_step.contains("--summary-min-severity"));
         assert!(inline_step.contains("GITHUB_OUTPUT"));
         assert!(!inline_step.contains("scan(\"<!-- reviewgate-finding:.*? -->\")"));
         assert!(!summary_step.contains("continue-on-error: true"));

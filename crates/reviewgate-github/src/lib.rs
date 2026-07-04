@@ -6,6 +6,7 @@ use reviewgate_core::{
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
+pub const FINDING_COMMENT_MARKER: &str = "<!-- reviewgate-finding-comment -->";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingSummaryComment {
@@ -169,6 +170,35 @@ pub struct InlineCommentDraft {
     pub path: String,
     pub line: u32,
     pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindingCommentDraft {
+    pub finding_id: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindingCommentAction {
+    Create {
+        finding_id: String,
+        body: String,
+    },
+    Update {
+        id: u64,
+        finding_id: String,
+        body: String,
+    },
+    Noop {
+        id: u64,
+        finding_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FindingCommentPublishPlan {
+    pub actions: Vec<FindingCommentAction>,
+    pub stale_comment_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -351,14 +381,18 @@ fn decode_marker_payload(value: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-pub fn inline_comment_marker(finding_id: &str) -> String {
+pub fn finding_comment_marker(finding_id: &str) -> String {
     format!(
         "{INLINE_COMMENT_MARKER_PREFIX}{} -->",
         encode_marker_payload(finding_id)
     )
 }
 
-pub fn inline_comment_finding_ids(body: &str) -> Vec<String> {
+pub fn inline_comment_marker(finding_id: &str) -> String {
+    finding_comment_marker(finding_id)
+}
+
+pub fn finding_comment_ids(body: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let mut rest = body;
     while let Some(start) = rest.find(INLINE_COMMENT_MARKER_PREFIX) {
@@ -375,22 +409,66 @@ pub fn inline_comment_finding_ids(body: &str) -> Vec<String> {
     ids
 }
 
+pub fn inline_comment_finding_ids(body: &str) -> Vec<String> {
+    finding_comment_ids(body)
+}
+
 pub fn posted_inline_finding_ids(comments: &[ExistingInlineComment]) -> BTreeSet<String> {
     comments
         .iter()
-        .flat_map(|comment| inline_comment_finding_ids(&comment.body))
+        .flat_map(|comment| finding_comment_ids(&comment.body))
+        .collect()
+}
+
+pub fn posted_issue_finding_ids(comments: &[ExistingSummaryComment]) -> BTreeSet<String> {
+    comments
+        .iter()
+        .filter(|comment| is_reviewgate_finding_comment(comment))
+        .flat_map(|comment| finding_comment_ids(&comment.body))
         .collect()
 }
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
     let mut body = String::new();
-    body.push_str(&inline_comment_marker(&finding.id));
+    body.push_str(&finding_comment_marker(&finding.id));
     body.push_str("\n\n");
     body.push_str(&format!(
         "**{}: {}**\n\n",
         finding.severity.as_str(),
         finding.title
     ));
+    if let Some(detail) = &finding.detail
+        && !detail.trim().is_empty()
+    {
+        body.push_str(detail.trim());
+        body.push_str("\n\n");
+    }
+    body.push_str("Agent instruction: ");
+    body.push_str(finding.agent_instruction.trim());
+    body
+}
+
+pub fn render_finding_comment_body(finding: &Finding) -> String {
+    let mut body = String::new();
+    body.push_str(&finding_comment_marker(&finding.id));
+    body.push('\n');
+    body.push_str(FINDING_COMMENT_MARKER);
+    body.push_str("\n\n");
+    body.push_str(&format!(
+        "**{}: {}**\n\n",
+        finding.severity.as_str(),
+        finding.title
+    ));
+    body.push_str(&format!("Scope: `{}`", finding.scope.as_str()));
+    if let Some(file) = finding.file.as_deref() {
+        body.push_str(&format!(" (`{file}`"));
+        if let Some(line) = finding.line {
+            body.push_str(&format!(":{line}"));
+        }
+        body.push(')');
+    }
+    body.push('\n');
+    body.push_str(&format!("Confidence: `{:.2}`\n\n", finding.confidence));
     if let Some(detail) = &finding.detail
         && !detail.trim().is_empty()
     {
@@ -416,7 +494,7 @@ pub fn plan_inline_comment_drafts(
         .filter_map(|finding| {
             let path = finding.file.as_ref()?;
             let line = finding.line?;
-            let marker = inline_comment_marker(&finding.id);
+            let marker = finding_comment_marker(&finding.id);
             if existing_comments
                 .iter()
                 .any(|comment| comment.body.contains(&marker))
@@ -431,6 +509,102 @@ pub fn plan_inline_comment_drafts(
             })
         })
         .collect()
+}
+
+pub fn plan_finding_comment_drafts(
+    findings: &[Finding],
+    target_score: u8,
+    summary_min_severity: Severity,
+    posted_inline_finding_ids: &BTreeSet<String>,
+) -> Vec<FindingCommentDraft> {
+    findings
+        .iter()
+        .filter(|finding| {
+            finding.is_blocking(target_score)
+                || finding.severity.is_at_or_above(summary_min_severity)
+        })
+        .filter(|finding| !posted_inline_finding_ids.contains(&finding.id))
+        .map(|finding| FindingCommentDraft {
+            finding_id: finding.id.clone(),
+            body: render_finding_comment_body(finding),
+        })
+        .collect()
+}
+
+pub fn plan_finding_comment_publish(
+    drafts: Vec<FindingCommentDraft>,
+    existing_comments: &[ExistingSummaryComment],
+) -> FindingCommentPublishPlan {
+    let desired_ids: BTreeSet<String> = drafts
+        .iter()
+        .map(|draft| draft.finding_id.clone())
+        .collect();
+    let mut comments_by_finding_id: BTreeMap<String, Vec<&ExistingSummaryComment>> =
+        BTreeMap::new();
+
+    for comment in existing_comments
+        .iter()
+        .filter(|comment| is_reviewgate_finding_comment(comment))
+    {
+        for finding_id in finding_comment_ids(&comment.body) {
+            comments_by_finding_id
+                .entry(finding_id)
+                .or_default()
+                .push(comment);
+        }
+    }
+
+    let mut actions = Vec::new();
+    let mut stale_comment_ids = BTreeSet::new();
+
+    for draft in drafts {
+        let existing = comments_by_finding_id.get(&draft.finding_id);
+        if let Some(existing) = existing.and_then(|comments| comments.last()) {
+            if existing.body == draft.body {
+                actions.push(FindingCommentAction::Noop {
+                    id: existing.id,
+                    finding_id: draft.finding_id.clone(),
+                });
+            } else {
+                actions.push(FindingCommentAction::Update {
+                    id: existing.id,
+                    finding_id: draft.finding_id.clone(),
+                    body: draft.body,
+                });
+            }
+        } else {
+            actions.push(FindingCommentAction::Create {
+                finding_id: draft.finding_id.clone(),
+                body: draft.body,
+            });
+        }
+
+        if let Some(existing) = comments_by_finding_id.get(&draft.finding_id) {
+            for duplicate in existing.iter().rev().skip(1) {
+                stale_comment_ids.insert(duplicate.id);
+            }
+        }
+    }
+
+    for (finding_id, comments) in comments_by_finding_id {
+        if desired_ids.contains(&finding_id) {
+            continue;
+        }
+        for comment in comments {
+            stale_comment_ids.insert(comment.id);
+        }
+    }
+
+    FindingCommentPublishPlan {
+        actions,
+        stale_comment_ids: stale_comment_ids.into_iter().collect(),
+    }
+}
+
+fn is_reviewgate_finding_comment(comment: &ExistingSummaryComment) -> bool {
+    is_github_actions_author(comment.author_login.as_deref())
+        && comment.body.contains(FINDING_COMMENT_MARKER)
+        && !finding_comment_ids(&comment.body).is_empty()
 }
 
 #[cfg(test)]
@@ -823,6 +997,178 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         let drafts = plan_inline_comment_drafts(&[file_scope, pr_scope], &[], Severity::P2, 0.8);
 
         assert!(drafts.is_empty());
+    }
+
+    #[test]
+    fn plans_finding_comments_for_visible_findings_not_posted_inline() {
+        let file_scope = Finding {
+            id: "rg_file".to_string(),
+            scope: reviewgate_core::FindingScope::File,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: None,
+            title: "File-level concern".to_string(),
+            detail: Some("This needs a separate discussion.".to_string()),
+            agent_instruction: "Handle at file scope.".to_string(),
+        };
+        let posted_inline = Finding {
+            id: "rg_inline".to_string(),
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "Already inline".to_string(),
+            detail: None,
+            agent_instruction: "Do not duplicate.".to_string(),
+        };
+        let hidden_low_severity = Finding {
+            id: "rg_hidden".to_string(),
+            severity: Severity::P4,
+            title: "Hidden advisory".to_string(),
+            ..file_scope.clone()
+        };
+        let posted_inline_ids = BTreeSet::from(["rg_inline".to_string()]);
+
+        let drafts = plan_finding_comment_drafts(
+            &[file_scope, posted_inline, hidden_low_severity],
+            5,
+            Severity::P2,
+            &posted_inline_ids,
+        );
+
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].finding_id, "rg_file");
+        assert!(drafts[0].body.contains(&finding_comment_marker("rg_file")));
+        assert!(drafts[0].body.contains(FINDING_COMMENT_MARKER));
+        assert!(drafts[0].body.contains("Scope: `file` (`src/lib.rs`)"));
+        assert!(
+            drafts[0]
+                .body
+                .contains("Agent instruction: Handle at file scope.")
+        );
+    }
+
+    #[test]
+    fn plans_finding_comment_updates_and_stale_deletes() {
+        let existing = vec![
+            ExistingSummaryComment {
+                id: 1,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{}\n{}\n\nold body",
+                    finding_comment_marker("rg_file"),
+                    FINDING_COMMENT_MARKER
+                ),
+            },
+            ExistingSummaryComment {
+                id: 2,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{}\n{}\n\nduplicate old body",
+                    finding_comment_marker("rg_file"),
+                    FINDING_COMMENT_MARKER
+                ),
+            },
+            ExistingSummaryComment {
+                id: 3,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{}\n{}\n\nstale body",
+                    finding_comment_marker("rg_stale"),
+                    FINDING_COMMENT_MARKER
+                ),
+            },
+            ExistingSummaryComment {
+                id: 4,
+                author_login: Some("maintainer".to_string()),
+                body: finding_comment_marker("rg_user"),
+            },
+        ];
+        let drafts = vec![
+            FindingCommentDraft {
+                finding_id: "rg_file".to_string(),
+                body: format!(
+                    "{}\n{}\n\nnew body",
+                    finding_comment_marker("rg_file"),
+                    FINDING_COMMENT_MARKER
+                ),
+            },
+            FindingCommentDraft {
+                finding_id: "rg_new".to_string(),
+                body: format!(
+                    "{}\n{}\n\nnew finding",
+                    finding_comment_marker("rg_new"),
+                    FINDING_COMMENT_MARKER
+                ),
+            },
+        ];
+
+        let plan = plan_finding_comment_publish(drafts, &existing);
+
+        assert_eq!(
+            plan.actions,
+            vec![
+                FindingCommentAction::Update {
+                    id: 2,
+                    finding_id: "rg_file".to_string(),
+                    body: format!(
+                        "{}\n{}\n\nnew body",
+                        finding_comment_marker("rg_file"),
+                        FINDING_COMMENT_MARKER
+                    ),
+                },
+                FindingCommentAction::Create {
+                    finding_id: "rg_new".to_string(),
+                    body: format!(
+                        "{}\n{}\n\nnew finding",
+                        finding_comment_marker("rg_new"),
+                        FINDING_COMMENT_MARKER
+                    ),
+                },
+            ]
+        );
+        assert_eq!(plan.stale_comment_ids, vec![1, 3]);
+    }
+
+    #[test]
+    fn extracts_posted_issue_finding_ids_from_bot_comments_only() {
+        let comments = vec![
+            ExistingSummaryComment {
+                id: 1,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: render_finding_comment_body(&Finding {
+                    id: "separate finding".to_string(),
+                    scope: reviewgate_core::FindingScope::Pr,
+                    severity: Severity::P1,
+                    confidence: 0.95,
+                    file: None,
+                    line: None,
+                    title: "Already posted".to_string(),
+                    detail: None,
+                    agent_instruction: "No duplicate.".to_string(),
+                }),
+            },
+            ExistingSummaryComment {
+                id: 2,
+                author_login: Some("maintainer".to_string()),
+                body: finding_comment_marker("ignored"),
+            },
+            ExistingSummaryComment {
+                id: 3,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{}\n\n{}",
+                    SUMMARY_MARKER,
+                    finding_comment_marker("summary")
+                ),
+            },
+        ];
+
+        let ids = posted_issue_finding_ids(&comments);
+
+        assert_eq!(ids, BTreeSet::from(["separate finding".to_string()]));
     }
 
     #[test]
