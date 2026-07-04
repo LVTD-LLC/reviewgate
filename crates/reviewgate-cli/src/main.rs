@@ -836,7 +836,7 @@ fn render_start_signal_body(existing: Option<&ExistingSummaryComment>) -> Result
     }
     body.push_str("# ReviewGate: running\n\n");
     body.push_str(
-        "ReviewGate is reviewing this PR. The final score, concise summary, and finding comments will replace this message when the run completes.\n",
+        "ReviewGate is reviewing this PR. The final score, concise summary, and findings will replace this message when the run completes.\n",
     );
     Ok(body)
 }

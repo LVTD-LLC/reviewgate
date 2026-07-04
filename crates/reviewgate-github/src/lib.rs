@@ -6,6 +6,7 @@ use reviewgate_core::{
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
+pub const FINDING_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding-comment:";
 pub const FINDING_COMMENT_MARKER: &str = "<!-- reviewgate-finding-comment -->";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,20 +384,23 @@ fn decode_marker_payload(value: &str) -> Option<String> {
 
 pub fn finding_comment_marker(finding_id: &str) -> String {
     format!(
-        "{INLINE_COMMENT_MARKER_PREFIX}{} -->",
+        "{FINDING_COMMENT_MARKER_PREFIX}{} -->",
         encode_marker_payload(finding_id)
     )
 }
 
 pub fn inline_comment_marker(finding_id: &str) -> String {
-    finding_comment_marker(finding_id)
+    format!(
+        "{INLINE_COMMENT_MARKER_PREFIX}{} -->",
+        encode_marker_payload(finding_id)
+    )
 }
 
-pub fn finding_comment_ids(body: &str) -> Vec<String> {
+fn marker_payload_ids(body: &str, marker_prefix: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let mut rest = body;
-    while let Some(start) = rest.find(INLINE_COMMENT_MARKER_PREFIX) {
-        let payload_start = start + INLINE_COMMENT_MARKER_PREFIX.len();
+    while let Some(start) = rest.find(marker_prefix) {
+        let payload_start = start + marker_prefix.len();
         let payload_and_rest = &rest[payload_start..];
         let Some(payload_end) = payload_and_rest.find(" -->") else {
             break;
@@ -409,14 +413,22 @@ pub fn finding_comment_ids(body: &str) -> Vec<String> {
     ids
 }
 
+pub fn finding_comment_ids(body: &str) -> Vec<String> {
+    let mut ids = marker_payload_ids(body, FINDING_COMMENT_MARKER_PREFIX);
+    if body.contains(FINDING_COMMENT_MARKER) {
+        ids.extend(marker_payload_ids(body, INLINE_COMMENT_MARKER_PREFIX));
+    }
+    ids
+}
+
 pub fn inline_comment_finding_ids(body: &str) -> Vec<String> {
-    finding_comment_ids(body)
+    marker_payload_ids(body, INLINE_COMMENT_MARKER_PREFIX)
 }
 
 pub fn posted_inline_finding_ids(comments: &[ExistingInlineComment]) -> BTreeSet<String> {
     comments
         .iter()
-        .flat_map(|comment| finding_comment_ids(&comment.body))
+        .flat_map(|comment| inline_comment_finding_ids(&comment.body))
         .collect()
 }
 
@@ -430,7 +442,7 @@ pub fn posted_issue_finding_ids(comments: &[ExistingSummaryComment]) -> BTreeSet
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
     let mut body = String::new();
-    body.push_str(&finding_comment_marker(&finding.id));
+    body.push_str(&inline_comment_marker(&finding.id));
     body.push_str("\n\n");
     body.push_str(&format!(
         "**{}: {}**\n\n",
@@ -494,7 +506,7 @@ pub fn plan_inline_comment_drafts(
         .filter_map(|finding| {
             let path = finding.file.as_ref()?;
             let line = finding.line?;
-            let marker = finding_comment_marker(&finding.id);
+            let marker = inline_comment_marker(&finding.id);
             if existing_comments
                 .iter()
                 .any(|comment| comment.body.contains(&marker))
@@ -558,8 +570,11 @@ pub fn plan_finding_comment_publish(
     let mut stale_comment_ids = BTreeSet::new();
 
     for draft in drafts {
-        let existing = comments_by_finding_id.get(&draft.finding_id);
-        if let Some(existing) = existing.and_then(|comments| comments.last()) {
+        let existing = comments_by_finding_id
+            .get(&draft.finding_id)
+            .and_then(|comments| comments.iter().max_by_key(|comment| comment.id))
+            .copied();
+        if let Some(existing) = existing {
             if existing.body == draft.body {
                 actions.push(FindingCommentAction::Noop {
                     id: existing.id,
@@ -579,8 +594,11 @@ pub fn plan_finding_comment_publish(
             });
         }
 
-        if let Some(existing) = comments_by_finding_id.get(&draft.finding_id) {
-            for duplicate in existing.iter().rev().skip(1) {
+        if let Some(existing_comments) = comments_by_finding_id.get(&draft.finding_id) {
+            for duplicate in existing_comments
+                .iter()
+                .filter(|comment| Some(comment.id) != existing.map(|existing| existing.id))
+            {
                 stale_comment_ids.insert(duplicate.id);
             }
         }
@@ -1054,19 +1072,19 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
     fn plans_finding_comment_updates_and_stale_deletes() {
         let existing = vec![
             ExistingSummaryComment {
-                id: 1,
+                id: 2,
                 author_login: Some("github-actions[bot]".to_string()),
                 body: format!(
-                    "{}\n{}\n\nold body",
+                    "{}\n{}\n\nduplicate old body",
                     finding_comment_marker("rg_file"),
                     FINDING_COMMENT_MARKER
                 ),
             },
             ExistingSummaryComment {
-                id: 2,
+                id: 1,
                 author_login: Some("github-actions[bot]".to_string()),
                 body: format!(
-                    "{}\n{}\n\nduplicate old body",
+                    "{}\n{}\n\nold body",
                     finding_comment_marker("rg_file"),
                     FINDING_COMMENT_MARKER
                 ),
@@ -1164,11 +1182,26 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                     finding_comment_marker("summary")
                 ),
             },
+            ExistingSummaryComment {
+                id: 4,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: format!(
+                    "{}\n{}\n\nlegacy body",
+                    inline_comment_marker("legacy separate finding"),
+                    FINDING_COMMENT_MARKER
+                ),
+            },
         ];
 
         let ids = posted_issue_finding_ids(&comments);
 
-        assert_eq!(ids, BTreeSet::from(["separate finding".to_string()]));
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                "legacy separate finding".to_string(),
+                "separate finding".to_string()
+            ])
+        );
     }
 
     #[test]
@@ -1180,6 +1213,10 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         assert_eq!(
             inline_comment_marker("A-->B\nC"),
             "<!-- reviewgate-finding:A--%3EB%0AC -->"
+        );
+        assert_eq!(
+            finding_comment_marker("A-->B\nC"),
+            "<!-- reviewgate-finding-comment:A--%3EB%0AC -->"
         );
     }
 
