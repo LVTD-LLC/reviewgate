@@ -8,7 +8,7 @@ GitHub Action metadata lives at the repository root so users can install ReviewG
 
 Implementation scripts and release download helpers can live in this directory as the wrapper grows.
 
-The composite action stays thin: it collects inputs from GitHub Actions, passes them to the Rust binary, and lets the Rust crates own review logic, scoring, OpenRouter request construction, artifact validation, and summary rendering.
+The composite action stays thin: it collects inputs from GitHub Actions, passes them to the Rust binary, and lets the Rust crates own review logic, scoring, OpenRouter request construction, artifact validation, and summary rendering. The live review path currently runs separate general and adversarial prompts, then aggregates their findings into one artifact and one canonical PR summary.
 
 The action is review-only. It publishes findings and status, but it does not run an autonomous code repair loop inside CI.
 
@@ -41,7 +41,7 @@ Scores below `5` are reported as `needs_changes` in the JSON artifact and PR sum
 
 ## Runtime
 
-The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline or standalone PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, runs the built-in review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline or standalone PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count that the concise footer renders as the number of changed lines analyzed for the report.
 

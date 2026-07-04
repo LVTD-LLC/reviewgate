@@ -121,6 +121,8 @@ impl FindingScope {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Finding {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_id: Option<String>,
     #[serde(default)]
     pub scope: FindingScope,
     pub severity: Severity,
@@ -262,6 +264,42 @@ impl ReviewStage {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ReviewAngleResult {
+    pub id: String,
+    pub name: String,
+    pub score: u8,
+    pub status: ReviewStatus,
+    pub verdict: String,
+    pub model: String,
+    pub finding_ids: Vec<String>,
+}
+
+impl ReviewAngleResult {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.id.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent { field: "angle.id" });
+        }
+        if self.name.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "angle.name",
+            });
+        }
+        validate_score(self.score)?;
+        if self.verdict.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "angle.verdict",
+            });
+        }
+        if self.model.trim().is_empty() {
+            return Err(ReviewGateError::InvalidCostComponent {
+                field: "angle.model",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReviewArtifact {
     pub score: u8,
     #[serde(default = "default_target_score", skip_serializing)]
@@ -277,6 +315,8 @@ pub struct ReviewArtifact {
     pub metrics: Option<ReviewMetrics>,
     #[serde(default)]
     pub review_stages: Vec<ReviewStage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub angle_results: Vec<ReviewAngleResult>,
     pub findings: Vec<Finding>,
     pub notes: Vec<String>,
 }
@@ -296,6 +336,9 @@ impl ReviewArtifact {
         }
         for stage in &self.review_stages {
             stage.validate()?;
+        }
+        for angle in &self.angle_results {
+            angle.validate()?;
         }
         for finding in &self.findings {
             finding.validate()?;
@@ -835,6 +878,7 @@ fn render_concise_summary_body(
     output.push_str(artifact.verdict.trim());
     output.push_str("\n\n");
     render_score_block(output, artifact);
+    render_angle_score_table(output, artifact);
     output.push_str(&format!(
         "Findings: {} total, {} blocking, {} inline candidates\n",
         metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
@@ -866,6 +910,24 @@ fn render_score_block(output: &mut String, artifact: &ReviewArtifact) {
         "<h2 align=\"left\">Confidence Score: {}/5</h2>\n\n",
         artifact.score
     ));
+}
+
+fn render_angle_score_table(output: &mut String, artifact: &ReviewArtifact) {
+    if artifact.angle_results.is_empty() {
+        return;
+    }
+
+    output.push_str("| Review angle | Score | Findings |\n");
+    output.push_str("| --- | ---: | ---: |\n");
+    for angle in &artifact.angle_results {
+        output.push_str(&format!(
+            "| {} | {}/5 | {} |\n",
+            markdown_table_cell(&angle.name),
+            angle.score,
+            angle.finding_ids.len()
+        ));
+    }
+    output.push('\n');
 }
 
 fn render_summary_details(
@@ -1065,6 +1127,7 @@ mod tests {
     fn computes_score_from_highest_severity() {
         let findings = vec![Finding {
             id: "rg_001".to_string(),
+            angle_id: None,
             scope: FindingScope::Line,
             severity: Severity::P2,
             confidence: 0.9,
@@ -1082,6 +1145,7 @@ mod tests {
     fn p0_findings_cap_score_at_one() {
         let findings = vec![Finding {
             id: "rg_001".to_string(),
+            angle_id: None,
             scope: FindingScope::Line,
             severity: Severity::P0,
             confidence: 0.98,
@@ -1099,6 +1163,7 @@ mod tests {
     fn non_line_scope_findings_are_not_inline_eligible() {
         let finding = Finding {
             id: "rg_001".to_string(),
+            angle_id: None,
             scope: FindingScope::File,
             severity: Severity::P2,
             confidence: 0.95,
@@ -1122,6 +1187,7 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![finding],
             notes: vec![],
         };
@@ -1136,6 +1202,7 @@ mod tests {
         let findings = vec![
             Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 0.9,
@@ -1147,6 +1214,7 @@ mod tests {
             },
             Finding {
                 id: "rg_002".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.9,
@@ -1174,6 +1242,7 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1182,6 +1251,59 @@ mod tests {
         assert!(summary.starts_with(SUMMARY_MARKER));
         assert!(summary.contains("# Review Gate Summary"));
         assert!(summary.contains("<h2 align=\"left\">Confidence Score: 4/5</h2>"));
+    }
+
+    #[test]
+    fn renders_angle_score_table_when_angle_results_are_present() {
+        let raw = r#"{
+          "score": 3,
+          "reviewed_sha": "abc123",
+          "status": "needs_changes",
+          "verdict": "Adversarial review found one blocking issue.",
+          "models": ["deepseek/deepseek-v4-flash"],
+          "angle_results": [
+            {
+              "id": "general",
+              "name": "General",
+              "score": 5,
+              "status": "passed",
+              "verdict": "No general findings.",
+              "model": "deepseek/deepseek-v4-flash",
+              "finding_ids": []
+            },
+            {
+              "id": "adversarial",
+              "name": "Adversarial",
+              "score": 3,
+              "status": "needs_changes",
+              "verdict": "One correctness issue survived the skeptical pass.",
+              "model": "deepseek/deepseek-v4-flash",
+              "finding_ids": ["adversarial:rg_001"]
+            }
+          ],
+          "findings": [
+            {
+              "id": "adversarial:rg_001",
+              "angle_id": "adversarial",
+              "scope": "line",
+              "severity": "P2",
+              "confidence": 0.9,
+              "file": "src/lib.rs",
+              "line": 42,
+              "title": "Missing error handling",
+              "detail": "The error path is dropped.",
+              "agent_instruction": "Handle and test the error path."
+            }
+          ],
+          "notes": []
+        }"#;
+        let artifact: ReviewArtifact = serde_json::from_str(raw).expect("artifact parses");
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("| Review angle | Score | Findings |"));
+        assert!(summary.contains("| General | 5/5 | 0 |"));
+        assert!(summary.contains("| Adversarial | 3/5 | 1 |"));
     }
 
     #[test]
@@ -1239,8 +1361,10 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
@@ -1282,6 +1406,7 @@ mod tests {
             }),
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1311,6 +1436,7 @@ mod tests {
             }),
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1357,9 +1483,11 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
+                    angle_id: None,
                     scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
@@ -1371,6 +1499,7 @@ mod tests {
                 },
                 Finding {
                     id: "rg_002".to_string(),
+                    angle_id: None,
                     scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.9,
@@ -1413,8 +1542,10 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.9,
@@ -1467,6 +1598,7 @@ mod tests {
             }),
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1490,8 +1622,10 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
@@ -1524,8 +1658,10 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
@@ -1587,8 +1723,10 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.95,
@@ -1623,8 +1761,10 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 1.2,
@@ -1656,6 +1796,7 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1760,9 +1901,11 @@ mod tests {
             }),
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
+                    angle_id: None,
                     scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
@@ -1774,6 +1917,7 @@ mod tests {
                 },
                 Finding {
                     id: "rg_002".to_string(),
+                    angle_id: None,
                     scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.8,
@@ -1823,8 +1967,10 @@ mod tests {
                 cost_source: CostSource::Unknown,
             }),
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
+                angle_id: None,
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,

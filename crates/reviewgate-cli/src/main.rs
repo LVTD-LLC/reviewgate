@@ -9,10 +9,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, ModelPreset, ModelPricing,
     OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
-    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact,
-    ReviewStage, ReviewStatus, Severity, SummaryOptions, SummaryState, compute_metrics,
-    estimate_model_cost_usd, extract_summary_state, fallback_model_pricing,
-    parse_openrouter_model_pricing, render_summary, render_summary_with_options,
+    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleResult,
+    ReviewArtifact, ReviewStage, ReviewStatus, Severity, SummaryOptions, SummaryState,
+    compute_metrics, compute_score, estimate_model_cost_usd, extract_summary_state,
+    fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
+    render_summary_with_options,
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, FindingCommentAction,
@@ -319,6 +320,32 @@ struct ReviewContext {
     context_files: Vec<ContextFile>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReviewAngle {
+    id: &'static str,
+    name: &'static str,
+    prompt: &'static str,
+    reason: &'static str,
+}
+
+const GENERAL_REVIEW_ANGLE: ReviewAngle = ReviewAngle {
+    id: "general",
+    name: "General",
+    prompt: include_str!("../../../prompts/general.md"),
+    reason: "Always run a general correctness review.",
+};
+
+const ADVERSARIAL_REVIEW_ANGLE: ReviewAngle = ReviewAngle {
+    id: "adversarial",
+    name: "Adversarial",
+    prompt: include_str!("../../../prompts/adversarial.md"),
+    reason: "Run a skeptical, high-confidence bug-finding pass.",
+};
+
+fn builtin_review_angles() -> [ReviewAngle; 2] {
+    [GENERAL_REVIEW_ANGLE, ADVERSARIAL_REVIEW_ANGLE]
+}
+
 fn review_pr(options: ReviewPrOptions) -> Result<()> {
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
     let config_path = resolve_repo_path(&repo, &options.config);
@@ -339,9 +366,6 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
             .openrouter_base_url
             .clone()
             .unwrap_or_else(|| OPENROUTER_DEFAULT_BASE_URL.to_string());
-        let prompt = build_review_prompt(&context);
-        let response = call_openrouter_with_curl(&base_url, &api_key, &model, &prompt)?;
-        let mut artifact = parse_model_artifact(&response.content)?;
         let (model_pricing, cost_source) = if let Ok(Some(pricing)) =
             fetch_openrouter_model_pricing_with_curl(&base_url, &api_key, &model)
         {
@@ -352,14 +376,25 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
                 Some(CostSource::FallbackPricing),
             )
         };
-        apply_usage_cost_summary(
-            &mut artifact,
-            &model,
-            response.usage,
-            model_pricing,
-            cost_source,
-        );
-        artifact
+        let mut angle_artifacts = Vec::new();
+        for angle in builtin_review_angles() {
+            let prompt = build_review_prompt_for_angle(&context, angle);
+            let response = call_openrouter_with_curl(&base_url, &api_key, &model, &prompt)?;
+            let mut artifact = parse_model_artifact(&response.content)?;
+            if artifact.models.is_empty() {
+                artifact.models = vec![model.clone()];
+            }
+            apply_usage_cost_summary(
+                &mut artifact,
+                &model,
+                response.usage,
+                model_pricing,
+                cost_source,
+                angle.id,
+            );
+            angle_artifacts.push((angle, artifact));
+        }
+        aggregate_angle_artifacts(&context.reviewed_sha, &model, angle_artifacts)?
     };
 
     let mut artifact = artifact;
@@ -368,7 +403,9 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     if artifact.models.is_empty() {
         artifact.models = vec![model];
     }
-    artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
+    if artifact.review_stages.is_empty() {
+        artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
+    }
     let mut artifact = artifact.with_computed_score()?;
     let mut metrics = compute_metrics(&artifact, min_severity);
     metrics.analyzed_line_count = Some(context.analyzed_line_count);
@@ -1463,11 +1500,24 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
     }
 }
 
+#[cfg(test)]
 fn build_review_prompt(context: &ReviewContext) -> String {
+    build_review_prompt_for_angle(context, GENERAL_REVIEW_ANGLE)
+}
+
+fn build_review_prompt_for_angle(context: &ReviewContext, angle: ReviewAngle) -> String {
     let schema = include_str!("../../../schemas/reviewgate-review-output.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
+    prompt.push_str(&format!("Review angle: {}\n", angle.id));
+    prompt.push_str(&format!("Review angle name: {}\n\n", angle.name));
+    prompt.push_str("Angle instructions:\n");
+    prompt.push_str(angle.prompt.trim());
+    prompt.push_str("\n\n");
+    prompt.push_str(
+        "Return findings for this review angle only. Leave angle_results absent or empty and do not set angle_id on findings; ReviewGate assigns angle metadata after validating this response.\n\n",
+    );
     prompt.push_str(
         "Every concrete defect mentioned in the verdict or notes must also appear as a separate finding with an actionable agent_instruction. Do not mention specific problems only in prose. If a diff changes scoring, review publishing, GitHub token permissions, comment ownership checks, marker encoding, secret handling, or workflow triggers, review each changed behavior independently and emit separate findings for distinct regressions.\n\n",
     );
@@ -1504,6 +1554,181 @@ fn build_review_prompt(context: &ReviewContext) -> String {
     prompt.push_str(&context.diff);
     prompt.push_str("\n```\n");
     prompt
+}
+
+fn aggregate_angle_artifacts(
+    reviewed_sha: &str,
+    default_model: &str,
+    angle_artifacts: Vec<(ReviewAngle, ReviewArtifact)>,
+) -> Result<ReviewArtifact> {
+    let mut models = Vec::new();
+    let mut findings = Vec::new();
+    let mut angle_results = Vec::new();
+    let mut review_stages = Vec::new();
+    let mut notes = Vec::new();
+    let mut cost_components = Vec::new();
+    let mut current_run_cost = 0.0;
+    let mut has_cost = false;
+    let mut cost_source: Option<CostSource> = None;
+    let mut mixed_cost_sources = false;
+
+    for (angle, mut artifact) in angle_artifacts {
+        let model = artifact
+            .models
+            .first()
+            .cloned()
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or_else(|| default_model.to_string());
+        push_unique(&mut models, model.clone());
+
+        let mut angle_findings = Vec::new();
+        for mut finding in artifact.findings.drain(..) {
+            finding.id = prefixed_angle_finding_id(angle.id, &finding.id);
+            finding.angle_id = Some(angle.id.to_string());
+            angle_findings.push(finding);
+        }
+        let angle_score = compute_score(&angle_findings);
+        let angle_status = status_for_score(angle_score);
+        let finding_ids = angle_findings
+            .iter()
+            .map(|finding| finding.id.clone())
+            .collect::<Vec<_>>();
+
+        let angle_cost = artifact
+            .cost_summary
+            .as_ref()
+            .map(|summary| summary.current_run_usd)
+            .or(artifact.estimated_cost_usd);
+        if let Some(cost) = angle_cost {
+            has_cost = true;
+            current_run_cost += cost;
+        }
+        if let Some(summary) = artifact.cost_summary.take() {
+            for mut component in summary.components {
+                if component.label == "openrouter_review" {
+                    component.label = angle.id.to_string();
+                }
+                cost_components.push(component);
+            }
+            match summary.source {
+                Some(source) if cost_source.is_none() => cost_source = Some(source),
+                Some(source) if cost_source == Some(source) => {}
+                Some(_) => mixed_cost_sources = true,
+                None => {}
+            }
+        } else if let Some(cost) = angle_cost {
+            cost_components.push(CostComponent {
+                label: angle.id.to_string(),
+                model: model.clone(),
+                prompt_tokens: None,
+                completion_tokens: None,
+                estimated_cost_usd: cost,
+            });
+            mixed_cost_sources = true;
+        }
+
+        notes.extend(
+            artifact
+                .notes
+                .into_iter()
+                .map(|note| format!("{}: {note}", angle.name)),
+        );
+        review_stages.push(ReviewStage {
+            name: angle.id.to_string(),
+            model: model.clone(),
+            status: "ran".to_string(),
+            reason: angle.reason.to_string(),
+            estimated_cost_usd: angle_cost,
+        });
+        findings.extend(angle_findings);
+        angle_results.push(ReviewAngleResult {
+            id: angle.id.to_string(),
+            name: angle.name.to_string(),
+            score: angle_score,
+            status: angle_status,
+            verdict: non_empty_verdict(&artifact.verdict, angle.name),
+            model,
+            finding_ids,
+        });
+    }
+
+    let score = compute_score(&findings);
+    let status = status_for_score(score);
+    let cost_summary = has_cost.then_some(CostSummary {
+        current_run_usd: current_run_cost,
+        source: if mixed_cost_sources {
+            Some(CostSource::Unknown)
+        } else {
+            cost_source
+        },
+        components: cost_components,
+    });
+    let estimated_cost_usd = has_cost.then_some(current_run_cost);
+    if models.is_empty() {
+        models.push(default_model.to_string());
+    }
+
+    let artifact = ReviewArtifact {
+        score,
+        target_score: DEFAULT_TARGET_SCORE,
+        reviewed_sha: reviewed_sha.to_string(),
+        status,
+        verdict: aggregate_verdict(&angle_results),
+        models,
+        estimated_cost_usd,
+        cost_summary,
+        metrics: None,
+        review_stages,
+        angle_results,
+        findings,
+        notes,
+    };
+    Ok(artifact.with_computed_score()?)
+}
+
+fn prefixed_angle_finding_id(angle_id: &str, finding_id: &str) -> String {
+    let prefix = format!("{angle_id}:");
+    if finding_id.starts_with(&prefix) {
+        finding_id.to_string()
+    } else {
+        format!("{prefix}{finding_id}")
+    }
+}
+
+fn status_for_score(score: u8) -> ReviewStatus {
+    if score >= DEFAULT_TARGET_SCORE {
+        ReviewStatus::Passed
+    } else {
+        ReviewStatus::NeedsChanges
+    }
+}
+
+fn non_empty_verdict(verdict: &str, angle_name: &str) -> String {
+    let verdict = verdict.trim();
+    if verdict.is_empty() {
+        format!("{angle_name} review completed.")
+    } else {
+        verdict.to_string()
+    }
+}
+
+fn aggregate_verdict(angle_results: &[ReviewAngleResult]) -> String {
+    let failing_angles = angle_results
+        .iter()
+        .filter(|angle| angle.status == ReviewStatus::NeedsChanges)
+        .map(|angle| angle.name.as_str())
+        .collect::<Vec<_>>();
+    if failing_angles.is_empty() {
+        "All enabled ReviewGate review angles passed.".to_string()
+    } else {
+        format!("ReviewGate found issues in: {}.", failing_angles.join(", "))
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn operational_data_sync_review_needed(changed_files: &[String], diff: &str) -> bool {
@@ -1671,6 +1896,7 @@ fn apply_usage_cost_summary(
     usage: Option<OpenRouterUsage>,
     pricing: Option<ModelPricing>,
     source: Option<CostSource>,
+    label: &str,
 ) {
     if artifact.cost_summary.is_some() {
         return;
@@ -1698,7 +1924,7 @@ fn apply_usage_cost_summary(
         current_run_usd: cost,
         source,
         components: vec![CostComponent {
-            label: "openrouter_review".to_string(),
+            label: label.to_string(),
             model: model.to_string(),
             prompt_tokens: Some(usage.prompt_tokens),
             completion_tokens: Some(usage.completion_tokens),
@@ -2076,6 +2302,7 @@ Thanks {also not json}."#;
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
+            angle_results: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -2089,6 +2316,7 @@ Thanks {also not json}."#;
             }),
             None,
             Some(CostSource::FallbackPricing),
+            "general",
         );
 
         let summary = artifact.cost_summary.expect("cost summary added");
@@ -2257,6 +2485,99 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("new/right side of the diff"));
         assert!(prompt.contains("appears as a + line"));
         assert!(prompt.contains("diff --git"));
+    }
+
+    #[test]
+    fn adversarial_prompt_includes_angle_policy() {
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            changed_files: vec!["src/lib.rs".to_string()],
+            diff: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+            analyzed_line_count: 0,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+
+        let prompt = build_review_prompt_for_angle(&context, ADVERSARIAL_REVIEW_ANGLE);
+
+        assert!(prompt.contains("Review angle: adversarial"));
+        assert!(prompt.contains("Adversarial Code Review"));
+        assert!(prompt.contains("skeptical second pass"));
+        assert!(prompt.contains("ReviewGate assigns angle metadata"));
+        assert!(prompt.contains("Return only JSON"));
+    }
+
+    #[test]
+    fn aggregates_angle_artifacts_and_tags_findings_by_angle() {
+        let general = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "General review found no issues.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: Some(0.01),
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+        let adversarial = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "Adversarial review found one issue.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: Some(0.02),
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            findings: vec![reviewgate_core::Finding {
+                id: "rg_001".to_string(),
+                angle_id: None,
+                scope: reviewgate_core::FindingScope::Line,
+                severity: Severity::P2,
+                confidence: 0.9,
+                file: Some("src/lib.rs".to_string()),
+                line: Some(42),
+                title: "Missing error handling".to_string(),
+                detail: None,
+                agent_instruction: "Handle and test the error path.".to_string(),
+            }],
+            notes: vec![],
+        };
+
+        let aggregate = aggregate_angle_artifacts(
+            "abc123",
+            "deepseek/deepseek-v4-flash",
+            vec![
+                (GENERAL_REVIEW_ANGLE, general),
+                (ADVERSARIAL_REVIEW_ANGLE, adversarial),
+            ],
+        )
+        .expect("aggregate builds");
+
+        assert_eq!(aggregate.score, 3);
+        assert_eq!(aggregate.status, ReviewStatus::NeedsChanges);
+        assert_eq!(aggregate.findings[0].id, "adversarial:rg_001");
+        assert_eq!(
+            aggregate.findings[0].angle_id.as_deref(),
+            Some("adversarial")
+        );
+        assert_eq!(aggregate.angle_results.len(), 2);
+        assert_eq!(aggregate.angle_results[0].id, "general");
+        assert_eq!(aggregate.angle_results[0].score, 5);
+        assert_eq!(aggregate.angle_results[1].id, "adversarial");
+        assert_eq!(aggregate.angle_results[1].score, 3);
+        assert_eq!(
+            aggregate.angle_results[1].finding_ids,
+            vec!["adversarial:rg_001".to_string()]
+        );
+        assert_eq!(aggregate.estimated_cost_usd, Some(0.03));
     }
 
     #[test]
