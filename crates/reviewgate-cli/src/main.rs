@@ -7,12 +7,12 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
-    CostComponent, CostSource, CostSummary, ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV,
-    OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE,
-    OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact, ReviewStage, ReviewStatus,
-    Severity, SummaryOptions, SummaryState, compute_metrics, estimate_model_cost_usd,
-    extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
-    render_summary_with_options,
+    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, ModelPreset, ModelPricing,
+    OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
+    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewArtifact,
+    ReviewStage, ReviewStatus, Severity, SummaryOptions, SummaryState, compute_metrics,
+    estimate_model_cost_usd, extract_summary_state, fallback_model_pricing,
+    parse_openrouter_model_pricing, render_summary, render_summary_with_options,
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, FindingCommentAction,
@@ -31,7 +31,6 @@ const DEFAULT_CONTEXT_FILES: &[&str] = &[
     ".reviewgate.yml",
 ];
 const DEFAULT_CONFIG_PATH: &str = ".reviewgate.yml";
-const DEFAULT_TARGET_SCORE: u8 = 5;
 const REMOVED_FAIL_UNDER_CONFIG_KEY: &str = concat!("fail", "_under");
 const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
 const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
@@ -822,7 +821,7 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
     );
     if failed > 0 {
         println!(
-            "::warning title=ReviewGate inline comments::Failed {failed} inline comment(s); ReviewGate attempted standalone finding comments for them."
+            "::warning title=ReviewGate findings::Failed {failed} inline comment(s); ReviewGate attempted standalone finding comments for them."
         );
     }
     Ok(())
