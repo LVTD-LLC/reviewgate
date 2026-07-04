@@ -15,6 +15,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Uses OpenRouter/BYOK for model calls.
 - Keeps one concise PR summary comment updated with `<!-- reviewgate-summary -->`.
 - Emits a visible score like `Confidence Score: 4/5`.
+- Runs both a general correctness review and an adversarial bug-finding review in the live action path; the visible score is the lowest effective score across enabled review angles.
 - Produces a JSON artifact for humans and external agent loops.
 - Posts line-specific findings as inline PR comments and file/PR-level or unanchored findings as standalone PR comments, deduped by stable ReviewGate finding markers.
 - Reports whether the review reached a clean `5/5` without failing CI for low scores.
@@ -69,6 +70,7 @@ The action:
 - collects the PR diff from the checked-out repository;
 - includes bounded repository context from common instruction files like `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, and `.reviewgate.yml`;
 - calls OpenRouter with the user's API key;
+- runs separate general and adversarial review prompts and aggregates them into one ReviewGate artifact;
 - validates the model response as a ReviewGate JSON artifact;
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
@@ -171,11 +173,12 @@ Action inputs currently support `openrouter_api_key`, `config`, `model`, and `mi
 
 Review scores below `5` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The visible summary is intentionally short: title, verdict, left-aligned confidence score, compact finding counts, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, changed lines analyzed when known, total cost, and latest analyzed commit. Finding detail lives in inline or standalone ReviewGate PR comments and the JSON artifact.
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The visible summary is intentionally short: title, verdict, left-aligned confidence score, per-angle score table when multiple review angles run, compact finding counts, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, changed lines analyzed when known, total cost, and latest analyzed commit. Finding detail lives in inline or standalone ReviewGate PR comments and the JSON artifact.
 
 ## Current Limitations
 
 - Config parsing intentionally supports only the stable scalar field above; richer nested config support comes later.
+- Review angle selection is not configurable yet. The live action path currently runs the built-in `general` and `adversarial` angles.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
 - Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible; findings with no publishable changed line are published as standalone PR comments, and inline API failures fall back to standalone comments while the full finding remains in JSON.
 - Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.
