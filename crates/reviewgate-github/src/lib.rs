@@ -415,7 +415,7 @@ fn marker_payload_ids(body: &str, marker_prefix: &str) -> Vec<String> {
 
 pub fn finding_comment_ids(body: &str) -> Vec<String> {
     let mut ids = marker_payload_ids(body, FINDING_COMMENT_MARKER_PREFIX);
-    if body.contains(FINDING_COMMENT_MARKER) {
+    if has_finding_comment_kind_marker(body) {
         ids.extend(marker_payload_ids(body, INLINE_COMMENT_MARKER_PREFIX));
     }
     ids
@@ -473,11 +473,12 @@ pub fn render_finding_comment_body(finding: &Finding) -> String {
     ));
     body.push_str(&format!("Scope: `{}`", finding.scope.as_str()));
     if let Some(file) = finding.file.as_deref() {
-        body.push_str(&format!(" (`{file}`"));
-        if let Some(line) = finding.line {
-            body.push_str(&format!(":{line}"));
-        }
-        body.push(')');
+        let location = if let Some(line) = finding.line {
+            format!("{file}:{line}")
+        } else {
+            file.to_string()
+        };
+        body.push_str(&format!(" (`{location}`)"));
     }
     body.push('\n');
     body.push_str(&format!("Confidence: `{:.2}`\n\n", finding.confidence));
@@ -619,10 +620,15 @@ pub fn plan_finding_comment_publish(
     }
 }
 
-fn is_reviewgate_finding_comment(comment: &ExistingSummaryComment) -> bool {
+pub fn is_reviewgate_finding_comment(comment: &ExistingSummaryComment) -> bool {
     is_github_actions_author(comment.author_login.as_deref())
-        && comment.body.contains(FINDING_COMMENT_MARKER)
+        && has_finding_comment_kind_marker(&comment.body)
         && !finding_comment_ids(&comment.body).is_empty()
+}
+
+fn has_finding_comment_kind_marker(body: &str) -> bool {
+    body.lines()
+        .any(|line| line.trim() == FINDING_COMMENT_MARKER)
 }
 
 #[cfg(test)]
@@ -1066,6 +1072,20 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 .body
                 .contains("Agent instruction: Handle at file scope.")
         );
+
+        let line_scope = Finding {
+            id: "rg_line_fallback".to_string(),
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "Fallback line concern".to_string(),
+            detail: None,
+            agent_instruction: "Handle from a separate comment.".to_string(),
+        };
+        let line_body = render_finding_comment_body(&line_scope);
+        assert!(line_body.contains("Scope: `line` (`src/lib.rs:10`)"));
     }
 
     #[test]
@@ -1217,6 +1237,15 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         assert_eq!(
             finding_comment_marker("A-->B\nC"),
             "<!-- reviewgate-finding-comment:A--%3EB%0AC -->"
+        );
+        assert!(inline_comment_finding_ids(&finding_comment_marker("not-inline")).is_empty());
+        assert!(
+            finding_comment_ids(&format!(
+                "prose {} {}",
+                FINDING_COMMENT_MARKER,
+                inline_comment_marker("not-legacy")
+            ))
+            .is_empty()
         );
     }
 

@@ -17,9 +17,9 @@ use reviewgate_core::{
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, FindingCommentAction,
-    InlineCommentDraft, SummaryCommentAction, plan_finding_comment_drafts,
-    plan_finding_comment_publish, plan_inline_comment_drafts, plan_summary_comment_publish,
-    posted_inline_finding_ids, posted_issue_finding_ids,
+    InlineCommentDraft, SummaryCommentAction, is_reviewgate_finding_comment,
+    plan_finding_comment_drafts, plan_finding_comment_publish, plan_inline_comment_drafts,
+    plan_summary_comment_publish, posted_inline_finding_ids, posted_issue_finding_ids,
     resolve_inline_comment_drafts_to_changed_lines,
 };
 
@@ -1000,6 +1000,11 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     );
     let finding_comment_plan =
         plan_finding_comment_publish(finding_comment_drafts, &issue_comments);
+    let deletable_finding_comment_ids: BTreeSet<u64> = issue_comments
+        .iter()
+        .filter(|comment| is_reviewgate_finding_comment(comment))
+        .map(|comment| comment.id)
+        .collect();
     let mut finding_created = 0u32;
     let mut finding_updated = 0u32;
     let mut finding_noop = 0u32;
@@ -1037,6 +1042,13 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
     }
     let mut stale_delete_failed = 0u32;
     for stale_id in finding_comment_plan.stale_comment_ids {
+        if !deletable_finding_comment_ids.contains(&stale_id) {
+            stale_delete_failed += 1;
+            eprintln!(
+                "ReviewGate stale finding comment {stale_id} was not deleted because ownership could not be verified."
+            );
+            continue;
+        }
         if delete_issue_comment(&repo, &repository, stale_id).is_err() {
             stale_delete_failed += 1;
             eprintln!("ReviewGate stale finding comment {stale_id} could not be deleted.");
@@ -1051,7 +1063,7 @@ fn publish_inline_comments_inner(options: &PublishInlineCommentsOptions) -> Resu
             finding_failed + stale_delete_failed
         );
     }
-    Ok(finding_failed == 0 && stale_delete_failed == 0)
+    Ok(failed == 0)
 }
 
 fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> serde_json::Value {
