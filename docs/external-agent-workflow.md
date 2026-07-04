@@ -1,6 +1,6 @@
 # External Agent Workflow
 
-ReviewGate is review-only. It publishes a canonical summary, JSON artifact, and inline or standalone finding comments. A separate coding agent can use those outputs to repair a PR.
+ReviewGate is review-only. It publishes a canonical summary, JSON artifact, and inline finding comments. A separate coding agent can use those outputs to repair a PR.
 
 Recommended loop:
 

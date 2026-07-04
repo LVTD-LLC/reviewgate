@@ -394,10 +394,7 @@ pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> Rev
 }
 
 pub fn is_inline_comment_eligible(finding: &Finding, min_severity: Severity) -> bool {
-    finding.scope == FindingScope::Line
-        && finding.file.is_some()
-        && finding.line.is_some()
-        && finding.severity.is_at_or_above(min_severity)
+    finding.severity.is_at_or_above(min_severity)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -851,7 +848,7 @@ fn render_concise_summary_body(
         output.push_str("No findings. Re-run ReviewGate if new commits land.\n");
     } else {
         output.push_str(&format!(
-            "Findings at or above {} are published as inline or standalone PR comments when ReviewGate runs in GitHub Actions. See the JSON artifact for the full machine-readable review.\n",
+            "Findings at or above {} are published as inline PR comments when ReviewGate runs in GitHub Actions. File-level, PR-level, and stale-line findings are anchored to fallback right-side diff lines when needed. See the JSON artifact for the full machine-readable review.\n",
             options.min_severity.as_str()
         ));
     }
@@ -1096,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn non_line_scope_findings_are_not_inline_eligible() {
+    fn non_line_scope_findings_are_inline_eligible() {
         let finding = Finding {
             id: "rg_001".to_string(),
             scope: FindingScope::File,
@@ -1109,7 +1106,7 @@ mod tests {
             agent_instruction: "Add coverage for the broader module behavior.".to_string(),
         };
 
-        assert!(!is_inline_comment_eligible(&finding, Severity::P2));
+        assert!(is_inline_comment_eligible(&finding, Severity::P2));
 
         let artifact = ReviewArtifact {
             score: 3,
@@ -1127,7 +1124,8 @@ mod tests {
         };
         let summary = render_summary(&artifact).expect("summary renders");
 
-        assert!(summary.contains("standalone PR comments"));
+        assert!(summary.contains("inline PR comments"));
+        assert!(!summary.contains("standalone PR comments"));
         assert!(!summary.contains("Module-level behavior needs a test"));
     }
 
@@ -1394,7 +1392,7 @@ mod tests {
         )
         .expect("summary renders");
 
-        assert!(summary.contains("Findings: 2 total, 1 blocking, 0 inline candidates"));
+        assert!(summary.contains("Findings: 2 total, 1 blocking, 1 inline candidates"));
         assert!(summary.contains("Findings at or above P2 are published"));
         assert!(!summary.contains("Visible reliability issue"));
         assert!(!summary.contains("Hidden style note"));

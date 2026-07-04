@@ -16,7 +16,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Keeps one concise PR summary comment updated with `<!-- reviewgate-summary -->`.
 - Emits a visible score like `Confidence Score: 4/5`.
 - Produces a JSON artifact for humans and external agent loops.
-- Posts line-specific findings as inline PR comments and file/PR-level or unanchored findings as standalone PR comments, deduped by stable ReviewGate finding markers.
+- Posts findings at or above `min_severity` as inline PR comments, anchoring file/PR-level or unanchored findings to fallback right-side diff lines when needed and deduping by stable ReviewGate finding markers.
 - Reports whether the review reached a clean `5/5` without failing CI for low scores.
 - Publishes a dedicated GitHub check run for review availability when `checks: write` is granted; `needs_changes` reviews conclude `neutral` rather than green `success`.
 - Shows cumulative review count, changed lines analyzed, model cost, and latest analyzed commit in the PR summary footer, with full cost/metrics data in the JSON artifact.
@@ -73,7 +73,7 @@ The action:
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
 - replaces the running placeholder with one concise PR comment containing `<!-- reviewgate-summary -->`;
-- posts findings at or above `min_severity` as inline PR review comments when possible and standalone PR comments otherwise;
+- posts findings at or above `min_severity` as inline PR review comments when possible, using fallback right-side diff line anchors for file-level, PR-level, or stale-line findings;
 - publishes a check-run status for review availability when permissions allow;
 - exits non-zero only when ReviewGate cannot complete the review or a required publishing step fails.
 
@@ -149,7 +149,7 @@ Agents should consume the JSON artifact first and use ReviewGate PR comments as 
 
 `status == "needs_changes"` means the review completed but the score is below `5/5`. The action does not fail CI for this status, and the ReviewGate check run uses a neutral conclusion.
 
-Finding `scope` controls publishing. `scope: "line"` findings with a file and line are inline comment candidates; ReviewGate repairs stale line anchors to changed lines when possible. Findings that cannot be attached to a changed line, plus `scope: "file"` and `scope: "pr"` findings, are published as standalone PR comments.
+Finding `scope` describes the finding's target, not whether it can be published inline. `scope: "line"` findings should include a file and changed line when the issue belongs to one exact diff line; ReviewGate repairs stale line anchors to changed lines when possible. `scope: "file"` and `scope: "pr"` findings stay broad in the JSON artifact but are still published as inline PR comments by anchoring to a fallback right-side diff line when needed.
 
 ## OpenRouter Boundary
 
@@ -171,13 +171,13 @@ Action inputs currently support `openrouter_api_key`, `config`, `model`, and `mi
 
 Review scores below `5` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
 
-The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The visible summary is intentionally short: title, verdict, left-aligned confidence score, compact finding counts, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, changed lines analyzed when known, total cost, and latest analyzed commit. Finding detail lives in inline or standalone ReviewGate PR comments and the JSON artifact.
+The canonical summary stores a versioned hidden state payload next to `<!-- reviewgate-summary -->`. Reruns preserve reviewed SHAs, run count, and bounded cumulative cost history without relying on visible-text parsing. The visible summary is intentionally short: title, verdict, left-aligned confidence score, compact finding counts, collapsed Important Files Changed and Flowchart sections, and a tiny footer with review count, changed lines analyzed when known, total cost, and latest analyzed commit. Finding detail lives in inline ReviewGate PR comments and the JSON artifact.
 
 ## Current Limitations
 
 - Config parsing intentionally supports only the stable scalar field above; richer nested config support comes later.
 - Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
-- Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible; findings with no publishable changed line are published as standalone PR comments, and inline API failures fall back to standalone comments while the full finding remains in JSON.
+- Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible, and file/PR-level or unanchored findings are anchored to fallback right-side diff lines. If no right-side diff anchor exists or GitHub rejects an inline comment, the full finding remains in JSON; ReviewGate does not create standalone finding comments.
 - Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
 

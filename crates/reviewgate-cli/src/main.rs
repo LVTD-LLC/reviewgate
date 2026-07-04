@@ -15,10 +15,9 @@ use reviewgate_core::{
     parse_openrouter_model_pricing, render_summary, render_summary_with_options,
 };
 use reviewgate_github::{
-    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, FindingCommentAction,
-    InlineCommentDraft, SummaryCommentAction, plan_finding_comment_publish,
-    plan_inline_comment_drafts, plan_summary_comment_publish, posted_inline_finding_ids,
-    resolve_inline_comment_drafts_to_changed_lines,
+    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
+    SummaryCommentAction, plan_inline_comment_drafts, plan_summary_comment_publish,
+    stale_finding_comment_ids,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -107,7 +106,7 @@ enum Command {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
-    /// Publish eligible ReviewGate findings as inline or standalone PR comments.
+    /// Publish eligible ReviewGate findings as inline PR comments.
     PublishFindings {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -743,13 +742,15 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
     let repository = github_repository()?;
     let existing_issue_comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let existing_comments = fetch_pull_comments(&repo, &repository, pr_number)?;
-    let mut inline_posted_finding_ids: Vec<String> = posted_inline_finding_ids(&existing_comments)
-        .into_iter()
-        .collect();
-    let drafts = plan_inline_comment_drafts(&artifact.findings, &existing_comments, min_severity);
     let changed_lines = collect_changed_lines(&repo)?;
-    let anchor_plan = resolve_inline_comment_drafts_to_changed_lines(drafts, &changed_lines);
+    let anchor_plan = plan_inline_comment_drafts(
+        &artifact.findings,
+        &existing_comments,
+        min_severity,
+        &changed_lines,
+    );
     let repaired_anchors = anchor_plan.repaired_count;
+    let fallback_anchors = anchor_plan.fallback_count;
     let skipped_unanchored = anchor_plan.skipped_count;
     let drafts = anchor_plan.drafts;
     if repaired_anchors > 0 {
@@ -757,9 +758,14 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
             "ReviewGate inline comments repaired {repaired_anchors} model-provided anchor(s) to changed lines in the PR diff."
         );
     }
+    if fallback_anchors > 0 {
+        println!(
+            "ReviewGate inline comments anchored {fallback_anchors} file-level, PR-level, or stale-line finding(s) to fallback right-side diff lines in the PR diff."
+        );
+    }
     if skipped_unanchored > 0 {
         println!(
-            "ReviewGate finding comments: {skipped_unanchored} line finding(s) will be published as standalone comments because no changed-line anchor was available."
+            "ReviewGate inline comments skipped {skipped_unanchored} finding(s) because no right-side diff anchor was available in the PR diff."
         );
     }
 
@@ -776,52 +782,27 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
         .is_ok()
         {
             posted += 1;
-            inline_posted_finding_ids.push(draft.finding_id);
         } else {
             failed += 1;
             eprintln!(
-                "ReviewGate inline comment could not be posted for finding {}. Publishing it as a standalone finding comment instead.",
+                "ReviewGate inline comment could not be posted for finding {}. The review JSON contains the full finding.",
                 draft.finding_id
             );
         }
     }
 
-    let finding_comment_plan = plan_finding_comment_publish(
-        &artifact.findings,
-        &existing_issue_comments,
-        &inline_posted_finding_ids,
-        min_severity,
-    );
-    let mut standalone_created = 0u32;
-    let mut standalone_updated = 0u32;
-    let mut standalone_noop = 0u32;
-    for action in finding_comment_plan.actions {
-        match action {
-            FindingCommentAction::Create { body } => {
-                create_issue_comment(&repo, &repository, pr_number, &body)?;
-                standalone_created += 1;
-            }
-            FindingCommentAction::Update { id, body } => {
-                update_issue_comment(&repo, &repository, id, &body)?;
-                standalone_updated += 1;
-            }
-            FindingCommentAction::Noop { .. } => {
-                standalone_noop += 1;
-            }
-        }
-    }
     let mut standalone_deleted = 0u32;
-    for stale_id in finding_comment_plan.stale_comment_ids {
+    for stale_id in stale_finding_comment_ids(&existing_issue_comments) {
         delete_issue_comment(&repo, &repository, stale_id)?;
         standalone_deleted += 1;
     }
 
     println!(
-        "ReviewGate findings published: {posted} inline; {standalone_created} standalone created, {standalone_updated} updated, {standalone_noop} unchanged, {standalone_deleted} stale deleted; repaired anchors: {repaired_anchors}; inline failed: {failed}."
+        "ReviewGate findings published: {posted} inline; {standalone_deleted} stale standalone deleted; repaired anchors: {repaired_anchors}; fallback anchors: {fallback_anchors}; skipped: {skipped_unanchored}; inline failed: {failed}."
     );
-    if failed > 0 {
+    if failed > 0 || skipped_unanchored > 0 {
         println!(
-            "::warning title=ReviewGate findings::Failed {failed} inline comment(s); ReviewGate attempted standalone finding comments for them."
+            "::warning title=ReviewGate findings::Failed {failed} inline comment(s) and skipped {skipped_unanchored}; ReviewGate did not create standalone finding comments. The review JSON contains the full findings."
         );
     }
     Ok(())
@@ -1483,7 +1464,7 @@ fn build_review_prompt(context: &ReviewContext) -> String {
         );
     }
     prompt.push_str(
-        "Finding scope guidance: set scope to line only when the finding is high-confidence, tied to one exact changed line in the new/right side of the diff, and safe to post as an inline PR comment. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line.\n\n",
+        "Finding scope guidance: scope describes the finding's semantic target, not whether ReviewGate can publish it inline. Set scope to line only when the finding is high-confidence and tied to one exact changed line in the new/right side of the diff. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line. ReviewGate will still publish file-level, PR-level, and stale-line findings as inline PR comments by anchoring them to fallback right-side diff lines when needed.\n\n",
     );
     prompt.push_str(&format!("reviewed_sha: {}\n\n", context.reviewed_sha));
     prompt.push_str("JSON schema:\n");
@@ -2253,7 +2234,8 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("Err on the side of surfacing concrete"));
         assert!(prompt.contains("transaction boundaries"));
         assert!(prompt.contains("Finding scope guidance"));
-        assert!(prompt.contains("set scope to line only"));
+        assert!(prompt.contains("scope describes the finding's semantic target"));
+        assert!(prompt.contains("anchoring them to fallback right-side diff lines"));
         assert!(prompt.contains("new/right side of the diff"));
         assert!(prompt.contains("appears as a + line"));
         assert!(prompt.contains("diff --git"));
