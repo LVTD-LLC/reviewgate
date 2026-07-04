@@ -377,24 +377,35 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
             )
         };
         let mut angle_artifacts = Vec::new();
+        let mut failed_angles = Vec::new();
         for angle in builtin_review_angles() {
-            let prompt = build_review_prompt_for_angle(&context, angle);
-            let response = call_openrouter_with_curl(&base_url, &api_key, &model, &prompt)?;
-            let mut artifact = parse_model_artifact(&response.content)?;
-            if artifact.models.is_empty() {
-                artifact.models = vec![model.clone()];
-            }
-            apply_usage_cost_summary(
-                &mut artifact,
+            match run_live_angle_review(
+                &context,
+                angle,
+                &base_url,
+                &api_key,
                 &model,
-                response.usage,
                 model_pricing,
                 cost_source,
-                angle.id,
-            );
-            angle_artifacts.push((angle, artifact));
+            ) {
+                Ok(artifact) => angle_artifacts.push((angle, artifact)),
+                Err(error) => failed_angles.push((angle, error.to_string())),
+            }
         }
-        aggregate_angle_artifacts(&context.reviewed_sha, &model, angle_artifacts)?
+        if angle_artifacts.is_empty() {
+            bail!(
+                "all ReviewGate review angles failed: {}",
+                failed_angles
+                    .iter()
+                    .map(|(angle, error)| format!("{}: {error}", angle.id))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        let mut artifact =
+            aggregate_angle_artifacts(&context.reviewed_sha, &model, angle_artifacts)?;
+        append_failed_angle_reviews(&mut artifact, &model, failed_angles);
+        artifact
     };
 
     let mut artifact = artifact;
@@ -403,9 +414,10 @@ fn review_pr(options: ReviewPrOptions) -> Result<()> {
     if artifact.models.is_empty() {
         artifact.models = vec![model];
     }
-    if artifact.review_stages.is_empty() {
-        artifact.review_stages = select_review_stages(&context, &artifact.models[0]);
-    }
+    append_missing_review_stages(
+        &mut artifact.review_stages,
+        select_review_stages(&context, &artifact.models[0]),
+    );
     let mut artifact = artifact.with_computed_score()?;
     let mut metrics = compute_metrics(&artifact, min_severity);
     metrics.analyzed_line_count = Some(context.analyzed_line_count);
@@ -1556,6 +1568,34 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: ReviewAngle) ->
     prompt
 }
 
+fn run_live_angle_review(
+    context: &ReviewContext,
+    angle: ReviewAngle,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    model_pricing: Option<ModelPricing>,
+    cost_source: Option<CostSource>,
+) -> Result<ReviewArtifact> {
+    let prompt = build_review_prompt_for_angle(context, angle);
+    let response = call_openrouter_with_curl(base_url, api_key, model, &prompt)
+        .with_context(|| format!("{} review angle request failed", angle.id))?;
+    let mut artifact = parse_model_artifact(&response.content)
+        .with_context(|| format!("{} review angle returned invalid JSON", angle.id))?;
+    if artifact.models.is_empty() {
+        artifact.models = vec![model.to_string()];
+    }
+    apply_usage_cost_summary(
+        &mut artifact,
+        model,
+        response.usage,
+        model_pricing,
+        cost_source,
+        angle.id,
+    );
+    Ok(artifact)
+}
+
 fn aggregate_angle_artifacts(
     reviewed_sha: &str,
     default_model: &str,
@@ -1604,10 +1644,7 @@ fn aggregate_angle_artifacts(
             current_run_cost += cost;
         }
         if let Some(summary) = artifact.cost_summary.take() {
-            for mut component in summary.components {
-                if component.label == "openrouter_review" {
-                    component.label = angle.id.to_string();
-                }
+            for component in summary.components {
                 cost_components.push(component);
             }
             match summary.source {
@@ -1683,7 +1720,35 @@ fn aggregate_angle_artifacts(
         findings,
         notes,
     };
-    Ok(artifact.with_computed_score()?)
+    artifact.validate()?;
+    Ok(artifact)
+}
+
+fn append_failed_angle_reviews(
+    artifact: &mut ReviewArtifact,
+    default_model: &str,
+    failed_angles: Vec<(ReviewAngle, String)>,
+) {
+    for (angle, error) in failed_angles {
+        artifact.review_stages.push(ReviewStage {
+            name: angle.id.to_string(),
+            model: default_model.to_string(),
+            status: "failed".to_string(),
+            reason: format!("{} review angle failed: {error}", angle.name),
+            estimated_cost_usd: None,
+        });
+        artifact
+            .notes
+            .push(format!("{} review angle failed: {error}", angle.name));
+    }
+}
+
+fn append_missing_review_stages(stages: &mut Vec<ReviewStage>, candidates: Vec<ReviewStage>) {
+    for candidate in candidates {
+        if !stages.iter().any(|stage| stage.name == candidate.name) {
+            stages.push(candidate);
+        }
+    }
 }
 
 fn prefixed_angle_finding_id(angle_id: &str, finding_id: &str) -> String {
@@ -2578,6 +2643,100 @@ diff --git a/src/lib.rs b/src/lib.rs
             vec!["adversarial:rg_001".to_string()]
         );
         assert_eq!(aggregate.estimated_cost_usd, Some(0.03));
+    }
+
+    #[test]
+    fn failed_angle_reviews_are_recorded_without_discarding_successful_results() {
+        let general = ReviewArtifact {
+            score: 5,
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "General review found no issues.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: Some(0.01),
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+        let mut aggregate = aggregate_angle_artifacts(
+            "abc123",
+            "deepseek/deepseek-v4-flash",
+            vec![(GENERAL_REVIEW_ANGLE, general)],
+        )
+        .expect("aggregate builds");
+
+        append_failed_angle_reviews(
+            &mut aggregate,
+            "deepseek/deepseek-v4-flash",
+            vec![(
+                ADVERSARIAL_REVIEW_ANGLE,
+                "adversarial review angle returned invalid JSON".to_string(),
+            )],
+        );
+
+        assert_eq!(aggregate.score, 5);
+        assert_eq!(aggregate.angle_results.len(), 1);
+        assert!(aggregate.review_stages.iter().any(|stage| {
+            stage.name == "adversarial"
+                && stage.status == "failed"
+                && stage
+                    .reason
+                    .contains("adversarial review angle returned invalid JSON")
+        }));
+        assert!(aggregate.notes.iter().any(|note| {
+            note.contains("Adversarial review angle failed") && note.contains("invalid JSON")
+        }));
+    }
+
+    #[test]
+    fn appends_dynamic_review_stages_without_duplicating_angle_stages() {
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            changed_files: vec![
+                "tests/review_test.rs".to_string(),
+                "src/security/token.rs".to_string(),
+            ],
+            diff: String::new(),
+            analyzed_line_count: 0,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+        let mut stages = vec![
+            ReviewStage {
+                name: "general".to_string(),
+                model: "deepseek/deepseek-v4-flash".to_string(),
+                status: "ran".to_string(),
+                reason: "angle".to_string(),
+                estimated_cost_usd: None,
+            },
+            ReviewStage {
+                name: "adversarial".to_string(),
+                model: "deepseek/deepseek-v4-flash".to_string(),
+                status: "ran".to_string(),
+                reason: "angle".to_string(),
+                estimated_cost_usd: None,
+            },
+        ];
+
+        append_missing_review_stages(
+            &mut stages,
+            select_review_stages(&context, "deepseek/deepseek-v4-flash"),
+        );
+
+        assert_eq!(
+            stages
+                .iter()
+                .filter(|stage| stage.name == "general")
+                .count(),
+            1
+        );
+        assert!(stages.iter().any(|stage| stage.name == "adversarial"));
+        assert!(stages.iter().any(|stage| stage.name == "testability"));
+        assert!(stages.iter().any(|stage| stage.name == "security"));
     }
 
     #[test]

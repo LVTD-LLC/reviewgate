@@ -28,6 +28,8 @@ pub enum ReviewGateError {
     InvalidEstimatedCost(f64),
     #[error("cost component {field} must not be empty")]
     InvalidCostComponent { field: &'static str },
+    #[error("review angle {field} must not be empty")]
+    InvalidReviewAngle { field: &'static str },
     #[error("invalid severity {0:?}; expected P0, P1, P2, P3, or P4")]
     InvalidSeverity(String),
     #[error("summary state is invalid: {0}")]
@@ -277,23 +279,17 @@ pub struct ReviewAngleResult {
 impl ReviewAngleResult {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.id.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent { field: "angle.id" });
+            return Err(ReviewGateError::InvalidReviewAngle { field: "id" });
         }
         if self.name.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent {
-                field: "angle.name",
-            });
+            return Err(ReviewGateError::InvalidReviewAngle { field: "name" });
         }
         validate_score(self.score)?;
         if self.verdict.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent {
-                field: "angle.verdict",
-            });
+            return Err(ReviewGateError::InvalidReviewAngle { field: "verdict" });
         }
         if self.model.trim().is_empty() {
-            return Err(ReviewGateError::InvalidCostComponent {
-                field: "angle.model",
-            });
+            return Err(ReviewGateError::InvalidReviewAngle { field: "model" });
         }
         Ok(())
     }
@@ -1606,6 +1602,24 @@ mod tests {
         assert!(matches!(
             artifact.validate(),
             Err(ReviewGateError::InvalidCostComponent { field: "model" })
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_empty_review_angle_fields_with_angle_error() {
+        let angle = ReviewAngleResult {
+            id: String::new(),
+            name: "General".to_string(),
+            score: 5,
+            status: ReviewStatus::Passed,
+            verdict: "Clean.".to_string(),
+            model: "deepseek/deepseek-v4-flash".to_string(),
+            finding_ids: vec![],
+        };
+
+        assert!(matches!(
+            angle.validate(),
+            Err(ReviewGateError::InvalidReviewAngle { field: "id" })
         ));
     }
 
