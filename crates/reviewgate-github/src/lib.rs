@@ -182,6 +182,7 @@ pub struct InlineCommentAnchorPlan {
     pub repaired_count: u32,
     pub fallback_count: u32,
     pub skipped_count: u32,
+    pub skipped_finding_ids: Vec<String>,
 }
 
 impl ChangedLineSet {
@@ -509,6 +510,7 @@ pub fn plan_inline_comment_drafts(
     let mut repaired_count = 0u32;
     let mut fallback_count = 0u32;
     let mut skipped_count = 0u32;
+    let mut skipped_finding_ids = Vec::new();
     let mut fallback_anchors = FallbackAnchorAllocator::new(changed_lines);
 
     for finding in findings {
@@ -524,6 +526,7 @@ pub fn plan_inline_comment_drafts(
             resolve_finding_inline_anchor(finding, &body, &mut fallback_anchors)
         else {
             skipped_count += 1;
+            skipped_finding_ids.push(finding.id.clone());
             continue;
         };
         match anchor_kind {
@@ -547,6 +550,7 @@ pub fn plan_inline_comment_drafts(
         repaired_count,
         fallback_count,
         skipped_count,
+        skipped_finding_ids,
     }
 }
 
@@ -1211,6 +1215,29 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         assert_eq!(plan.fallback_count, 1);
         assert_eq!(plan.drafts[0].path, "src/lib.rs");
         assert_eq!(plan.drafts[0].line, 10);
+    }
+
+    #[test]
+    fn records_skipped_finding_ids_when_no_anchor_exists() {
+        let finding = Finding {
+            id: "rg_no_anchor".to_string(),
+            angle_id: None,
+            scope: reviewgate_core::FindingScope::Pr,
+            severity: Severity::P1,
+            confidence: 0.95,
+            file: None,
+            line: None,
+            title: "No anchor available".to_string(),
+            detail: None,
+            agent_instruction: "Keep this visible in logs.".to_string(),
+        };
+        let changed_lines = ChangedLineSet::default();
+
+        let plan = plan_inline_comment_drafts(&[finding], &[], Severity::P2, &changed_lines);
+
+        assert!(plan.drafts.is_empty());
+        assert_eq!(plan.skipped_count, 1);
+        assert_eq!(plan.skipped_finding_ids, vec!["rg_no_anchor".to_string()]);
     }
 
     #[test]

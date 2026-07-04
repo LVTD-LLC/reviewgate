@@ -785,6 +785,7 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
     let repaired_anchors = anchor_plan.repaired_count;
     let fallback_anchors = anchor_plan.fallback_count;
     let skipped_unanchored = anchor_plan.skipped_count;
+    let skipped_finding_ids = anchor_plan.skipped_finding_ids;
     let drafts = anchor_plan.drafts;
     if repaired_anchors > 0 {
         println!(
@@ -797,8 +798,9 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
         );
     }
     if skipped_unanchored > 0 {
+        let skipped_id_summary = summarize_finding_ids(&skipped_finding_ids);
         println!(
-            "ReviewGate inline comments skipped {skipped_unanchored} finding(s) because no right-side diff anchor was available in the PR diff."
+            "ReviewGate inline comments skipped {skipped_unanchored} finding(s) because no right-side diff anchor was available in the PR diff. Skipped finding IDs: {skipped_id_summary}."
         );
     }
 
@@ -834,11 +836,30 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> Result<()> {
         "ReviewGate findings published: {posted} inline; {standalone_deleted} stale standalone deleted; repaired anchors: {repaired_anchors}; fallback anchors: {fallback_anchors}; skipped: {skipped_unanchored}; inline failed: {failed}."
     );
     if failed > 0 || skipped_unanchored > 0 {
+        let skipped_id_summary = summarize_finding_ids(&skipped_finding_ids);
         println!(
-            "::warning title=ReviewGate findings::Failed {failed} inline comment(s) and skipped {skipped_unanchored}; ReviewGate did not create standalone finding comments. The review JSON contains the full findings."
+            "::warning title=ReviewGate findings::Failed {failed} inline comment(s) and skipped {skipped_unanchored}; skipped finding IDs: {skipped_id_summary}. ReviewGate did not create standalone finding comments. The review JSON contains the full findings."
         );
     }
     Ok(())
+}
+
+fn summarize_finding_ids(ids: &[String]) -> String {
+    const MAX_IDS: usize = 20;
+    if ids.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut summary = ids
+        .iter()
+        .take(MAX_IDS)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ids.len() > MAX_IDS {
+        summary.push_str(&format!(", and {} more", ids.len() - MAX_IDS));
+    }
+    summary
 }
 
 fn build_inline_comment_payload(draft: &InlineCommentDraft, commit_id: &str) -> serde_json::Value {
@@ -2182,6 +2203,19 @@ mod tests {
         assert!(is_removed_config_key("summary_min_severity"));
         assert!(is_removed_config_key("inline_min_confidence"));
         assert!(!is_removed_config_key("min_severity"));
+    }
+
+    #[test]
+    fn skipped_finding_id_summary_is_bounded() {
+        let ids = (0..22)
+            .map(|index| format!("rg_{index:02}"))
+            .collect::<Vec<_>>();
+
+        let summary = summarize_finding_ids(&ids);
+
+        assert!(summary.starts_with("rg_00, rg_01"));
+        assert!(summary.ends_with(", and 2 more"));
+        assert!(!summary.contains("rg_20"));
     }
 
     #[test]
