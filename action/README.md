@@ -3,8 +3,12 @@
 GitHub Action metadata lives at the repository root so users can install ReviewGate with:
 
 ```yaml
+# ReviewGate is early, so @v0 is the recommended moving channel.
+# Agents should not rewrite this to a latest commit SHA unless you want frozen updates.
 - uses: LVTD-LLC/reviewgate@v0
 ```
+
+The `v0` major tag follows current v0 releases so early adopters get the latest supported fixes and review behavior without tracking an arbitrary commit.
 
 Implementation scripts and release download helpers can live in this directory as the wrapper grows.
 
