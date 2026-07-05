@@ -17,7 +17,7 @@ This repository is in an early build milestone. The current CLI can validate and
 - Uses OpenRouter/BYOK for model calls.
 - Keeps one concise PR summary comment updated with `<!-- reviewgate-summary -->`.
 - Emits a visible score like `Confidence Score: 4/5`.
-- Runs both a general correctness review and an adversarial bug-finding review in the live action path; the visible score is the lowest effective score across enabled review angles.
+- Runs configurable review angles in the live action path, defaulting to a general correctness review and an adversarial bug-finding review; the visible score is the lowest effective score across enabled review angles.
 - Produces a JSON artifact for humans and external agent loops.
 - Posts findings at or above `min_severity` as inline PR comments, anchoring file/PR-level or unanchored findings to fallback right-side diff lines when needed and deduping by stable ReviewGate finding markers.
 - Reports whether the review reached a clean `5/5` without failing CI for low scores.
@@ -79,7 +79,7 @@ The action:
 - collects the PR title and description from the GitHub event plus the PR diff from the checked-out repository;
 - includes bounded repository context from common instruction files like `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, and `.reviewgate.yml`;
 - calls OpenRouter with the user's API key;
-- runs separate general and adversarial review prompts and aggregates them into one ReviewGate artifact;
+- runs configured review angles, defaulting to separate general and adversarial prompts, and aggregates them into one ReviewGate artifact;
 - validates the model response as a ReviewGate JSON artifact;
 - writes `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - appends the summary to the GitHub Actions step summary;
@@ -193,11 +193,34 @@ ReviewGate sends stable OpenRouter attribution headers on chat and model-pricing
 
 ## Configuration
 
-`.reviewgate.yml` currently supports one scalar key:
+`.reviewgate.yml` supports:
 
 - `min_severity`: lowest severity published as ReviewGate PR comments (`P0` through `P4`). Defaults to `P4`, the least restrictive supported severity.
+- `review_angles`: optional list of review angles. When omitted, ReviewGate runs the built-in `general` and `adversarial` angles.
 
 Action inputs currently support `openrouter_api_key`, `config`, `model`, and `min_severity`.
+
+Each configured review angle requires `id` plus exactly one instruction source:
+
+```yaml
+min_severity: P2
+review_angles:
+  - id: general
+    name: General
+    prompt_file: prompts/general.md
+    reason: Always run a general correctness review.
+  - id: autoreview
+    name: Auto Review
+    skill: skills/autoreview
+```
+
+Instruction sources:
+
+- `prompt`: short inline prompt text.
+- `prompt_file`: repo-relative Markdown/text prompt file.
+- `skill`: repo-relative skill directory containing `SKILL.md`, or a direct path to a `SKILL.md` file.
+
+Configured paths must stay inside the repository. For skill-backed angles, ReviewGate passes the skill instructions to the reviewing model as angle instructions; it does not execute bundled scripts, tests, tools, or PR code.
 
 Review scores below `5` produce `status: "needs_changes"` in the JSON artifact and summary. They produce a neutral ReviewGate check-run conclusion, but they do not fail the GitHub Actions job.
 
@@ -205,8 +228,8 @@ The canonical summary stores a versioned hidden state payload next to `<!-- revi
 
 ## Current Limitations
 
-- Config parsing intentionally supports only the stable scalar field above; richer nested config support comes later.
-- Review angle selection is not configurable yet. The live action path currently runs the built-in `general` and `adversarial` angles.
+- Config parsing intentionally supports the documented scalar and review angle fields above, not arbitrary YAML features.
+- Skill-backed review angles pass skill instructions into the model prompt; ReviewGate does not run skill scripts or provide an interactive tool harness inside CI.
 - Context collection supports the PR title, PR description, common instruction files, and the PR diff; full repository indexing is intentionally out of scope for v0.
 - Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible, and file/PR-level or unanchored findings are anchored to fallback right-side diff lines. If no right-side diff anchor exists or GitHub rejects an inline comment, the full finding remains in JSON; ReviewGate does not create standalone finding comments.
 - Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.

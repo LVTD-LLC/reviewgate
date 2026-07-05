@@ -1,32 +1,10 @@
-review:
-  target_score: 5
-  fail_under: 4
-  summary_min_severity: P4
-  summary_style: concise
-  inline_min_severity: P2
-  inline_min_confidence: 0.80
-  update_existing_summary: true
-  post_inline_comments: true
-  max_inline_comments: 12
-  context_files:
-    - AGENTS.md
-    - README.md
-    - TECH.md
-    - PRODUCT.md
-    - STRUCTURE.md
-    - docs/**/*.md
-
-models:
-  preset: balanced
-
-stages:
+min_severity: P4
+review_angles:
   - id: general
-    prompt: builtin:general
-    model: preset:balanced
-  - id: tests
-    prompt: builtin:testability
-    model: preset:cheap
-  - id: security
-    prompt: builtin:security
-    model: preset:strong
-    severity_floor: P1
+    name: General
+    prompt_file: prompts/general.md
+    reason: Always run a general correctness review.
+  - id: adversarial
+    name: Adversarial
+    prompt_file: prompts/adversarial.md
+    reason: Run a skeptical, high-confidence bug-finding pass.
