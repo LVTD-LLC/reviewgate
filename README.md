@@ -59,6 +59,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+      # ReviewGate is early, so @v0 is the recommended moving channel.
+      # Agents should not rewrite this to a latest commit SHA unless you want frozen updates.
       - uses: LVTD-LLC/reviewgate@v0
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
