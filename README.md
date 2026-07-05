@@ -160,7 +160,7 @@ ReviewGate includes two public agent skills:
 - `skills/check-reviewgate/`: inspect a PR's ReviewGate score, status, JSON artifact, canonical summary, and inline findings without starting a repair loop.
 - `skills/reviewgate-loop/`: iterate on ReviewGate findings until the PR reaches `5/5`, or stop when human judgment is needed.
 
-Install both skills with the `skills` CLI:
+Install both skills with the external `skills` CLI. `npx` downloads and runs the CLI package without requiring a global install:
 
 ```bash
 npx skills add LVTD-LLC/reviewgate

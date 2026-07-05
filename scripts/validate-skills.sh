@@ -54,7 +54,7 @@ while IFS= read -r -d '' skill; do
       print > file
     }
   ' "$skill"
-done < <(find skills -mindepth 2 -maxdepth 2 -name SKILL.md -print0)
+done < <(find skills -name SKILL.md -print0)
 
 if (( found == 0 )); then
   fail "no skills/*/SKILL.md files found"
@@ -62,9 +62,7 @@ fi
 
 for block in "$tmp_dir"/*.sh; do
   [[ -e "$block" ]] || continue
-  if grep -Eq '(^|[^A-Za-z0-9_])gh([[:space:]]|$)' "$block"; then
-    bash -n "$block" || fail "$block: bash syntax check failed"
-  fi
+  bash -n "$block" || fail "$block: bash syntax check failed"
 done
 
 echo "validate-skills: ok"

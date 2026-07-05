@@ -35,6 +35,7 @@ Do not stop because ordinary CI is green. ReviewGate low-score results use `need
 ### 1. Identify the PR and Branch
 
 ```bash
+gh auth status || { echo "Authenticate gh or set GH_TOKEN/GITHUB_TOKEN before using live PR commands."; exit 1; }
 PR_NUMBER="${PR_NUMBER:-$(gh pr view --json number --jq .number)}"
 HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
 gh pr view "$PR_NUMBER" --json number,title,url,headRefName,headRefOid,statusCheckRollup
@@ -42,7 +43,9 @@ gh pr view "$PR_NUMBER" --json number,title,url,headRefName,headRefOid,statusChe
 
 Switch to the PR branch before editing if the current checkout is not already on it. Do not work from `main` unless the user explicitly asked for that.
 
-`gh` commands require an authenticated GitHub CLI. In CI or non-interactive shells, set `GH_TOKEN` or `GITHUB_TOKEN` before using this skill.
+`gh` commands require an authenticated GitHub CLI. In CI or non-interactive shells, set `GH_TOKEN` or `GITHUB_TOKEN` before using this skill. Reading private PRs requires repository read access. Replying to or resolving review comments requires pull-request or issue comment write permissions. If `gh` is unavailable, use a direct GitHub API client with `OWNER`, `REPO`, `PR_NUMBER`, `HEAD_SHA`, and a token supplied by the environment; if those values are missing, stop and report that the live PR loop cannot continue.
+
+When a `gh api` call returns `403` or `404`, treat it as an authentication, permission, repository visibility, or wrong-repository problem until verified otherwise. Do not silently interpret it as "no ReviewGate comments."
 
 ### 2. Read ReviewGate Output
 
@@ -113,10 +116,15 @@ Do not commit generated `.reviewgate/` outputs unless the task explicitly asks f
 
 ```bash
 git status --short
-git add <changed-files>
-git commit -m "fix(scope): address <reviewgate-finding>"
+BRANCH="$(git branch --show-current)"
+git fetch origin "$BRANCH"
+git rebase "origin/$BRANCH"
+git add path/to/changed-file
+git commit -m "fix(scope): address ${REVIEWGATE_FINDING_ID:-reviewgate-finding}"
 git push
 ```
+
+If the fetch/rebase step conflicts, resolve the conflict deliberately and rerun tests before committing. If `git push` fails with a non-fast-forward update, fetch and rebase again; do not force push unless the user explicitly approves it.
 
 ### 5. Comment Before Resolving Threads
 
@@ -146,7 +154,30 @@ When working inside the ReviewGate repository without an installed binary, use t
 cargo run --locked -p reviewgate-cli -- recheck --repo . --pr "$PR_NUMBER"
 ```
 
-Then wait for the new ReviewGate run to publish an updated canonical summary comment containing `<!-- reviewgate-summary -->`. Re-read the JSON artifact or PR fallback sources before starting the next attempt.
+Then poll until ReviewGate publishes an updated canonical summary for the current PR head SHA. The defaults below wait up to 15 minutes:
+
+```bash
+UPDATED_SUMMARY=""
+for _ in $(seq 1 "${REVIEWGATE_MAX_POLLS:-60}"); do
+  CURRENT_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
+  SUMMARY_BODY="$(
+    gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUMBER/comments?per_page=100" |
+      jq -rs 'add | map(select(.body | contains("<!-- reviewgate-summary -->"))) | sort_by(.updated_at, .id) | last | .body // ""'
+  )"
+  if printf '%s\n' "$SUMMARY_BODY" | grep -q "$CURRENT_HEAD"; then
+    UPDATED_SUMMARY="$SUMMARY_BODY"
+    break
+  fi
+  sleep "${REVIEWGATE_POLL_SECONDS:-15}"
+done
+
+if [[ -z "$UPDATED_SUMMARY" ]]; then
+  echo "ReviewGate did not publish a summary for the latest PR head before the timeout."
+  exit 1
+fi
+```
+
+If using `.reviewgate/review.json`, apply the same freshness check by comparing `reviewed_sha` to the current PR head SHA. Re-read the JSON artifact or PR fallback sources before starting the next attempt.
 
 ## Stop Conditions
 
