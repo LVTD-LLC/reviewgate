@@ -8,7 +8,7 @@ RUN npm ci
 COPY site/ ./
 RUN npm run build
 
-FROM nginx:1.29-alpine
+FROM nginx:stable-alpine
 
 COPY deployment/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
