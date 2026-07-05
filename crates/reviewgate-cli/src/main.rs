@@ -1591,11 +1591,15 @@ fn truncate_pull_request_context(contents: &mut String, max_bytes: usize, max_ch
     let marker = truncation_marker_for_limits(max_bytes, max_chars);
     let max_content_bytes = max_bytes.saturating_sub(marker.len());
     let max_content_chars = max_chars.saturating_sub(marker.chars().count());
-    let char_boundary = boundary_after_char_count(contents, max_content_chars);
-    let byte_boundary = char_boundary_at_or_before(contents, max_content_bytes);
-    let truncate_at = char_boundary.min(byte_boundary);
-    contents.truncate(truncate_at);
-    contents.push_str(marker);
+    let mut truncated = String::new();
+    for character in contents.chars().take(max_content_chars) {
+        if truncated.len() + character.len_utf8() > max_content_bytes {
+            break;
+        }
+        truncated.push(character);
+    }
+    truncated.push_str(marker);
+    *contents = truncated;
 }
 
 fn truncation_marker_for_limits(max_bytes: usize, max_chars: usize) -> &'static str {
@@ -1614,21 +1618,6 @@ fn truncation_marker_for_limits(max_bytes: usize, max_chars: usize) -> &'static 
     } else {
         ""
     }
-}
-
-fn boundary_after_char_count(contents: &str, max_chars: usize) -> usize {
-    contents
-        .char_indices()
-        .nth(max_chars)
-        .map(|(index, _)| index)
-        .unwrap_or(contents.len())
-}
-
-fn char_boundary_at_or_before(contents: &str, max_bytes: usize) -> usize {
-    (0..=max_bytes.min(contents.len()))
-        .rev()
-        .find(|&index| contents.is_char_boundary(index))
-        .unwrap_or(0)
 }
 
 fn count_changed_diff_lines(diff: &str) -> u32 {
@@ -2986,6 +2975,12 @@ let resync_state = state.clone();
         assert_eq!(contents, COMPACT_TRUNCATED_CONTEXT_MARKER);
         assert!(contents.len() <= 3);
         assert!(contents.chars().count() <= 3);
+
+        truncate_pull_request_context(&mut contents, 1, 1);
+
+        assert_eq!(contents, MINIMAL_TRUNCATED_CONTEXT_MARKER);
+        assert!(contents.len() <= 1);
+        assert!(contents.chars().count() <= 1);
     }
 
     #[test]
