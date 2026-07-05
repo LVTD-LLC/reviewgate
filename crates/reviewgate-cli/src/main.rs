@@ -37,6 +37,8 @@ const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
 const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
+const MAX_PR_TITLE_BYTES: usize = 1_000;
+const MAX_PR_DESCRIPTION_BYTES: usize = 20_000;
 const MAX_GENERATED_FINDING_ID_CHARS: usize = 256;
 
 #[derive(Debug, Parser)]
@@ -311,9 +313,16 @@ struct ContextFile {
     contents: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PullRequestContext {
+    title: Option<String>,
+    description: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewContext {
     reviewed_sha: String,
+    pull_request: PullRequestContext,
     changed_files: Vec<String>,
     diff: String,
     analyzed_line_count: u32,
@@ -1320,6 +1329,7 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
     let checkout_sha = git(repo, ["rev-parse", "HEAD"])?;
     let github_event = read_github_event()?;
     let reviewed_sha = select_reviewed_sha(&checkout_sha, github_event.as_ref());
+    let pull_request = select_pull_request_context(github_event.as_ref());
     let base_ref = std::env::var("GITHUB_BASE_REF").ok();
     let diff_base = if let Some(base) = base_ref.as_ref() {
         Some(
@@ -1354,6 +1364,7 @@ fn collect_review_context(repo: &Path) -> Result<ReviewContext> {
 
     Ok(ReviewContext {
         reviewed_sha,
+        pull_request,
         changed_files,
         analyzed_line_count,
         data_integrity_review_needed,
@@ -1403,6 +1414,32 @@ fn select_reviewed_sha(checkout_sha: &str, github_event: Option<&serde_json::Val
         .filter(|sha| !sha.trim().is_empty())
         .unwrap_or(checkout_sha)
         .to_string()
+}
+
+fn select_pull_request_context(github_event: Option<&serde_json::Value>) -> PullRequestContext {
+    let Some(event) = github_event else {
+        return PullRequestContext::default();
+    };
+
+    PullRequestContext {
+        title: pull_request_text_field(event, "title", MAX_PR_TITLE_BYTES),
+        description: pull_request_text_field(event, "body", MAX_PR_DESCRIPTION_BYTES),
+    }
+}
+
+fn pull_request_text_field(
+    event: &serde_json::Value,
+    field: &str,
+    max_bytes: usize,
+) -> Option<String> {
+    let value = event.get("pull_request")?.get(field)?.as_str()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let mut value = value.to_string();
+    truncate_context_contents(&mut value, max_bytes);
+    Some(value)
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
@@ -1532,6 +1569,7 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: ReviewAngle) ->
         "Finding scope guidance: scope describes the finding's semantic target, not whether ReviewGate can publish it inline. Set scope to line only when the finding is high-confidence and tied to one exact changed line in the new/right side of the diff. The line value must be a line number that appears as a + line in the unified diff, not a hunk header, unchanged context line, or deleted - line. Use file for broader file-level feedback and pr for repo- or PR-level feedback; file and pr findings may use null line. ReviewGate will still publish file-level, PR-level, and stale-line findings as inline PR comments by anchoring them to fallback right-side diff lines when needed.\n\n",
     );
     prompt.push_str(&format!("reviewed_sha: {}\n\n", context.reviewed_sha));
+    append_pull_request_scope_context(&mut prompt, &context.pull_request);
     prompt.push_str("JSON schema:\n");
     prompt.push_str(schema);
     prompt.push_str("\n\nChanged files:\n");
@@ -1550,6 +1588,32 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: ReviewAngle) ->
     prompt.push_str(&context.diff);
     prompt.push_str("\n```\n");
     prompt
+}
+
+fn append_pull_request_scope_context(prompt: &mut String, pull_request: &PullRequestContext) {
+    if pull_request.title.is_none() && pull_request.description.is_none() {
+        return;
+    }
+
+    prompt.push_str("Pull request scope context (untrusted author-provided JSON strings):\n");
+    prompt.push_str(
+        "Use the title and description to understand the intended scope of this PR. Assess whether the changed code safely implements that intent. Findings and agent_instruction values must raise concrete code issues introduced or materially worsened by this PR, such as correctness, reliability, performance, security, compatibility, or maintainability. Do not redirect the PR toward a different product direction or broader feature scope unless that change is necessary to fix a concrete code defect evidenced in the diff.\n",
+    );
+    if let Some(title) = &pull_request.title {
+        prompt.push_str("pr_title: ");
+        append_json_string(prompt, title);
+        prompt.push('\n');
+    }
+    if let Some(description) = &pull_request.description {
+        prompt.push_str("pr_description: ");
+        append_json_string(prompt, description);
+        prompt.push('\n');
+    }
+    prompt.push('\n');
+}
+
+fn append_json_string(prompt: &mut String, value: &str) {
+    prompt.push_str(&serde_json::to_string(value).expect("serializing a string cannot fail"));
 }
 
 fn run_live_angle_review(
@@ -2505,6 +2569,7 @@ Thanks {also not json}."#;
     fn selects_docs_stage_for_root_markdown_paths() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
             changed_files: vec!["CHANGELOG.md".to_string(), "src/lib.rs".to_string()],
             diff: String::new(),
             analyzed_line_count: 0,
@@ -2521,6 +2586,7 @@ Thanks {also not json}."#;
     fn selects_data_integrity_stage_for_deploy_orm_sync() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
             changed_files: vec![
                 "apps/blog/services.py".to_string(),
                 "deployment/entrypoint.sh".to_string(),
@@ -2587,6 +2653,27 @@ let resync_state = state.clone();
     }
 
     #[test]
+    fn extracts_pull_request_title_and_description_from_event() {
+        let event = serde_json::json!({
+            "pull_request": {
+                "title": "Add incremental review summaries",
+                "body": "\nKeep the review focused on the changed summary rendering path.\n"
+            }
+        });
+
+        let pull_request = select_pull_request_context(Some(&event));
+
+        assert_eq!(
+            pull_request.title.as_deref(),
+            Some("Add incremental review summaries")
+        );
+        assert_eq!(
+            pull_request.description.as_deref(),
+            Some("Keep the review focused on the changed summary rendering path.")
+        );
+    }
+
+    #[test]
     fn truncates_context_on_utf8_char_boundary() {
         let mut contents = "aaaaébbbb".to_string();
 
@@ -2615,6 +2702,13 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn prompt_contains_schema_and_diff_without_target_score_or_failure_floor() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext {
+                title: Some("Add inline finding comments".to_string()),
+                description: Some(
+                    "This PR only wires ReviewGate findings into GitHub inline comments."
+                        .to_string(),
+                ),
+            },
             changed_files: vec!["src/lib.rs".to_string()],
             diff: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
             analyzed_line_count: 0,
@@ -2648,6 +2742,14 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("anchoring them to fallback right-side diff lines"));
         assert!(prompt.contains("new/right side of the diff"));
         assert!(prompt.contains("appears as a + line"));
+        assert!(prompt.contains("Pull request scope context"));
+        assert!(prompt.contains("untrusted author-provided"));
+        assert!(prompt.contains("Add inline finding comments"));
+        assert!(
+            prompt.contains("This PR only wires ReviewGate findings into GitHub inline comments.")
+        );
+        assert!(prompt.contains("Do not redirect the PR"));
+        assert!(prompt.contains("concrete code defect"));
         assert!(prompt.contains("diff --git"));
     }
 
@@ -2655,6 +2757,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn adversarial_prompt_includes_angle_policy() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
             changed_files: vec!["src/lib.rs".to_string()],
             diff: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
             analyzed_line_count: 0,
@@ -2964,6 +3067,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn appends_dynamic_review_stages_without_duplicating_angle_stages() {
         let context = ReviewContext {
             reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
             changed_files: vec![
                 "tests/review_test.rs".to_string(),
                 "src/security/token.rs".to_string(),
