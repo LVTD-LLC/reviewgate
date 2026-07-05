@@ -67,18 +67,20 @@ jq -r '
 
 ### 3. Fall Back to PR Comments When Needed
 
+In a checked-out GitHub repository, `gh api` replaces `{owner}` and `{repo}` from the current repo. Outside a checkout, set `GH_REPO=OWNER/REPO` or replace those placeholders explicitly.
+
 If the JSON artifact is unavailable or stale, find the latest canonical summary comment by update time:
 
 ```bash
-gh api --paginate --slurp "repos/{owner}/{repo}/issues/$PR_NUMBER/comments?per_page=100" |
-  jq 'add | map(select(.body | contains("<!-- reviewgate-summary -->"))) | sort_by(.updated_at) | last | {updated_at, body}'
+gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUMBER/comments?per_page=100" |
+  jq -s 'add | map(select(.body | contains("<!-- reviewgate-summary -->"))) | sort_by(.updated_at) | last | {updated_at, body}'
 ```
 
 Fetch ReviewGate inline finding comments, which are deduped by hidden finding markers:
 
 ```bash
-gh api --paginate --slurp "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments?per_page=100" |
-  jq 'add | map(select(.body | contains("<!-- reviewgate-finding:"))) | map({path, line, updated_at, body})'
+gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments?per_page=100" |
+  jq -s 'add | map(select(.body | contains("<!-- reviewgate-finding:"))) | map({path, line, updated_at, body})'
 ```
 
 The summary is concise by design and may omit finding details. If the summary says the score is below `5/5` but comments do not explain why, request or trigger a fresh ReviewGate run and obtain the JSON artifact before making risky changes.

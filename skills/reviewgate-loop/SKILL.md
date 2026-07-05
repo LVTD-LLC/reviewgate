@@ -77,12 +77,14 @@ jq -r '
 
 If the artifact is missing or stale, read the latest canonical summary and inline finding comments:
 
-```bash
-gh api --paginate --slurp "repos/{owner}/{repo}/issues/$PR_NUMBER/comments?per_page=100" |
-  jq 'add | map(select(.body | contains("<!-- reviewgate-summary -->"))) | sort_by(.updated_at) | last | {updated_at, body}'
+In a checked-out GitHub repository, `gh api` replaces `{owner}` and `{repo}` from the current repo. Outside a checkout, set `GH_REPO=OWNER/REPO` or replace those placeholders explicitly.
 
-gh api --paginate --slurp "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments?per_page=100" |
-  jq 'add | map(select(.body | contains("<!-- reviewgate-finding:"))) | map({path, line, updated_at, body})'
+```bash
+gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUMBER/comments?per_page=100" |
+  jq -s 'add | map(select(.body | contains("<!-- reviewgate-summary -->"))) | sort_by(.updated_at) | last | {updated_at, body}'
+
+gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments?per_page=100" |
+  jq -s 'add | map(select(.body | contains("<!-- reviewgate-finding:"))) | map({path, line, updated_at, body})'
 ```
 
 Use comments as fallback only. The JSON artifact is the machine contract and contains all findings even when `min_severity` hides lower-severity inline comments.
