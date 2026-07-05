@@ -9,6 +9,8 @@ crates/reviewgate-core/      Review artifact types, scoring, validation, summary
 crates/reviewgate-cli/       Local and CI command-line entrypoints
 crates/reviewgate-github/    GitHub comment, inline review, and check-run publishing
 action/                      GitHub Action documentation and wrapper support
+site/                        Astro static site for reviewgate.lvtd.dev
+deployment/                  Site container image and nginx config for CapRover
 prompts/                     Built-in review stage prompts
 schemas/                     JSON artifact schemas
 fixtures/                    Golden review fixtures and deterministic examples
@@ -24,6 +26,8 @@ skills/reviewgate-loop/      Public agent loop skill
 - Put deterministic scoring, validation, and rendering logic in `crates/reviewgate-core`.
 - Put command parsing, file IO orchestration, and CI-friendly entrypoints in `crates/reviewgate-cli`.
 - Put GitHub API code in `crates/reviewgate-github`.
+- Put public website pages, components, and styles in `site/`.
+- Put production website container/deployment support in `deployment/`.
 - Put reusable model prompt text in `prompts/`.
 - Put machine-readable artifact contracts in `schemas/`.
 - Put small committed sample inputs in `fixtures/`.

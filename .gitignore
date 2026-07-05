@@ -1,4 +1,6 @@
 /target
 /.reviewgate
+/site/.astro
+/site/dist
+/site/node_modules
 *.log
-

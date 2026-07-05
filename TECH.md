@@ -13,6 +13,9 @@ ReviewGate is a Rust workspace with a thin composite GitHub Action wrapper.
 - Action wrapper:
   - `action.yml`: composite action entrypoint.
   - `action/`: action documentation and wrapper support files.
+- Marketing site:
+  - `site/`: Astro static site for `reviewgate.lvtd.dev`.
+  - `deployment/`: production Docker image and nginx config for CapRover.
 
 ## Local Commands
 
@@ -51,12 +54,22 @@ cargo run --locked -p reviewgate-cli -- fixture-review \
 
 This is the CI-required artifact-writing form. The shorter stdout-only form is useful for manual inspection, but it does not verify artifact output paths.
 
+Site checks:
+
+```bash
+cd site
+npm ci
+npm run check
+npm run build
+```
+
 ## CI
 
 `.github/workflows/ci.yml` runs on PRs and pushes to `main`.
 
 Required CI steps:
 
+- `npm ci`, `npm run check`, and `npm run build` in `site/`
 - `bash scripts/validate-skills.sh`
 - `cargo fmt --all --check`
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`

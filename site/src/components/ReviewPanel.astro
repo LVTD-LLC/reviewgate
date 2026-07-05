@@ -1,0 +1,56 @@
+---
+const findings = [
+  {
+    severity: "P1",
+    title: "Deployment gate can merge a broken image",
+    detail: "Missing smoke verification after the CapRover release.",
+  },
+  {
+    severity: "P2",
+    title: "Summary comment duplicates across reruns",
+    detail: "Canonical marker is not reused when the agent pushes fixes.",
+  },
+  {
+    severity: "P3",
+    title: "Agent instructions are not visible to reviewers",
+    detail: "The review prompt skips AGENTS.md and product constraints.",
+  },
+];
+---
+
+<aside class="review-panel" aria-label="Example ReviewGate scorecard">
+  <div class="panel-toolbar">
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+
+  <div class="score-row">
+    <div>
+      <p class="eyebrow">ReviewGate</p>
+      <h2>5/5</h2>
+    </div>
+    <span class="status-pill">Passed</span>
+  </div>
+
+  <div class="meter" aria-label="Review score 5 out of 5">
+    <span></span>
+  </div>
+
+  <div class="review-summary">
+    <strong>Ready to merge</strong>
+    <p>Canonical PR summary updated in place. No blocking findings remain.</p>
+  </div>
+
+  <ul class="finding-list">
+    {findings.map((finding) => (
+      <li>
+        <span>{finding.severity}</span>
+        <div>
+          <strong>{finding.title}</strong>
+          <p>{finding.detail}</p>
+        </div>
+      </li>
+    ))}
+  </ul>
+</aside>
