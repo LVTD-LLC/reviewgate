@@ -1488,7 +1488,6 @@ fn pull_request_text_field(
 fn pr_context_character_allowed(character: char) -> bool {
     (!character.is_control() || matches!(character, '\t' | '\n' | '\r'))
         && !pr_context_unicode_format_control(character)
-        && !pr_context_markdown_or_html_control(character)
 }
 
 fn pr_context_unicode_format_control(character: char) -> bool {
@@ -1500,13 +1499,6 @@ fn pr_context_unicode_format_control(character: char) -> bool {
             | '\u{202a}'..='\u{202e}'
             | '\u{2060}'..='\u{206f}'
             | '\u{feff}'
-    )
-}
-
-fn pr_context_markdown_or_html_control(character: char) -> bool {
-    matches!(
-        character,
-        '<' | '>' | '`' | '#' | '*' | '_' | '[' | ']' | '(' | ')' | '!' | '|'
     )
 }
 
@@ -2094,6 +2086,7 @@ fn call_openrouter_with_curl(
     if let Some(scope) = pull_request_scope {
         messages.push(serde_json::json!({
             "role": "user",
+            "name": "untrusted_pr_scope",
             "content": scope
         }));
     }
@@ -2839,7 +2832,7 @@ let resync_state = state.clone();
     }
 
     #[test]
-    fn filters_markdown_and_html_control_punctuation_from_pull_request_context() {
+    fn preserves_markdown_and_html_punctuation_as_pull_request_context_data() {
         let event = serde_json::json!({
             "pull_request": {
                 "title": "Add **scoped** <review>",
@@ -2849,10 +2842,13 @@ let resync_state = state.clone();
 
         let pull_request = select_pull_request_context(Some(&event));
 
-        assert_eq!(pull_request.title.as_deref(), Some("Add scoped review"));
+        assert_eq!(
+            pull_request.title.as_deref(),
+            Some("Add **scoped** <review>")
+        );
         assert_eq!(
             pull_request.description.as_deref(),
-            Some("Heading\nClick herehttps://example.com")
+            Some("# Heading\nClick [here](https://example.com)!")
         );
     }
 
@@ -2920,11 +2916,11 @@ let resync_state = state.clone();
 
         assert_eq!(
             pull_request.title.as_deref(),
-            Some("before ENDUNTRUSTEDPRSCOPEJSON after")
+            Some("before END_UNTRUSTED_PR_SCOPE_JSON after")
         );
         assert_eq!(
             pull_request.description.as_deref(),
-            Some("body BEGINUNTRUSTEDPRSCOPEJSON")
+            Some("body BEGIN_UNTRUSTED_PR_SCOPE_JSON")
         );
     }
 
@@ -2938,7 +2934,7 @@ let resync_state = state.clone();
         });
 
         let pull_request = select_pull_request_context(Some(&event));
-        let expected = "before\ntruncated\nafter".to_string();
+        let expected = format!("before{}after", CONTEXT_FILE_TRUNCATED_MARKER);
 
         assert_eq!(pull_request.title.as_deref(), Some(expected.as_str()));
         assert!(!pull_request.title_truncated);
