@@ -5,10 +5,12 @@ Changes are grouped by calendar date, newest first.
 ## 2026-07-05
 
 - Switched changelog entries from release buckets to calendar-date sections.
+- Temporarily disabled the dogfood ReviewGate workflow on pull request events, leaving manual dispatch available for explicit runs.
 - Added ReviewGate-specific workflow prompt guardrails so the reviewer does not flag the documented `@v0` install tag, required summary/check permissions, or speculative workflow-concurrency concerns as findings without concrete evidence.
 - Added an explicit composite-action validation error for missing `OPENROUTER_API_KEY` and refreshed the documented install workflow with a job timeout and safer manual-run concurrency fallback.
 - Clarified Action install examples to recommend the moving `v0` tag for early releases instead of agent-suggested latest commit pins.
 - Added the Astro marketing site for `reviewgate.lvtd.dev` with CI coverage and token-based CapRover deployment through GitHub Actions.
+- Added PR title and description to live review prompts as bounded untrusted scope context so findings stay focused on code issues introduced by the PR.
 - Added CI validation for public agent skill frontmatter, fenced Markdown, and shell snippets.
 - Added authentication, polling, and push-concurrency guidance to ReviewGate agent skills.
 - Documented `skills` CLI installation for ReviewGate agent skills and added comment-before-resolve guidance for agent repair loops.

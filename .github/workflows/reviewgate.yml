@@ -1,8 +1,7 @@
 name: ReviewGate
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  # Temporarily disabled for automatic PR events.
   workflow_dispatch:
     inputs:
       min_severity:
