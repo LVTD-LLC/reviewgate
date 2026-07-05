@@ -27,6 +27,21 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Verify CI head is latest main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          latest_sha="$(
+            curl -fsS \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" |
+              node -e 'let s = ""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => process.stdout.write(JSON.parse(s).object.sha));'
+          )"
+          test "$latest_sha" = "$EXPECTED_SHA"
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -71,3 +86,14 @@ jobs:
           app: ${{ env.CAPROVER_APP_NAME }}
           token: ${{ secrets.APP_TOKEN }}
           image: ${{ steps.image.outputs.image_name }}:${{ steps.image.outputs.release_sha }}
+
+      - name: Smoke test deployed site
+        shell: bash
+        run: |
+          for attempt in {1..20}; do
+            if curl -fsS --max-time 10 https://reviewgate.cap.gregagi.com/ | grep -q "ReviewGate"; then
+              exit 0
+            fi
+            sleep 6
+          done
+          exit 1
