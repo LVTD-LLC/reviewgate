@@ -105,14 +105,14 @@ After score-blocking findings, decide whether to address `P4` findings. A pure `
 
 ### 4. Verify, Commit, and Push
 
-Run the repository's focused tests for the touched code, then its required checks before claiming the iteration is ready. In this repository, the required checks are listed in `AGENTS.md` and `TECH.md`.
+Run focused tests for the touched code, then the current repository's required checks before claiming the iteration is ready. Discover those checks from local agent instructions, contributor docs, PR templates, or CI workflow files. If the repository does not document a gate, run the narrowest relevant tests plus formatting and linting before pushing.
 
 Do not commit generated `.reviewgate/` outputs unless the task explicitly asks for sample output.
 
 ```bash
 git status --short
 git add <changed-files>
-git commit -m "fix: address reviewgate feedback"
+git commit -m "fix(scope): address <reviewgate-finding>"
 git push
 ```
 
