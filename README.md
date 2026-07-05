@@ -160,6 +160,18 @@ ReviewGate includes two public agent skills:
 - `skills/check-reviewgate/`: inspect a PR's ReviewGate score, status, JSON artifact, canonical summary, and inline findings without starting a repair loop.
 - `skills/reviewgate-loop/`: iterate on ReviewGate findings until the PR reaches `5/5`, or stop when human judgment is needed.
 
+Install both skills with the `skills` CLI:
+
+```bash
+npx skills add LVTD-LLC/reviewgate
+```
+
+Use `--skill check-reviewgate` or `--skill reviewgate-loop` to install only one skill, `--global` for a user-level install, or `--agent <agent-name>` when installing for a specific supported agent. To inspect the available skills before installing, run:
+
+```bash
+npx skills add LVTD-LLC/reviewgate --list
+```
+
 ## OpenRouter Boundary
 
 ReviewGate is BYOK. The action reads the model key from `OPENROUTER_API_KEY` and must not log the key, request headers, or raw secret values. The default model is `deepseek/deepseek-v4-flash`; users can pin an exact OpenRouter model ID with the `model` action input when they want stability.

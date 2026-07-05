@@ -116,7 +116,21 @@ git commit -m "fix(scope): address <reviewgate-finding>"
 git push
 ```
 
-### 5. Trigger or Wait for ReviewGate
+### 5. Comment Before Resolving Threads
+
+When a ReviewGate, Greptile, or human review comment has been addressed, reply in the thread before resolving it. Include what changed, the commit SHA, and the verification that covers the fix. This makes the loop observable and gives future agents a compact repair trail.
+
+Example GitHub reply for a line review comment:
+
+```bash
+gh api --method POST \
+  "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
+  -f body="Addressed in $COMMIT_SHA: <what changed>. Verification: <command/result>."
+```
+
+Then resolve only the threads that are fixed, stale, informational, or explicitly accepted. If the platform does not support threaded replies, leave a PR-level comment that links to or names the resolved comment IDs before resolving them.
+
+### 6. Trigger or Wait for ReviewGate
 
 A push to a PR branch usually triggers ReviewGate through the installed workflow. If a manual rerun is needed and the ReviewGate CLI is available, use:
 

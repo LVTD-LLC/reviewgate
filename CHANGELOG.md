@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Documented `skills` CLI installation for ReviewGate agent skills and added comment-before-resolve guidance for agent repair loops.
 - Added public `check-reviewgate` and expanded `reviewgate-loop` agent skills for inspecting ReviewGate output and iterating PRs toward `5/5`.
 - Added a built-in adversarial review angle to the live PR flow, with per-angle scores in the canonical summary, `angle_results` in the JSON artifact, and angle-labeled finding comments.
 - Hardened multi-angle aggregation so failed angles are reflected as `0/5` angle results, generated finding IDs stay unique and bounded, and each angle resolves its own cost metadata.
