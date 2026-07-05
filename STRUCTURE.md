@@ -12,7 +12,9 @@ action/                      GitHub Action documentation and wrapper support
 prompts/                     Built-in review stage prompts
 schemas/                     JSON artifact schemas
 fixtures/                    Golden review fixtures and deterministic examples
-skills/reviewgate-loop/      Public agent loop skill draft
+scripts/                     Repository validation and maintenance scripts
+skills/check-reviewgate/     Public agent PR inspection skill
+skills/reviewgate-loop/      Public agent loop skill
 .reviewgate/                 Local generated review artifacts; do not commit by default
 .github/workflows/           CI and repository automation
 ```
@@ -25,7 +27,8 @@ skills/reviewgate-loop/      Public agent loop skill draft
 - Put reusable model prompt text in `prompts/`.
 - Put machine-readable artifact contracts in `schemas/`.
 - Put small committed sample inputs in `fixtures/`.
-- Put public agent-loop instructions under `skills/reviewgate-loop/`.
+- Put repository validation and maintenance scripts in `scripts/`.
+- Put public agent skill instructions under `skills/check-reviewgate/` and `skills/reviewgate-loop/`.
 - Put user-facing install and usage documentation in `README.md` or `action/README.md`.
 
 ## Naming Conventions

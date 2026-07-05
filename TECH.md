@@ -16,6 +16,12 @@ ReviewGate is a Rust workspace with a thin composite GitHub Action wrapper.
 
 ## Local Commands
 
+Skill validation:
+
+```bash
+bash scripts/validate-skills.sh
+```
+
 Format check:
 
 ```bash
@@ -51,6 +57,7 @@ This is the CI-required artifact-writing form. The shorter stdout-only form is u
 
 Required CI steps:
 
+- `bash scripts/validate-skills.sh`
 - `cargo fmt --all --check`
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`
 - `cargo test --locked --workspace`
