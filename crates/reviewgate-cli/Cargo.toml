@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-base64.workspace = true
 clap.workspace = true
 reviewgate-core = { path = "../reviewgate-core" }
 reviewgate-github = { path = "../reviewgate-github" }
