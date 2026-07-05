@@ -9,7 +9,7 @@ branding:
 inputs:
   openrouter_api_key:
     description: OpenRouter API key used for model-backed review stages.
-    required: false
+    required: true
   config:
     description: Path to ReviewGate config.
     required: false
@@ -26,6 +26,17 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate ReviewGate inputs
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+      run: |
+        set -euo pipefail
+        if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+          echo "::error title=Missing OPENROUTER_API_KEY::Pass the openrouter_api_key input and configure the OPENROUTER_API_KEY repository secret." >&2
+          exit 1
+        fi
+
     - name: Publish ReviewGate start signal
       shell: bash
       continue-on-error: true

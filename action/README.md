@@ -26,6 +26,8 @@ permissions:
   checks: write
 ```
 
+These are the full-featured least-privilege permissions for the default install. `pull-requests: write` publishes inline PR review comments, `issues: write` creates and updates the canonical PR summary comment, and `checks: write` publishes the dedicated ReviewGate check run.
+
 Required secret:
 
 ```yaml
@@ -45,7 +47,7 @@ Scores below `5` are reported as `needs_changes` in the JSON artifact and PR sum
 
 ## Runtime
 
-The composite action first posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, runs the built-in review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+The composite action first validates that the `openrouter_api_key` input is present, then posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, runs the built-in review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count that the concise footer renders as the number of changed lines analyzed for the report.
 
@@ -56,6 +58,8 @@ Canonical summary publishing is not silent: GitHub API or permission failures em
 ## Trigger Guidance
 
 The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `reviewgate recheck` helper to rerun the latest ReviewGate workflow run for a PR branch.
+
+The documented default install uses `LVTD-LLC/reviewgate@v0` so repositories receive compatible v0 updates. Pin to an exact commit SHA instead when your repository policy requires immutable third-party action references.
 
 For public repositories, guard the ReviewGate job so it only runs on same-repository PR branches or explicit maintainer-triggered dispatches:
 
