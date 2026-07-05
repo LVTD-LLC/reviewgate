@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added the Astro marketing site for `reviewgate.lvtd.dev` with CI coverage and token-based CapRover deployment through GitHub Actions.
 - Added CI validation for public agent skill frontmatter, fenced Markdown, and shell snippets.
 - Added authentication, polling, and push-concurrency guidance to ReviewGate agent skills.
 - Documented `skills` CLI installation for ReviewGate agent skills and added comment-before-resolve guidance for agent repair loops.

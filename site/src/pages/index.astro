@@ -1,0 +1,112 @@
+---
+import ReviewPanel from "../components/ReviewPanel.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const installSnippet = `name: ReviewGate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: LVTD-LLC/reviewgate@v0
+        with:
+          openrouter_api_key: \${{ secrets.OPENROUTER_API_KEY }}`;
+
+const capabilities = [
+  "Visible 0-5 score for every agent-written PR",
+  "One canonical PR summary comment that updates in place",
+  "Machine-readable JSON for external fix loops",
+  "Severity-filtered inline comments for concrete findings",
+  "BYOK model calls through OpenRouter inside your CI",
+  "Configurable severity floors with a fixed 5/5 target",
+];
+---
+
+<BaseLayout
+  title="ReviewGate - Score-gated AI PR review"
+  description="ReviewGate is an open-source GitHub Action that gives agent-written pull requests a visible 0-5 score, canonical summary, and machine-readable review artifact."
+>
+  <main>
+    <section class="hero">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="/" aria-label="ReviewGate home">
+          <span class="brand-mark" aria-hidden="true">R</span>
+          <span>ReviewGate</span>
+        </a>
+        <div class="nav-links">
+          <a href="#install">Install</a>
+          <a href="https://github.com/LVTD-LLC/reviewgate">GitHub</a>
+        </div>
+      </nav>
+
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Open-source review gate for agent-written PRs</p>
+          <h1>ReviewGate</h1>
+          <p class="lede">
+            Put a visible 0-5 score, one canonical summary, and structured review JSON on every AI-authored pull request before it reaches merge.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="#install">Install action</a>
+            <a class="button secondary" href="https://github.com/LVTD-LLC/reviewgate">View source</a>
+          </div>
+        </div>
+        <ReviewPanel />
+      </div>
+    </section>
+
+    <section class="band trust-band" aria-label="Product guarantees">
+      <div>
+        <strong>GitHub Actions-first</strong>
+        <span>No hosted account required.</span>
+      </div>
+      <div>
+        <strong>OpenRouter BYOK</strong>
+        <span>Your model key stays in CI secrets.</span>
+      </div>
+      <div>
+        <strong>Agent-loop ready</strong>
+        <span>JSON artifacts make fixes scriptable.</span>
+      </div>
+    </section>
+
+    <section class="section split" id="install">
+      <div>
+        <p class="eyebrow">Install</p>
+        <h2>One workflow file, one secret, clear merge signal.</h2>
+        <p>
+          ReviewGate runs in the repository owner&apos;s CI environment, reviews the PR diff with bounded context, and keeps the merge signal visible without taking over the repair loop.
+        </p>
+      </div>
+      <pre class="code-card"><code>{installSnippet}</code></pre>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <p class="eyebrow">What ships in v0</p>
+        <h2>Built for maintainers supervising coding agents.</h2>
+      </div>
+      <div class="capability-grid">
+        {capabilities.map((capability) => (
+          <article>
+            <span aria-hidden="true"></span>
+            <p>{capability}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  </main>
+</BaseLayout>

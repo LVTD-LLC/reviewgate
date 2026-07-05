@@ -6,6 +6,8 @@ ReviewGate is a GitHub Actions-first, OpenRouter/BYOK PR review tool. The goal i
 
 ReviewGate itself is review-only. It does not autonomously repair code inside CI.
 
+Website: <https://reviewgate.lvtd.dev>
+
 This repository is in an early build milestone. The current CLI can validate and render deterministic review artifacts from fixture JSON, and the GitHub Action can run a live pull request review from CI when `OPENROUTER_API_KEY` is configured.
 
 ## Product Contract
