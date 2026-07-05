@@ -167,7 +167,7 @@
         "scope": {
           "type": "string",
           "enum": ["line", "file", "pr"],
-          "description": "Use line only for findings that can be posted on one exact changed line in the new/right side of the diff; use file or pr for broader feedback."
+          "description": "Use line only for findings that belong to one exact changed line in the new/right side of the diff; use file or pr for broader feedback. Publishing still uses inline PR comments, with fallback right-side diff line anchors when needed."
         },
         "severity": {
           "type": "string",

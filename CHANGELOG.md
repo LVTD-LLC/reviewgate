@@ -5,19 +5,19 @@
 - Added a built-in adversarial review angle to the live PR flow, with per-angle scores in the canonical summary, `angle_results` in the JSON artifact, and angle-labeled finding comments.
 - Hardened multi-angle aggregation so failed angles are reflected as `0/5` angle results, generated finding IDs stay unique and bounded, and each angle resolves its own cost metadata.
 - Simplified ReviewGate configuration to a single `min_severity` control, removed public target-score, preset, summary-style, inline-confidence, and inline-publish action inputs/schema, and fixed the passing target at `5/5`.
-- Changed finding publishing so line findings are posted inline when possible and unanchored, file-level, PR-level, or inline-failed findings are posted as standalone deduped PR comments instead of fallback entries in the canonical summary.
+- Changed finding publishing so all findings at or above `min_severity` are posted as inline PR comments when possible; file-level, PR-level, unanchored, or stale-line findings are anchored to fallback right-side diff lines instead of standalone PR comments, and older standalone finding comments are cleaned up.
 - Left-aligned the concise summary confidence score, added changed-line analysis counts to review metrics and the summary footer, and tightened review prompts around deploy-time data-sync risks.
 - Pinned the dogfood ReviewGate workflow to the main-branch action implementation so PRs cannot affect their own review score by changing ReviewGate code under review.
 - Changed completed `needs_changes` ReviewGate check runs to use a neutral conclusion while keeping passed reviews green and unavailable reviews failing.
-- Clarified concise summary inline-comment wording so inline candidates, posted comments, and unposted fallback findings are not conflated.
+- Clarified concise summary inline-comment wording so inline candidates describe findings publishable under `min_severity`, with detail left to inline comments and JSON.
 - Tightened model prompt/schema guidance so concrete defects named in verdict prose must also be emitted as structured findings.
 - Repaired inline PR comment anchors to matching changed lines before falling back when model-provided line numbers are stale or imprecise.
 - Updated the canonical PR summary layout with a Review Gate Summary title, centered confidence score, collapsed Important Files Changed and Mermaid Flowchart sections, and a compact run/cost/latest-commit footer.
-- Filter inline PR comments to added right-side diff lines and keep only unposted findings in the canonical summary fallback list.
+- Filter direct line anchors for inline PR comments to added right-side diff lines.
 - Updated the dogfood ReviewGate workflow to remove the obsolete score-floor input and grant `checks: write` for check-run publishing.
 - Documented and dogfooded a fork-safe ReviewGate workflow guard so required checks do not fail when GitHub withholds `OPENROUTER_API_KEY` from forked or Dependabot PR events.
 - Moved GitHub summary, start-signal, inline-comment, and check-run publishing from Bash/JQ in the composite action into Rust CLI commands.
-- Added `scope: line|file|pr` to review findings, updated the schema/prompts, and limited inline comment publishing to `scope: line` findings.
+- Added `scope: line|file|pr` to review findings and updated the schema/prompts so scope describes the finding target while publishing remains inline-first.
 - Added a dedicated GitHub Check Run publisher that reports review availability without turning low scores into workflow failures.
 - Fixed PR reviewed SHA handling to prefer the pull request head SHA over the checkout merge SHA in GitHub Actions.
 - Fixed check-run publishing so the step executes under `always()` and can emit a failure check when the review artifact is unavailable.
@@ -28,8 +28,8 @@
 - Added migration warnings for removed score-floor config keys and backwards-compatible deserialization for legacy failed-status artifacts.
 - Removed the concise PR summary metadata row that repeated status, target score, fail-under, and reviewed SHA.
 - Defaulted missing inline-comment publish output to unavailable so eligible findings stay visible if the best-effort inline step fails before reporting status.
-- Changed the default canonical PR summary to concise output with a compact verdict, one-line cumulative cost, compact finding counts, and short fallback entries only for findings that are not eligible for inline comments.
-- Fixed concise summaries to keep line-specific fallback findings visible when inline PR comments are disabled or cannot be published.
+- Changed the default canonical PR summary to concise output with a compact verdict, one-line cumulative cost, compact finding counts, and finding detail left to PR comments and JSON.
+- Fixed concise summaries to keep publishable finding counts visible when inline PR comments cannot be published.
 - Removed the separate action enforcement step; summary publishing failures still fail the publish step directly.
 - Fixed action summary rendering to fall back to concise mode when `summary_style` is explicitly passed empty.
 - Added `summary_style: concise|detailed` and `inline_min_confidence` support in config/action/CLI summary rendering, with detailed mode preserving full cost, metrics, findings, notes, and agent-instruction sections.
@@ -61,7 +61,7 @@
 - Hardened curl-based OpenRouter calls so secrets and large request bodies are not passed through process arguments.
 - Added OpenRouter BYOK model-client boundary types with redacted secret handling, explicit model presets, and mocked transport tests.
 - Added GitHub canonical summary upsert planning with create/update/no-op behavior and mocked publisher tests.
-- Expanded the public agent-loop contract for JSON artifacts, canonical summary fallback, status handling, and stop conditions.
+- Expanded the public agent-loop contract for JSON artifacts, canonical summaries, status handling, and stop conditions.
 - Added Rust-side review artifact validation, summary status output, lockfile audit/provenance documentation, and cleaned ReviewGate context file references.
 - Kept docs, agent workflow guidance, CI commands, and summary rendering aligned with Rust 1.96, Rust 2024, locked dependency use, and dynamic target-score thresholds.
 - Aligned the review artifact status computation and CLI behavior with the configured target-score threshold, and pinned CI setup to auditable toolchain inputs.

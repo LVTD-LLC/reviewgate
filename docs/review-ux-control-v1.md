@@ -5,7 +5,7 @@ ReviewGate's GitHub Action reviews pull requests and reports results. It must no
 The intended workflow is:
 
 1. ReviewGate reviews the PR diff and context.
-2. ReviewGate updates one concise canonical PR summary comment, writes a JSON artifact, and posts eligible findings inline or as standalone PR comments.
+2. ReviewGate updates one concise canonical PR summary comment, writes a JSON artifact, and posts eligible findings as inline PR comments.
 3. A human or external coding agent reads the findings.
 4. The human or agent ships fixes.
 5. ReviewGate is rerun and updates the same summary.
@@ -43,8 +43,8 @@ Users need one control for how much ReviewGate publishes back to the PR:
 Defaults should avoid hiding findings:
 
 - Keep the summary concise: verdict, score, compact finding counts, collapsed context sections, and the run/cost/latest-commit footer.
-- Post line-scoped findings inline when they can be anchored to a changed line.
-- Post file/PR-scoped or unanchored line findings as standalone PR comments.
+- Post findings as inline PR comments when they can be anchored to a changed line.
+- Anchor file/PR-scoped or unanchored line findings to fallback right-side diff lines when needed.
 - Keep all findings in the JSON artifact even when `min_severity` filters lower-severity PR comments.
 
 ## Cost Direction
