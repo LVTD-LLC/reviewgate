@@ -1537,22 +1537,20 @@ fn truncate_context_contents(contents: &mut String, max_bytes: usize) {
 }
 
 fn truncate_pull_request_context(contents: &mut String, max_bytes: usize, max_chars: usize) {
+    let exceeds_char_limit = contents.chars().count() > max_chars;
+    let exceeds_byte_limit = contents.len() > max_bytes;
+    if !exceeds_char_limit && !exceeds_byte_limit {
+        return;
+    }
+
+    let max_content_bytes = max_bytes.saturating_sub(TRUNCATED_CONTEXT_MARKER.len());
     let char_boundary = contents
         .char_indices()
         .nth(max_chars)
         .map(|(index, _)| index)
         .unwrap_or(contents.len());
-    let byte_boundary = if contents.len() > max_bytes {
-        let max_content_bytes = max_bytes.saturating_sub(TRUNCATED_CONTEXT_MARKER.len());
-        previous_char_boundary(contents, max_content_bytes)
-    } else {
-        contents.len()
-    };
+    let byte_boundary = previous_char_boundary(contents, max_content_bytes);
     let truncate_at = char_boundary.min(byte_boundary);
-    if truncate_at >= contents.len() {
-        return;
-    }
-
     contents.truncate(truncate_at);
     contents.push_str(TRUNCATED_CONTEXT_MARKER);
 }
@@ -2846,6 +2844,17 @@ let resync_state = state.clone();
         assert!(title.len() <= MAX_PR_TITLE_BYTES);
         assert_eq!(title.matches("[truncated]").count(), 1);
         assert!(title.ends_with(TRUNCATED_CONTEXT_MARKER));
+    }
+
+    #[test]
+    fn pull_request_context_truncation_reserves_marker_bytes_for_character_limit() {
+        let mut contents = "a".repeat(501);
+
+        truncate_pull_request_context(&mut contents, 510, 500);
+
+        assert!(contents.len() <= 510);
+        assert_eq!(contents.matches("[truncated]").count(), 1);
+        assert!(contents.ends_with(TRUNCATED_CONTEXT_MARKER));
     }
 
     #[test]
