@@ -1518,6 +1518,9 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: ReviewAngle) ->
         "Err on the side of surfacing concrete, evidence-backed risks instead of returning a clean 5/5. If a risk is plausible from the diff but lower confidence, emit it as a lower-severity file or PR finding with the confidence value calibrated honestly instead of omitting it.\n\n",
     );
     prompt.push_str(
+        "ReviewGate workflow guidance: if the diff adds or updates a GitHub Actions workflow using `LVTD-LLC/reviewgate`, evaluate it against ReviewGate's documented installation contract. `uses: LVTD-LLC/reviewgate@v0` is the documented default install; do not emit a finding solely because it uses the moving v0 tag unless repository instructions require SHA-pinned third-party actions, the PR weakens an existing pin, or the diff provides concrete evidence that this repository must pin every action. For a full-featured ReviewGate workflow, `contents: read`, `pull-requests: write`, `issues: write`, and `checks: write` are the documented least-privilege permissions: `issues: write` publishes the canonical summary PR comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run. Do not flag that permission set as excessive for a fork-safe ReviewGate workflow. Flag permissions above that set, use of `pull_request_target` for untrusted code, or missing same-repository/Dependabot guards when repository secrets are used. Concurrency findings for workflow group expressions need a concrete collision or cancellation risk within the workflow's declared triggers; do not flag normal `cancel-in-progress` behavior or hypothetical collisions with unrelated workflows when the group is workflow-scoped. Optional hardening preferences such as action SHA pinning, job timeouts, extra secret preflight checks, or alternative concurrency fallback keys should not become findings unless repository policy requires them or the diff creates a material failure mode.\n\n",
+    );
+    prompt.push_str(
         "For deploy hooks, startup tasks, background jobs, data sync code, and ORM/database writes, explicitly check concurrency, idempotency, transaction boundaries, database-enforced uniqueness, partial failure behavior, and retry safety.\n\n",
     );
     if context.data_integrity_review_needed {
@@ -2230,6 +2233,10 @@ mod tests {
     #[test]
     fn action_publishes_start_signal_and_has_no_score_failure_gate() {
         let action = include_str!("../../../action.yml");
+        assert!(action.contains("- name: Validate ReviewGate inputs"));
+        assert!(action.contains("openrouter_api_key:"));
+        assert!(action.contains("required: true"));
+        assert!(action.contains("::error title=Missing OPENROUTER_API_KEY::"));
         assert!(action.contains("- name: Publish ReviewGate start signal"));
         assert!(action.contains("publish-start-signal"));
         assert!(action.contains("min_severity:"));
@@ -2251,6 +2258,14 @@ mod tests {
         assert!(!action.contains(concat!("--gate", "-mode")));
         assert!(!action.contains(concat!("--report", "-only")));
         assert!(!action.contains(concat!("- name: Enforce ", "ReviewGate")));
+
+        let validation_start = action
+            .find("- name: Validate ReviewGate inputs")
+            .expect("validation step exists");
+        let start_signal_start = action
+            .find("- name: Publish ReviewGate start signal")
+            .expect("start signal step exists");
+        assert!(validation_start < start_signal_start);
 
         let inline_start = action
             .find("- name: Publish ReviewGate findings")
@@ -2285,6 +2300,8 @@ mod tests {
 
         let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
         assert!(dogfood_workflow.contains("checks: write"));
+        assert!(dogfood_workflow.contains("github.run_id"));
+        assert!(dogfood_workflow.contains("timeout-minutes: 20"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@main"));
         assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(dogfood_workflow.contains("min_severity"));
@@ -2618,6 +2635,13 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("comment ownership checks"));
         assert!(prompt.contains("marker encoding"));
         assert!(prompt.contains("Err on the side of surfacing concrete"));
+        assert!(prompt.contains("ReviewGate workflow guidance"));
+        assert!(prompt.contains("LVTD-LLC/reviewgate@v0"));
+        assert!(prompt.contains("documented default install"));
+        assert!(prompt.contains("documented least-privilege permissions"));
+        assert!(prompt.contains("`issues: write` publishes the canonical summary PR comment"));
+        assert!(prompt.contains("`checks: write` publishes the ReviewGate check run"));
+        assert!(prompt.contains("hypothetical collisions with unrelated workflows"));
         assert!(prompt.contains("transaction boundaries"));
         assert!(prompt.contains("Finding scope guidance"));
         assert!(prompt.contains("scope describes the finding's semantic target"));

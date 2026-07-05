@@ -11,7 +11,7 @@ on:
         default: P4
 
 concurrency:
-  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -31,6 +31,7 @@ jobs:
         )
       }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:

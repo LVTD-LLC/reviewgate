@@ -41,7 +41,7 @@ permissions:
   checks: write
 
 concurrency:
-  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -55,6 +55,7 @@ jobs:
         )
       }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -65,6 +66,10 @@ jobs:
 ```
 
 The job-level `if` keeps the default install fork-safe: GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so ReviewGate skips those events instead of passing an empty model key into a required review check. Do not move this workflow to `pull_request_target` for untrusted fork code.
+
+The `LVTD-LLC/reviewgate@v0` action reference is the documented default install path so repositories can receive compatible v0 updates. Pin it to an exact commit SHA instead if your repository policy requires immutable third-party action references.
+
+The permissions block is intentionally the full-featured least-privilege set for ReviewGate: `issues: write` updates the canonical PR summary comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run.
 
 The action:
 
