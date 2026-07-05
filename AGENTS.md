@@ -27,6 +27,7 @@ Read these steering files before changing code:
 Run these before opening or updating a PR:
 
 ```bash
+bash scripts/validate-skills.sh
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace

@@ -42,6 +42,8 @@ gh pr view "$PR_NUMBER" --json number,title,url,headRefName,headRefOid,statusChe
 
 Switch to the PR branch before editing if the current checkout is not already on it. Do not work from `main` unless the user explicitly asked for that.
 
+`gh` commands require an authenticated GitHub CLI. In CI or non-interactive shells, set `GH_TOKEN` or `GITHUB_TOKEN` before using this skill.
+
 ### 2. Read ReviewGate Output
 
 Prefer the local JSON artifact when it is fresh for the PR head:
@@ -128,7 +130,7 @@ gh api --method POST \
   -f body="Addressed in $COMMIT_SHA: <what changed>. Verification: <command/result>."
 ```
 
-Then resolve only the threads that are fixed, stale, informational, or explicitly accepted. If the platform does not support threaded replies, leave a PR-level comment that links to or names the resolved comment IDs before resolving them.
+Then resolve only the threads that are fixed, stale, informational, or explicitly accepted. If the platform does not support threaded replies, leave a PR-level comment that links to or names the addressed comment IDs; do not claim they are resolved unless the platform exposes a resolution primitive.
 
 ### 6. Trigger or Wait for ReviewGate
 
