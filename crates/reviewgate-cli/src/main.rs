@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
@@ -1327,7 +1328,8 @@ fn read_config_values(path: &Path) -> CliResult<ReviewConfigValues> {
         ..ReviewConfigValues::default()
     };
     for line in raw.lines() {
-        let line = strip_yaml_comment(line).trim();
+        let stripped = strip_yaml_comment(line);
+        let line = stripped.trim();
         let Some((key, value)) = parse_yaml_key_value(line) else {
             continue;
         };
@@ -1359,7 +1361,7 @@ fn parse_review_angle_configs(raw: &str) -> CliResult<Option<Vec<ReviewAngleConf
         if trimmed.is_empty() {
             continue;
         }
-        let indent = leading_whitespace_count(content);
+        let indent = leading_whitespace_count(&content);
 
         if in_review_angles && indent <= review_angles_indent && !trimmed.starts_with('-') {
             push_review_angle_config(&mut configs, current.take())?;
@@ -1383,7 +1385,7 @@ fn parse_review_angle_configs(raw: &str) -> CliResult<Option<Vec<ReviewAngleConf
         let Some((key, value)) = parse_yaml_key_value(trimmed) else {
             continue;
         };
-        if key == "review_angles" || key == "angles" {
+        if key == "review_angles" {
             saw_review_angles = true;
             let value = parse_yaml_scalar(value)?;
             if value == "[]" {
@@ -1460,8 +1462,31 @@ fn apply_review_angle_config_field(
     Ok(())
 }
 
-fn strip_yaml_comment(line: &str) -> &str {
-    line.split('#').next().unwrap_or(line)
+fn strip_yaml_comment(line: &str) -> Cow<'_, str> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, character) in line.char_indices() {
+        if let Some(active_quote) = quote {
+            if active_quote == '"' && escaped {
+                escaped = false;
+                continue;
+            }
+            if active_quote == '"' && character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' => quote = Some(character),
+            '#' => return Cow::Borrowed(&line[..index]),
+            _ => {}
+        }
+    }
+    Cow::Borrowed(line)
 }
 
 fn leading_whitespace_count(line: &str) -> usize {
@@ -1481,7 +1506,7 @@ fn parse_yaml_key_value(line: &str) -> Option<(&str, &str)> {
 
 fn parse_yaml_scalar(value: &str) -> CliResult<String> {
     let value = value.trim();
-    if matches!(value, "|" | ">") {
+    if value.starts_with('|') || value.starts_with('>') {
         bail!("block scalar config values are not supported; use prompt_file for long prompts");
     }
     if value.len() >= 2 {
@@ -1539,6 +1564,13 @@ fn resolve_review_angles(
     };
     if configs.is_empty() {
         bail!("review_angles must include at least one angle");
+    }
+    let mut seen_ids = BTreeSet::new();
+    for config in configs {
+        let id = normalize_review_angle_id(&config.id)?;
+        if !seen_ids.insert(id.clone()) {
+            bail!("duplicate ReviewGate review angle id `{id}`");
+        }
     }
 
     configs
@@ -2728,6 +2760,15 @@ mod tests {
         path
     }
 
+    fn read_config_values_from_str(raw: &str) -> CliResult<ReviewConfigValues> {
+        let repo = unique_test_dir("reviewgate-config-string");
+        let path = repo.join(".reviewgate.yml");
+        fs::write(&path, raw).expect("write temp config");
+        let result = read_config_values(&path);
+        fs::remove_dir_all(&repo).ok();
+        result
+    }
+
     #[test]
     fn parses_simple_review_config_values() {
         let raw = "review:\n  min_severity: P2 # publish important findings and above\n";
@@ -2858,6 +2899,94 @@ review_angles:
             error
                 .to_string()
                 .contains("review angle leak prompt_file must be repo-relative")
+        );
+    }
+
+    #[test]
+    fn inline_prompt_config_preserves_hash_and_colon_inside_quotes() {
+        let repo = unique_test_dir("reviewgate-angle-config-quotes");
+        fs::write(
+            repo.join(".reviewgate.yml"),
+            r##"
+review_angles:
+  - id: quoted
+    name: "Test #1"
+    prompt: "# Security checklist: see https://example.com/rules"
+    reason: "Look for #security regressions"
+"##,
+        )
+        .expect("write config");
+
+        let values = read_config_values(&repo.join(".reviewgate.yml")).expect("parse config");
+        let angles = resolve_review_angles(&repo, &values).expect("load angles");
+        fs::remove_dir_all(&repo).ok();
+
+        assert_eq!(angles[0].name, "Test #1");
+        assert_eq!(
+            angles[0].instructions,
+            "# Security checklist: see https://example.com/rules"
+        );
+        assert_eq!(angles[0].reason, "Look for #security regressions");
+    }
+
+    #[test]
+    fn review_angle_config_rejects_block_scalar_variants() {
+        for value in ["|", ">", "|-", "|+", ">-", ">+"] {
+            let raw = format!(
+                "\
+review_angles:
+  - id: scalar
+    prompt: {value}
+"
+            );
+
+            let error = read_config_values_from_str(&raw).expect_err("block scalar rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("block scalar config values are not supported"),
+                "{value} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn review_angle_config_rejects_undocumented_angles_alias() {
+        let raw = "\
+angles:
+  - id: alias
+    prompt: Review this.
+";
+
+        let values = read_config_values_from_str(raw).expect("parse config");
+
+        assert_eq!(values.review_angles, None);
+    }
+
+    #[test]
+    fn review_angle_config_rejects_duplicate_ids_before_loading_sources() {
+        let repo = unique_test_dir("reviewgate-angle-config-duplicates");
+        fs::write(
+            repo.join(".reviewgate.yml"),
+            r#"
+review_angles:
+  - id: duplicate
+    prompt: First.
+  - id: duplicate
+    prompt: Second.
+"#,
+        )
+        .expect("write config");
+
+        let values = read_config_values(&repo.join(".reviewgate.yml")).expect("parse config");
+        let error = resolve_review_angles(&repo, &values).expect_err("duplicate ids rejected");
+        fs::remove_dir_all(&repo).ok();
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate ReviewGate review angle id `duplicate`")
         );
     }
 
