@@ -6,6 +6,7 @@
 - Added an explicit composite-action validation error for missing `OPENROUTER_API_KEY` and refreshed the documented install workflow with a job timeout and safer manual-run concurrency fallback.
 - Clarified Action install examples to recommend the moving `v0` tag for early releases instead of agent-suggested latest commit pins.
 - Added the Astro marketing site for `reviewgate.lvtd.dev` with CI coverage and token-based CapRover deployment through GitHub Actions.
+- Added PR title and description to live review prompts as bounded untrusted scope context so findings stay focused on code issues introduced by the PR.
 - Added CI validation for public agent skill frontmatter, fenced Markdown, and shell snippets.
 - Added authentication, polling, and push-concurrency guidance to ReviewGate agent skills.
 - Documented `skills` CLI installation for ReviewGate agent skills and added comment-before-resolve guidance for agent repair loops.

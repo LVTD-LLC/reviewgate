@@ -76,7 +76,7 @@ The permissions block is intentionally the full-featured least-privilege set for
 The action:
 
 - posts or updates a short `ReviewGate: running` placeholder comment when PR review starts;
-- collects the PR diff from the checked-out repository;
+- collects the PR title and description from the GitHub event plus the PR diff from the checked-out repository;
 - includes bounded repository context from common instruction files like `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, and `.reviewgate.yml`;
 - calls OpenRouter with the user's API key;
 - runs separate general and adversarial review prompts and aggregates them into one ReviewGate artifact;
@@ -207,7 +207,7 @@ The canonical summary stores a versioned hidden state payload next to `<!-- revi
 
 - Config parsing intentionally supports only the stable scalar field above; richer nested config support comes later.
 - Review angle selection is not configurable yet. The live action path currently runs the built-in `general` and `adversarial` angles.
-- Context collection supports common instruction files and the PR diff; full repository indexing is intentionally out of scope for v0.
+- Context collection supports the PR title, PR description, common instruction files, and the PR diff; full repository indexing is intentionally out of scope for v0.
 - Inline comments are best-effort: stale model-provided line anchors are repaired to matching changed lines when possible, and file/PR-level or unanchored findings are anchored to fallback right-side diff lines. If no right-side diff anchor exists or GitHub rejects an inline comment, the full finding remains in JSON; ReviewGate does not create standalone finding comments.
 - Current-run and cumulative PR cost rendering are modeled in the concise summary. OpenRouter pricing metadata still needs a richer resolver.
 - The action should not be used with `pull_request_target` for untrusted code.
