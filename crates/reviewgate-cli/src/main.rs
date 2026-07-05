@@ -44,6 +44,7 @@ const MAX_PR_DESCRIPTION_BYTES: usize = 20_000;
 const MAX_PR_TITLE_CHARS: usize = 500;
 const MAX_PR_DESCRIPTION_CHARS: usize = 5_000;
 const MAX_GENERATED_FINDING_ID_CHARS: usize = 256;
+const TRUNCATED_CONTEXT_MARKER: &str = "\n[truncated]\n";
 
 type Result<T> = anyhow::Result<T>;
 
@@ -1458,8 +1459,7 @@ fn pull_request_text_field(
         return None;
     }
 
-    truncate_context_chars(&mut value, max_chars);
-    truncate_context_contents(&mut value, max_bytes);
+    truncate_pull_request_context(&mut value, max_bytes, max_chars);
     Some(value)
 }
 
@@ -1533,21 +1533,35 @@ fn truncate_context_contents(contents: &mut String, max_bytes: usize) {
         .find(|&index| contents.is_char_boundary(index))
         .unwrap_or(0);
     contents.truncate(truncate_at);
-    contents.push_str("\n[truncated]\n");
+    contents.push_str(TRUNCATED_CONTEXT_MARKER);
 }
 
-fn truncate_context_chars(contents: &mut String, max_chars: usize) {
-    if contents.chars().count() <= max_chars {
-        return;
-    }
-
-    let truncate_at = contents
+fn truncate_pull_request_context(contents: &mut String, max_bytes: usize, max_chars: usize) {
+    let char_boundary = contents
         .char_indices()
         .nth(max_chars)
         .map(|(index, _)| index)
         .unwrap_or(contents.len());
+    let byte_boundary = if contents.len() > max_bytes {
+        let max_content_bytes = max_bytes.saturating_sub(TRUNCATED_CONTEXT_MARKER.len());
+        previous_char_boundary(contents, max_content_bytes)
+    } else {
+        contents.len()
+    };
+    let truncate_at = char_boundary.min(byte_boundary);
+    if truncate_at >= contents.len() {
+        return;
+    }
+
     contents.truncate(truncate_at);
-    contents.push_str("\n[truncated]\n");
+    contents.push_str(TRUNCATED_CONTEXT_MARKER);
+}
+
+fn previous_char_boundary(contents: &str, max_bytes: usize) -> usize {
+    (0..=max_bytes.min(contents.len()))
+        .rev()
+        .find(|&index| contents.is_char_boundary(index))
+        .unwrap_or(0)
 }
 
 fn count_changed_diff_lines(diff: &str) -> u32 {
@@ -2730,6 +2744,18 @@ let resync_state = state.clone();
     }
 
     #[test]
+    fn pull_request_context_defaults_when_event_has_no_pull_request() {
+        let event = serde_json::json!({
+            "action": "workflow_dispatch"
+        });
+
+        assert_eq!(
+            select_pull_request_context(Some(&event)),
+            PullRequestContext::default()
+        );
+    }
+
+    #[test]
     fn filters_control_characters_from_pull_request_context() {
         let event = serde_json::json!({
             "pull_request": {
@@ -2803,6 +2829,23 @@ let resync_state = state.clone();
                 .unwrap()
                 .contains("[truncated]")
         );
+    }
+
+    #[test]
+    fn pull_request_context_truncates_once_when_byte_and_character_limits_both_apply() {
+        let event = serde_json::json!({
+            "pull_request": {
+                "title": "é".repeat(MAX_PR_TITLE_CHARS + 1),
+                "body": ""
+            }
+        });
+
+        let pull_request = select_pull_request_context(Some(&event));
+        let title = pull_request.title.as_deref().expect("title kept");
+
+        assert!(title.len() <= MAX_PR_TITLE_BYTES);
+        assert_eq!(title.matches("[truncated]").count(), 1);
+        assert!(title.ends_with(TRUNCATED_CONTEXT_MARKER));
     }
 
     #[test]
