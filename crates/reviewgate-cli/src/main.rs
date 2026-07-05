@@ -37,6 +37,8 @@ const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
 const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
+// PR metadata uses character limits as the primary prompt-context bound. Byte limits
+// remain as secondary hard caps for unusually large multi-byte text.
 const MAX_PR_TITLE_BYTES: usize = 1_000;
 const MAX_PR_DESCRIPTION_BYTES: usize = 20_000;
 const MAX_PR_TITLE_CHARS: usize = 500;
@@ -1462,7 +1464,7 @@ fn pull_request_text_field(
 }
 
 fn pr_context_character_allowed(character: char) -> bool {
-    !character.is_ascii_control() || matches!(character, '\t' | '\n' | '\r')
+    !character.is_control() || matches!(character, '\t' | '\n' | '\r')
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
@@ -2743,6 +2745,21 @@ let resync_state = state.clone();
             pull_request.description.as_deref(),
             Some("Line 1\tok\nLine 2\rokdone")
         );
+    }
+
+    #[test]
+    fn keeps_printable_unicode_but_filters_unicode_control_characters() {
+        let event = serde_json::json!({
+            "pull_request": {
+                "title": format!("Café{}レビュー", '\u{0085}'),
+                "body": "説明"
+            }
+        });
+
+        let pull_request = select_pull_request_context(Some(&event));
+
+        assert_eq!(pull_request.title.as_deref(), Some("Caféレビュー"));
+        assert_eq!(pull_request.description.as_deref(), Some("説明"));
     }
 
     #[test]
