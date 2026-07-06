@@ -468,7 +468,7 @@ Prompt files live in `prompts/`:
 | `frontend.md` | UI state, accessibility, overflow, controls, and empty/loading/error states. |
 | `compatibility.md` | CLI flags, schemas, public APIs, config, artifacts, and documented behavior. |
 
-The live action currently makes model calls for the built-in `general` and `adversarial` review angles. Additional prompt files are present as review assets and stage-selection vocabulary, but public angle configuration is not implemented yet.
+The live action defaults to the built-in `general` and `adversarial` review angles. Repositories can replace that default list with `.reviewgate.yml` `review_angles` entries backed by inline prompts, prompt files, or local skill instructions.
 
 ## Review Lifecycle
 
