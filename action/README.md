@@ -12,7 +12,7 @@ The `v0` major tag follows current v0 releases so early adopters get the latest 
 
 Implementation scripts and release download helpers can live in this directory as the wrapper grows.
 
-The composite action stays thin: it collects inputs and pull request event context from GitHub Actions, passes them to the Rust binary, and lets the Rust crates own review logic, scoring, OpenRouter request construction, artifact validation, and summary rendering. The live review path currently runs separate general and adversarial prompts, then aggregates their findings into one artifact and one canonical PR summary.
+The composite action stays thin: it collects inputs and pull request event context from GitHub Actions, passes them to the Rust binary, and lets the Rust crates own review logic, scoring, OpenRouter request construction, artifact validation, and summary rendering. The live review path runs configured review angles, defaulting to separate general and adversarial prompts, then aggregates their findings into one artifact and one canonical PR summary.
 
 The action is review-only. It publishes findings and status, but it does not run an autonomous code repair loop inside CI.
 
@@ -36,6 +36,20 @@ OPENROUTER_API_KEY
 
 The action must update the existing PR summary comment containing `<!-- reviewgate-summary -->` instead of creating duplicate summary comments on every commit.
 
+The optional `.reviewgate.yml` config can define review angles with exactly one instruction source per angle:
+
+```yaml
+review_angles:
+  - id: correctness
+    name: Correctness
+    prompt_file: prompts/general.md
+  - id: autoreview
+    name: Auto Review
+    skill: skills/autoreview
+```
+
+Use `prompt` for short inline text, `prompt_file` for repo-relative prompt files, and `skill` for a repo-relative skill directory containing `SKILL.md` or a direct `SKILL.md` path. Skill-backed angles pass skill instructions to the reviewing model; ReviewGate does not execute repository scripts, skill tools, or pull request code.
+
 ## Inputs
 
 - `openrouter_api_key`: OpenRouter API key. Required for live review.
@@ -47,7 +61,7 @@ Scores below `5` are reported as `needs_changes` in the JSON artifact and PR sum
 
 ## Runtime
 
-The composite action first validates that the `openrouter_api_key` input is present, then posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, includes the pull request title and description as separate bounded untrusted scope context, runs the built-in review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+The composite action first validates that the `openrouter_api_key` input is present, then posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, includes the pull request title and description as separate bounded untrusted scope context, runs the configured review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count that the concise footer renders as the number of changed lines analyzed for the report.
 

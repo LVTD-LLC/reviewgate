@@ -5,6 +5,7 @@ Changes are grouped by calendar date, newest first.
 ## 2026-07-05
 
 - Switched changelog entries from release buckets to calendar-date sections.
+- Added configurable review angles backed by inline prompts, prompt files, or repo-local `SKILL.md` instructions.
 - Temporarily disabled the dogfood ReviewGate workflow on pull request events, leaving manual dispatch available for explicit runs.
 - Added ReviewGate-specific workflow prompt guardrails so the reviewer does not flag the documented `@v0` install tag, required summary/check permissions, or speculative workflow-concurrency concerns as findings without concrete evidence.
 - Added an explicit composite-action validation error for missing `OPENROUTER_API_KEY` and refreshed the documented install workflow with a job timeout and safer manual-run concurrency fallback.
