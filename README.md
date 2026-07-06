@@ -94,12 +94,6 @@ name: ReviewGate
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
-    inputs:
-      min_severity:
-        description: Lowest severity published as ReviewGate finding comments.
-        required: false
-        default: P4
 
 permissions:
   contents: read
@@ -115,11 +109,8 @@ jobs:
   review:
     if: >-
       ${{
-        github.event_name == 'workflow_dispatch' ||
-        (
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          github.actor != 'dependabot[bot]'
-        )
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]'
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -133,7 +124,7 @@ jobs:
       - uses: LVTD-LLC/reviewgate@v0
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-          min_severity: ${{ github.event.inputs.min_severity || 'P4' }}
+          min_severity: P4
 ```
 
 The fork-safety guard is intentional. GitHub does not expose repository secrets to untrusted fork PRs or Dependabot PR events, so the default workflow skips those events instead of running ReviewGate with an empty model key. Do not switch this workflow to `pull_request_target` for untrusted fork code.
@@ -474,7 +465,7 @@ The live action defaults to the built-in `general` and `adversarial` review angl
 
 ### Live GitHub Action Flow
 
-1. A pull request opens, updates, reopens, or is manually reviewed through `workflow_dispatch`.
+1. A pull request opens, updates, reopens, or is marked ready for review.
 2. The workflow checks out the repository with `fetch-depth: 0`.
 3. The composite action validates that `openrouter_api_key` is non-empty.
 4. ReviewGate creates or updates a short running placeholder comment.
@@ -1134,7 +1125,7 @@ In GitHub Actions, add `OPENROUTER_API_KEY` as a repository secret and pass it t
 
 ### ReviewGate Skips Fork or Dependabot PRs
 
-This is expected with the recommended workflow guard. GitHub does not expose repository secrets to untrusted fork or Dependabot PR events. Maintainers can run ReviewGate manually with `workflow_dispatch` after deciding the run is safe.
+This is expected with the recommended workflow guard. GitHub does not expose repository secrets to untrusted fork or Dependabot PR events. The quick-start workflow intentionally does not use `workflow_dispatch` as a PR review fallback because ReviewGate's GitHub publishing path relies on `pull_request` event payloads.
 
 Do not switch to `pull_request_target` for untrusted code.
 
