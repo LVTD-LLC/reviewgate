@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-07-06
+
+- Expanded the root README with full local setup, architecture, configuration, command, testing, deployment, security, and troubleshooting documentation.
+
 ## 2026-07-05
 
 - Switched changelog entries from release buckets to calendar-date sections.
