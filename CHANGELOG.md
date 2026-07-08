@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-07-08
+
+- Redesigned the Astro marketing site around ReviewGate's score-centered purpose, GitHub Actions installation flow, supported features, artifacts, and configuration surface.
+
 ## 2026-07-06
 
 - Expanded the root README with full local setup, architecture, configuration, command, testing, deployment, security, and troubleshooting documentation.
