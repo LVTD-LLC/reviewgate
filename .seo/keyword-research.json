@@ -1,0 +1,269 @@
+{
+  "as_of": "2026-07-22",
+  "market": {
+    "location": "United States",
+    "language": "English"
+  },
+  "owned_baseline": {
+    "source": "dataforseo",
+    "sources": ["dataforseo", "gsc", "plausible", "posthog"],
+    "confidence": "measured",
+    "ranked_keywords": 0,
+    "domain_rank": null,
+    "backlinks": null,
+    "referring_domains": null,
+    "gsc_property_present": false,
+    "plausible_status": "attempted_failed",
+    "posthog_project_present": false,
+    "notes": "DataForSEO returned zero ranked keywords and no backlink-summary row for the new subdomain. The GSC service account is connected but has no ReviewGate property. Plausible rejected the site/key pair, and PostHog has no ReviewGate project."
+  },
+  "competitor_authority": [
+    {
+      "domain": "coderabbit.ai",
+      "domain_rank": 427,
+      "backlinks": 228040,
+      "referring_domains": 4413,
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured"
+    },
+    {
+      "domain": "greptile.com",
+      "domain_rank": 394,
+      "backlinks": 10038,
+      "referring_domains": 1588,
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured"
+    },
+    {
+      "domain": "qodo.ai",
+      "domain_rank": 475,
+      "backlinks": 73299,
+      "referring_domains": 4459,
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured"
+    }
+  ],
+  "candidates": {
+    "homepage": [
+      {
+        "keyword": "ai code review tool",
+        "volume": 590,
+        "kd": 8,
+        "cpc": 42.95,
+        "intent": "commercial",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured",
+        "notes": "Best primary homepage target: commercial intent and unusually low measured KD."
+      }
+    ],
+    "alternatives": [
+      {
+        "keyword": "coderabbit alternatives",
+        "volume": 140,
+        "kd": 0,
+        "cpc": 31.54,
+        "intent": "commercial",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "greptile alternatives",
+        "volume": 30,
+        "kd": null,
+        "cpc": 49.14,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "qodo alternative",
+        "volume": 10,
+        "kd": null,
+        "cpc": 56.92,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "sourcery alternative",
+        "volume": 10,
+        "kd": null,
+        "cpc": null,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured",
+        "notes": "Keep in backlog until the higher-value alternative pages establish the pattern."
+      }
+    ],
+    "comparisons": [
+      {
+        "keyword": "coderabbit vs greptile",
+        "volume": 110,
+        "kd": 0,
+        "cpc": 36.26,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "coderabbit vs qodo",
+        "volume": 20,
+        "kd": 0,
+        "cpc": null,
+        "intent": "commercial",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      }
+    ],
+    "use_cases": [
+      {
+        "keyword": "automated pull request review",
+        "volume": 40,
+        "kd": null,
+        "cpc": null,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "open source maintainers AI code review",
+        "volume": null,
+        "kd": null,
+        "intent": "commercial",
+        "source": "exa",
+        "as_of": "2026-07-22",
+        "confidence": "estimated",
+        "notes": "Strategic persona page; validate exact query family before drafting."
+      },
+      {
+        "keyword": "code review for agent-written pull requests",
+        "volume": null,
+        "kd": null,
+        "intent": "commercial",
+        "source": "blended",
+        "sources": ["repo-product-context", "exa"],
+        "as_of": "2026-07-22",
+        "confidence": "estimated",
+        "notes": "Core positioning page; demand is emerging and not yet represented in DataForSEO."
+      }
+    ],
+    "playbooks": [
+      {
+        "keyword": "code review checklist",
+        "volume": 170,
+        "kd": 0,
+        "cpc": 9.13,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "code review agent",
+        "volume": 210,
+        "kd": 9,
+        "cpc": 26.01,
+        "intent": "commercial",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "code review automation",
+        "volume": 170,
+        "kd": 24,
+        "cpc": 21.99,
+        "intent": "commercial",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured"
+      },
+      {
+        "keyword": "ai code review",
+        "volume": 1300,
+        "kd": 32,
+        "cpc": 63.85,
+        "intent": "informational",
+        "source": "dataforseo",
+        "as_of": "2026-07-22",
+        "confidence": "measured",
+        "notes": "High-value head term, but defer until the site earns authority and supporting links."
+      }
+    ]
+  },
+  "serp_snapshots": {
+    "ai code review tool": {
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured",
+      "top_domains": ["medium.com", "reddit.com", "coderabbit.ai", "greptile.com", "logrocket.com", "deepsource.com", "augmentcode.com"],
+      "notes": "Mixed product, editorial, and community SERP. A focused product homepage can compete at KD 8."
+    },
+    "code review agent": {
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured",
+      "top_domains": ["github.com", "cloudflare.com", "reddit.com", "medium.com", "coderabbit.ai", "augmentcode.com", "code.claude.com"],
+      "notes": "Mixed implementation guides, product pages, and discussions; suitable for an evidence-heavy playbook."
+    },
+    "coderabbit alternative": {
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured",
+      "top_domains": ["kilo.ai", "reddit.com", "cubic.dev", "codacy.com", "macroscope.com", "aikido.dev", "gartner.com", "github.com"],
+      "notes": "Commercial comparison SERP with product-led pages ranking; strong early alternative-page target."
+    },
+    "coderabbit vs greptile": {
+      "source": "dataforseo",
+      "as_of": "2026-07-22",
+      "confidence": "measured",
+      "top_domains": ["reddit.com", "greptile.com", "getpanto.ai", "youtube.com", "findskill.ai", "medium.com", "13labs.au", "sourceforge.net"],
+      "notes": "No neutral category owner dominates. An honest three-way comparison that includes ReviewGate has a credible opening."
+    }
+  },
+  "discovery": {
+    "source": "exa",
+    "as_of": "2026-07-22",
+    "confidence": "derived",
+    "competitors_confirmed": ["CodeRabbit", "Greptile", "Qodo", "PR-Agent", "Sourcery", "Reviewpad"],
+    "content_surfaces": ["comparison articles", "product alternatives pages", "GitHub repositories", "Reddit discussions", "independent benchmarks"],
+    "notes": "Exa returned eight current category and comparison sources. Live web search independently surfaced G2, Product Hunt, multiple 2026 tool roundups, Reddit discussions, and benchmark research."
+  },
+  "extraction": {
+    "source": "jina",
+    "as_of": "2026-07-22",
+    "confidence": "measured",
+    "pages": [
+      {"url": "https://reviewgate.lvtd.dev/", "status": 200, "characters": 5326},
+      {"url": "https://www.coderabbit.ai/", "status": 200, "characters": 32700},
+      {"url": "https://www.greptile.com/", "status": 200, "characters": 5483},
+      {"url": "https://www.qodo.ai/products/qodo-merge/", "status": 200, "characters": 4766},
+      {"url": "https://github.com/qodo-ai/pr-agent", "status": 200, "characters": 12194}
+    ]
+  },
+  "saturated_or_deferred": [
+    {
+      "keyword": "ai code review",
+      "volume": 1300,
+      "kd": 32,
+      "reason": "The new subdomain has no measurable authority; target only after the low-KD commercial cluster ships and earns links."
+    },
+    {
+      "keyword": "code review automation",
+      "volume": 170,
+      "kd": 24,
+      "reason": "Useful adjacent term, but less winnable than the KD 0–9 opportunities."
+    }
+  ]
+}

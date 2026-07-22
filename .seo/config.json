@@ -1,0 +1,60 @@
+{
+  "initialized_at": "2026-07-22",
+  "domain": "https://reviewgate.lvtd.dev",
+  "stack": "astro",
+  "language": "astro-typescript",
+  "marketing_route_prefix": "site/src/pages",
+  "marketing_layout": "site/src/layouts/BaseLayout.astro",
+  "components_dir": "site/src/components",
+  "data_dir": "site/src/content",
+  "sitemap_path": "site/astro.config.mjs",
+  "robots_path": "site/public/robots.txt",
+  "roadmap_path": "docs/seo-sprint.md",
+  "brand_path": ".seo/brand.md",
+  "link_inventory_path": ".seo/link-inventory.md",
+  "keyword_research_path": ".seo/keyword-research.json",
+  "keyword_data_source": "dataforseo",
+  "dataforseo_location": "United States",
+  "dataforseo_language": "English",
+  "gsc_property": null,
+  "ahrefs_project_id": null,
+  "plausible_site_id": "reviewgate.lvtd.dev",
+  "posthog_project_id": null,
+  "tool_evidence": {
+    "gsc": {
+      "status": "connected",
+      "credential_discovery": "Infisical /services/google-search-console",
+      "call": "Search Console sites.list succeeded; 19 properties visible, no ReviewGate property"
+    },
+    "ahrefs": {
+      "status": "missing",
+      "credential_discovery": "loaded tools, runtime environment, TOOLS.md, repo config, and recursive Infisical secret-name scan",
+      "call": "not attempted; no credential or MCP connection found"
+    },
+    "dataforseo": {
+      "status": "connected",
+      "credential_discovery": "Infisical /services/dataforseo",
+      "call": "keyword overview, ranked keywords, backlink summary, and live SERP calls succeeded"
+    },
+    "plausible": {
+      "status": "attempted_failed",
+      "credential_discovery": "PLAUSIBLE_API_KEY runtime environment and workspace TOOLS.md",
+      "call": "v2 query for reviewgate.lvtd.dev returned 401: key lacks access or site does not exist"
+    },
+    "posthog": {
+      "status": "connected",
+      "credential_discovery": "POSTHOG_API_KEY runtime environment and workspace TOOLS.md",
+      "call": "projects.list succeeded; 13 projects visible, no ReviewGate project"
+    },
+    "search_discovery": {
+      "status": "connected",
+      "credential_discovery": "EXA_API_KEY runtime environment plus live web search",
+      "call": "Exa search returned 8 relevant competitor and comparison sources"
+    },
+    "extraction": {
+      "status": "connected",
+      "credential_discovery": "JINA_READER_API_KEY and FIRECRAWL_API_KEY runtime environment",
+      "call": "Jina Reader returned 200 for ReviewGate, CodeRabbit, Greptile, Qodo, and PR-Agent pages"
+    }
+  }
+}
