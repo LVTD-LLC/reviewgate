@@ -195,9 +195,9 @@ None: DataForSEO reports zero ranked keywords and GSC has no ReviewGate property
 
 **Why:** The site currently has one route. Programmatic pages would be islands and cannot meet inbound-link or feature/tool-link quality bars.
 
-**Scope:** Add a crawlable resources/index surface linked from global navigation and the homepage; define Astro content collections and shared layouts for alternatives, comparisons, use cases, and playbooks; add breadcrumb/FAQ/schema helpers; create at least two stable inbound-link placements for each Phase 3–6 page before those pages ship.
+**Scope:** Add a crawlable resources/index surface linked from global navigation and the homepage; define Astro content collections and shared layouts for alternatives, comparisons, use cases, and playbooks; add breadcrumb/FAQ/schema helpers; prepare reusable index-card and contextual-link components for later phases. Do **not** render an anchor or sitemap entry for a route until that route ships. Each page phase must add its own destination plus at least two inbound links atomically in the same PR.
 
-**Verification:** All planned route families build; no empty index pages are indexed; every next-phase page has two planned inbound locations; schema helpers have fixture coverage or deterministic build assertions.
+**Verification:** Shared layouts and route families build without emitting placeholder pages; the resource index contains no link whose destination is absent from `dist/`; every next-phase page has two documented inbound locations that its own phase will activate atomically; schema helpers have fixture coverage or deterministic build assertions.
 
 ### Phase 3 — `/alternatives/coderabbit`
 

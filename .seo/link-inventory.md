@@ -29,31 +29,31 @@ There is currently no `/pricing`, `/about`, `/features/*`, `/tools/*`, or blog r
 
 | Slug | Ships in phase | URL | Inbound links from | Outbound links to |
 |---|---|---|---|---|
-| `coderabbit` | 3 | `/alternatives/coderabbit` | Phase 2 spine + later siblings | Homepage, install, configure, sibling alternatives |
-| `greptile` | 5 | `/alternatives/greptile` | Phase 2 spine + CodeRabbit alternative | Homepage, install, configure, sibling alternatives |
-| `qodo` | 8 | `/alternatives/qodo` | Phase 2 spine + comparison pages | Homepage, install, configure, sibling alternatives |
+| `coderabbit` | 3 | `/alternatives/coderabbit` | Homepage + resources index, added atomically in Phase 3; later siblings | Homepage, install, configure, sibling alternatives |
+| `greptile` | 5 | `/alternatives/greptile` | Resources index + CodeRabbit alternative, added atomically in Phase 5 | Homepage, install, configure, sibling alternatives |
+| `qodo` | 8 | `/alternatives/qodo` | Resources index + comparison hub, added atomically in Phase 8 | Homepage, install, configure, sibling alternatives |
 
 ### `/for/[slug]`
 
 | Slug | Ships in phase | URL | Inbound links from | Outbound links to |
 |---|---|---|---|---|
-| `open-source-maintainers` | 7 | `/for/open-source-maintainers` | Homepage + Phase 2 spine | Install, configure, alternatives, playbooks |
-| `agent-written-pull-requests` | 9 | `/for/agent-written-pull-requests` | Homepage + Phase 2 spine | Install, configure, alternatives, playbooks |
+| `open-source-maintainers` | 7 | `/for/open-source-maintainers` | Homepage + resources index, added atomically in Phase 7 | Install, configure, alternatives, playbooks |
+| `agent-written-pull-requests` | 9 | `/for/agent-written-pull-requests` | Homepage + resources index, added atomically in Phase 9 | Install, configure, alternatives, playbooks |
 
 ### `/compare/[slug]`
 
 | Slug | Ships in phase | URL | Inbound links from | Outbound links to |
 |---|---|---|---|---|
-| `coderabbit-vs-greptile` | 4 | `/compare/coderabbit-vs-greptile` | Phase 2 spine + both alternative pages | Both alternatives, maintainer use case, install |
-| `coderabbit-vs-qodo` | 10 | `/compare/coderabbit-vs-qodo` | Phase 2 spine + Qodo alternative | Both alternatives, maintainer use case, install |
+| `coderabbit-vs-greptile` | 4 | `/compare/coderabbit-vs-greptile` | Resources index + CodeRabbit alternative, added atomically in Phase 4 | Available alternatives, maintainer use case once live, install |
+| `coderabbit-vs-qodo` | 10 | `/compare/coderabbit-vs-qodo` | Resources index + Qodo alternative, added atomically in Phase 10 | Both alternatives, maintainer use case, install |
 
 ### `/playbooks/[slug]`
 
 | Slug | Ships in phase | URL | Inbound links from | Outbound links to |
 |---|---|---|---|---|
-| `code-review-checklist` | 6 | `/playbooks/code-review-checklist` | Homepage + Phase 2 spine | Install, configure, alternatives, use cases |
-| `code-review-agent` | 11 | `/playbooks/code-review-agent` | Homepage + Phase 2 spine | Install, configure, alternatives, use cases |
-| `ai-code-review` | 12 | `/playbooks/ai-code-review` | Homepage + Phase 2 spine | Install, configure, alternatives, use cases |
+| `code-review-checklist` | 6 | `/playbooks/code-review-checklist` | Homepage + resources index, added atomically in Phase 6 | Install, configure, alternatives, live use cases |
+| `code-review-agent` | 11 | `/playbooks/code-review-agent` | Homepage + resources index, added atomically in Phase 11 | Install, configure, alternatives, use cases |
+| `ai-code-review` | 12 | `/playbooks/ai-code-review` | Homepage + resources index, added atomically in Phase 12 | Install, configure, alternatives, use cases |
 
 ## Anchor-text variations
 
