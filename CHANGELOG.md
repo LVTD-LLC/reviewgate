@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-07-22
+
+- Initialized the Astro marketing site's SEO sprint with measured keyword and SERP research, a technical audit, brand context, internal-link inventory, backlink targets, and a phase-by-phase roadmap.
+
 ## 2026-07-08
 
 - Redesigned the Astro marketing site around ReviewGate's score-centered purpose, GitHub Actions installation flow, supported features, artifacts, and configuration surface.

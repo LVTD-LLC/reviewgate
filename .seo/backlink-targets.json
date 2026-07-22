@@ -1,0 +1,63 @@
+{
+  "as_of": "2026-07-22",
+  "source": "blended",
+  "sources": ["exa", "web-search", "dataforseo"],
+  "targets": [
+    {
+      "name": "AlternativeTo",
+      "url": "https://alternativeto.net/",
+      "type": "directory",
+      "angle": "Open-source, GitHub Actions-first alternative to hosted AI code reviewers",
+      "status": "not_started"
+    },
+    {
+      "name": "Product Hunt",
+      "url": "https://www.producthunt.com/",
+      "type": "launch-directory",
+      "angle": "Free open-source merge-readiness score for agent PRs",
+      "status": "not_started"
+    },
+    {
+      "name": "G2 CodeRabbit alternatives",
+      "url": "https://www.g2.com/products/coderabbit/competitors/alternatives",
+      "type": "comparison-directory",
+      "angle": "Add ReviewGate after a public product listing exists",
+      "status": "not_started"
+    },
+    {
+      "name": "Product Hunt CodeRabbit alternatives",
+      "url": "https://www.producthunt.com/products/coderabbit/alternatives",
+      "type": "comparison-directory",
+      "angle": "Open-source BYOK alternative for maintainers and small teams",
+      "status": "not_started"
+    },
+    {
+      "name": "LogRocket AI code review tools",
+      "url": "https://blog.logrocket.com/ai-code-review-tools-2025/",
+      "type": "listicle-outreach",
+      "angle": "Offer ReviewGate as an inspectable GitHub Actions-first entrant",
+      "status": "not_started"
+    },
+    {
+      "name": "DeepSource AI code review tools",
+      "url": "https://deepsource.com/resources/ai-code-review-tools",
+      "type": "listicle-outreach",
+      "angle": "Ask for inclusion after comparison and evaluation pages ship",
+      "status": "not_started"
+    },
+    {
+      "name": "Augment open-source AI code review tools",
+      "url": "https://www.augmentcode.com/tools/open-source-ai-code-review-tools-worth-trying",
+      "type": "listicle-outreach",
+      "angle": "Strong fit once setup docs and a reproducible evaluation are public",
+      "status": "not_started"
+    },
+    {
+      "name": "SaaSHub",
+      "url": "https://www.saashub.com/",
+      "type": "directory",
+      "angle": "Developer tools and CodeRabbit alternatives category",
+      "status": "not_started"
+    }
+  ]
+}
