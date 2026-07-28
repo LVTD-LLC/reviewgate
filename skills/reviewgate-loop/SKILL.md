@@ -53,7 +53,7 @@ Prefer the local JSON artifact when it is fresh for the PR head:
 
 ```bash
 jq -r '
-  "score: \(.score)/5",
+  "score: \(if .score == null then "unavailable" else "\(.score)/5" end)",
   "status: \(.status)",
   "reviewed_sha: \(.reviewed_sha)",
   "findings: \(.findings | length)"
@@ -77,6 +77,15 @@ jq -r '
   .angle_results[]?
   | select(.score < 5 or .status != "passed")
   | "- \(.name): \(.score)/5 \(.status) - \(.verdict)"
+' .reviewgate/review.json
+```
+
+If `status == "review_error"`, do not infer a code-quality failure or edit code to chase it. Inspect typed reviewer errors and retry only those marked retryable:
+
+```bash
+jq -r '
+  .angle_errors[]?
+  | "- \(.angle_name): \(.kind) retryable=\(.retryable) - \(.message)"
 ' .reviewgate/review.json
 ```
 
@@ -195,6 +204,7 @@ Stop without success when:
 - A finding needs human judgment.
 - Required local checks fail for a reason outside the current safe scope.
 - ReviewGate cannot run or publish a fresh result.
+- The current result is `review_error` and its non-retryable errors require configuration or human intervention.
 
 ## Report Format
 
@@ -202,8 +212,8 @@ Stop without success when:
 ReviewGate loop result:
   PR: <number and URL>
   Attempts: <n>
-  Final score: <x>/5
-  Final status: <passed|needs_changes>
+  Final score: <x>/5 or unavailable
+  Final status: <passed|needs_changes|review_error>
   Reviewed SHA: <sha>
   Fixed findings: <ids or count>
   Remaining findings: <ids or count with reasons>
