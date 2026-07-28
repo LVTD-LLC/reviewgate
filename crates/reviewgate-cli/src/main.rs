@@ -3459,17 +3459,26 @@ mod tests {
 
     #[cfg(unix)]
     fn run_rereview_subprocess(scenario: &str, permission: &str) -> (Output, String) {
+        run_rereview_subprocess_for_comment(scenario, permission, 9001)
+    }
+
+    #[cfg(unix)]
+    fn run_rereview_subprocess_for_comment(
+        scenario: &str,
+        permission: &str,
+        comment_id: u64,
+    ) -> (Output, String) {
         use std::os::unix::fs::PermissionsExt;
 
-        let test_dir = unique_test_dir("reviewgate-rereview-subprocess");
+        let test_dir = unique_test_dir(&format!(
+            "reviewgate-rereview-subprocess-{scenario}-{permission}-{comment_id}"
+        ));
         let event_path = test_dir.join("event.json");
         let log_path = test_dir.join("gh.log");
         let gh_path = test_dir.join("gh");
-        fs::write(
-            &event_path,
-            issue_comment_event("created", REREVIEW_COMMAND, "MEMBER", "open", true).to_string(),
-        )
-        .expect("write event");
+        let mut event = issue_comment_event("created", REREVIEW_COMMAND, "MEMBER", "open", true);
+        event["comment"]["id"] = serde_json::json!(comment_id);
+        fs::write(&event_path, event.to_string()).expect("write event");
         fs::write(
             &gh_path,
             r#"#!/bin/sh
@@ -3489,12 +3498,16 @@ case "$*" in
     ;;
   *--paginate*issues/42/comments*)
     if [ "$REVIEWGATE_TEST_SCENARIO" = "duplicate" ]; then
-      printf '[[{"id":6100,"user":{"login":"github-actions[bot]"},"body":"<!-- reviewgate-rereview:9001 -->"}]]\n'
+      printf '[[{"id":6100,"user":{"login":"github-actions[bot]"},"body":"<!-- reviewgate-rereview:%s -->"}]]\n' "$REVIEWGATE_TEST_COMMENT_ID"
     else
       printf '[[]]\n'
     fi
     ;;
-  *issues/comments/9001/reactions*)
+  *issues/comments/*/reactions*)
+    if [ "$REVIEWGATE_TEST_SCENARIO" = "reaction_failure" ]; then
+      printf 'reaction denied\n' >&2
+      exit 1
+    fi
     printf '{}\n'
     ;;
   *issues/42/comments*--input*)
@@ -3543,6 +3556,7 @@ esac
             .env("REVIEWGATE_TEST_GH_LOG", &log_path)
             .env("REVIEWGATE_TEST_SCENARIO", scenario)
             .env("REVIEWGATE_TEST_PERMISSION", permission)
+            .env("REVIEWGATE_TEST_COMMENT_ID", comment_id.to_string())
             .env("GITHUB_EVENT_NAME", "issue_comment")
             .env("GITHUB_REPOSITORY", "LVTD-LLC/reviewgate")
             .env("GH_TOKEN", "test-token")
@@ -3971,6 +3985,43 @@ esac
             "{log}"
         );
         assert!(log.contains("rereview queued for PR #42"), "{log}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaction_failure_does_not_block_an_authorized_rereview() {
+        let (output, log) = run_rereview_subprocess("reaction_failure", "write");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains(r#""status":"queued""#), "{stdout}");
+        assert_eq!(log.matches("actions/runs/11/rerun").count(), 1, "{log}");
+        assert!(
+            stderr.contains("acknowledgement reaction failed"),
+            "{stderr}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn distinct_later_comment_ids_each_request_one_rereview() {
+        for comment_id in [9001, 9002] {
+            let (output, log) = run_rereview_subprocess_for_comment("success", "write", comment_id);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            assert!(output.status.success(), "{comment_id}: {stdout}");
+            assert!(stdout.contains(r#""status":"queued""#), "{stdout}");
+            assert_eq!(
+                log.matches("actions/runs/11/rerun").count(),
+                1,
+                "{comment_id}: {log}"
+            );
+            assert!(
+                log.contains(&format!("<!-- reviewgate-rereview:{comment_id} -->")),
+                "{comment_id}: {log}"
+            );
+        }
     }
 
     #[test]
