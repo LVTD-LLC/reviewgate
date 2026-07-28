@@ -11,6 +11,7 @@ Website: <https://reviewgate.lvtd.dev>
 - Visible `0-5` confidence score on every reviewed pull request.
 - Fixed passing target of `5/5`; anything below that reports `needs_changes`.
 - One canonical PR summary comment marked with `<!-- reviewgate-summary -->` and updated in place on reruns.
+- Exact maintainer-requested rereviews with `@reviewgate review`, bound to the PR current head.
 - Structured `.reviewgate/review.json` artifact for humans, scripts, and external agent loops.
 - Severity-filtered inline PR comments for findings at or above `min_severity`.
 - Fallback inline anchoring for file-level, PR-level, unanchored, or stale-line findings when a right-side diff line is available.
@@ -28,6 +29,7 @@ Website: <https://reviewgate.lvtd.dev>
 - [Getting Started Locally](#getting-started-locally)
 - [Architecture](#architecture)
 - [Review Lifecycle](#review-lifecycle)
+- [Maintainer-Requested Rereviews](#maintainer-requested-rereviews)
 - [Scoring Model](#scoring-model)
 - [JSON Artifact Contract](#json-artifact-contract)
 - [Configuration](#configuration)
@@ -94,16 +96,8 @@ name: ReviewGate
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  checks: write
-
-concurrency:
-  group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  issue_comment:
+    types: [created]
 
 jobs:
   review:
@@ -114,6 +108,14 @@ jobs:
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+    concurrency:
+      group: reviewgate-${{ github.workflow }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -125,9 +127,36 @@ jobs:
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           min_severity: P4
+
+  rereview:
+    if: >-
+      ${{
+        github.event_name == 'issue_comment' &&
+        github.event.action == 'created' &&
+        github.event.issue.pull_request &&
+        github.event.issue.state == 'open' &&
+        github.event.comment.body == '@reviewgate review' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      pull-requests: read
+      issues: write
+    concurrency:
+      group: reviewgate-rereview-${{ github.event.comment.id }}
+      cancel-in-progress: false
+    steps:
+      - uses: LVTD-LLC/reviewgate@v0
+        with:
+          mode: rereview
+          review_workflow: reviewgate.yml
 ```
 
-The fork-safety guard is intentional. GitHub does not expose repository secrets to untrusted fork PRs or Dependabot PR events, so the default workflow skips those events instead of running ReviewGate with an empty model key. Do not switch this workflow to `pull_request_target` for untrusted fork code.
+Name the workflow file `reviewgate.yml`, or set `review_workflow` to its file name. The rereview job intentionally does not check out PR code and never receives `OPENROUTER_API_KEY`.
+
+The fork-safety guard is intentional. GitHub does not expose repository secrets to untrusted fork PRs or Dependabot PR events, so the default review job skips those events instead of running ReviewGate with an empty model key. A rereview command can only rerun a completed, exact-PR ReviewGate run that already exists for the PR current head. Do not switch this workflow to `pull_request_target` for untrusted fork code.
 
 ### Required Permissions
 
@@ -140,11 +169,15 @@ The fork-safety guard is intentional. GitHub does not expose repository secrets 
 
 If `checks: write` is omitted, the review can still write JSON and summary comments, but the check-run publishing step cannot succeed. If `issues: write` is omitted, canonical summary publishing fails visibly because the summary is product-critical.
 
+The rereview job has a separate least-privilege boundary: `actions: write` to enumerate and rerun the selected workflow run, `pull-requests: read` to verify the open PR and current head SHA, and `issues: write` for idempotency and bounded feedback.
+
 ### Action Inputs
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `openrouter_api_key` | Yes | None | OpenRouter API key. Pass `${{ secrets.OPENROUTER_API_KEY }}`. |
+| `mode` | No | `review` | `review` runs the normal model-backed review; `rereview` handles the exact maintainer comment command. |
+| `openrouter_api_key` | In `review` mode | None | OpenRouter API key. Pass `${{ secrets.OPENROUTER_API_KEY }}`. Never pass it to a rereview job. |
+| `review_workflow` | No | `reviewgate.yml` | Workflow file name selected by rereview mode. |
 | `config` | No | `.reviewgate.yml` | Path to ReviewGate config in the checked-out repository. |
 | `model` | No | Built-in balanced model | Exact OpenRouter model ID. Leave empty to use the default. |
 | `min_severity` | No | `P4` | Lowest severity published as inline PR comments. One of `P0`, `P1`, `P2`, `P3`, `P4`. |
@@ -399,7 +432,7 @@ Anything that affects the score, status, JSON contract, or summary shape should 
 - multi-angle aggregation;
 - config parsing;
 - GitHub summary, findings, and check-run publishing commands;
-- `reviewgate recheck` via `gh run rerun`;
+- safe current-head `recheck` and comment-triggered `request-rereview` via the GitHub API;
 - fixture evaluation.
 
 The CLI depends on `reviewgate-core` for deterministic review logic and on `reviewgate-github` for GitHub publishing plans.
@@ -431,7 +464,7 @@ Network calls to GitHub happen in the CLI through `gh`; reusable publishing logi
 5. publishes or updates the canonical summary comment;
 6. publishes a ReviewGate check run under `always()`.
 
-The action runs the Rust CLI from `$GITHUB_ACTION_PATH`, not from the checked-out PR workspace. That keeps product logic in Rust while letting users install ReviewGate as a normal composite GitHub Action.
+The action runs the Rust CLI from `$GITHUB_ACTION_PATH`, not from the checked-out PR workspace. That keeps product logic in Rust while letting users install ReviewGate as a normal composite GitHub Action. In `rereview` mode it only validates the comment event and requests a safe current-head rerun; it does not run model-backed review steps.
 
 ### Marketing Site
 
@@ -539,6 +572,30 @@ For each finding at or above `min_severity`, ReviewGate tries to publish an inli
 5. If no right-side anchor exists or GitHub rejects the comment, keep the finding in JSON and warn in logs. ReviewGate does not create standalone finding comments for these cases.
 
 Older standalone finding comments with `<!-- reviewgate-finding-comment:... -->` markers are cleaned up by later runs.
+
+## Maintainer-Requested Rereviews
+
+ReviewGate supports one deliberately narrow command:
+
+```text
+@reviewgate review
+```
+
+The public contract is:
+
+- The event must be `issue_comment.created` on an open pull request.
+- The entire comment body must exactly equal `@reviewgate review`. Matching is case- and whitespace-sensitive; edits, aliases, and conversational text do not trigger.
+- The comment author association is an early filter and must be `OWNER`, `MEMBER`, or `COLLABORATOR`. ReviewGate then verifies the actor's current repository permission through GitHub and requires effective `write`, `maintain`, or `admin` access. Actors with only `read` or `triage` access are ignored before comments are created or workflow runs are enumerated.
+- ReviewGate fetches the open PR from the base repository and binds selection to its current `head.sha`.
+- Run discovery follows every GitHub API page for the configured workflow file. A run is eligible only when it belongs to the exact repository and workflow, used the `pull_request` event, is completed, includes the exact PR number in `pull_requests`, and has the exact current head SHA. The newest eligible run is rerun.
+- Branch names are never used as PR identity. A run for another PR with the same branch name, a stale SHA, a foreign repository, a non-PR event, or an in-progress run is never selected.
+- If no eligible run exists, ReviewGate posts a bounded `no_eligible_run` response and exits without requesting a review.
+- Redelivery of the same GitHub comment event is suppressed by a bot-owned marker keyed to `comment.id`. The documented concurrency group serializes duplicate deliveries before this check. A new later command has a new comment ID and intentionally requests another rereview.
+- The acknowledgement reaction and final feedback update are best-effort after the idempotency marker exists. A reaction failure never blocks an otherwise valid rerun.
+
+The rereview job runs in the base repository context, does not check out PR code, and does not receive model secrets. It only requests a rerun of a previously approved ReviewGate `pull_request` run. `pull_request_target` is neither needed nor recommended.
+
+`reviewgate request-rereview` emits a small JSON result with `status` and `reason`; ignored comments exit successfully, while discovery, authorization-boundary, and rerun failures exit non-zero after bounded feedback where permissions allow.
 
 ## Scoring Model
 
@@ -707,11 +764,11 @@ The passing target is not configurable. ReviewGate always aims for `5/5`.
 | Variable | Required | Used by | Description |
 | --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | Live review only | `review-pr` | OpenRouter key for live model calls. Not needed for fixture or mock paths. |
-| `GH_TOKEN` | GitHub publishing/recheck | CLI via `gh` | Token used by GitHub CLI commands. Preferred in GitHub Actions. |
-| `GITHUB_TOKEN` | GitHub publishing/recheck | CLI fallback | Alternate token name accepted by publishing helpers. |
+| `GH_TOKEN` | GitHub publishing/recheck/rereview | CLI via `gh` | Token used by GitHub CLI commands. Preferred in GitHub Actions. |
+| `GITHUB_TOKEN` | GitHub publishing/recheck/rereview | CLI fallback | Alternate token name accepted by publishing helpers. |
 | `GITHUB_BASE_REF` | Optional | diff collection | Base branch name. When present, ReviewGate diffs `merge-base HEAD origin/$GITHUB_BASE_REF...HEAD`. |
 | `GITHUB_EVENT_PATH` | Optional | PR context | Path to GitHub event JSON. Used to read PR title, body, number, and head SHA. |
-| `GITHUB_EVENT_NAME` | Publishing paths | publish commands | Publishing commands only operate on `pull_request` events. |
+| `GITHUB_EVENT_NAME` | Publishing and rereview paths | publish/request commands | Publishing commands operate on `pull_request`; rereview requests require `issue_comment`. |
 | `GITHUB_REPOSITORY` | Publishing paths | publish commands | Repository in `OWNER/REPO` form. |
 | `GITHUB_STEP_SUMMARY` | Optional | `publish-summary` | File path where the action appends the rendered summary. |
 | `GITHUB_SERVER_URL` | Optional | `publish-check-run` | Defaults to `https://github.com`. Used for check-run details URL. |
@@ -764,7 +821,8 @@ reviewgate <subcommand>
 | `fixture-review --input <path>` | Validate fixture JSON, recompute score/status, and render JSON plus summary. |
 | `review-pr --repo <path>` | Collect PR context, run mock or live review, and write artifacts. |
 | `render-summary --input <path>` | Render a summary from an existing artifact. Can carry hidden state from a previous summary. |
-| `recheck --repo <path>` | Rerun the latest ReviewGate workflow run for a PR branch using `gh`. |
+| `recheck --repo <path> --workflow <selector>` | Safely rerun the newest completed ReviewGate run for the exact PR current head using `gh`. The selector may be an exact numeric workflow ID, workflow file name/path, or display name; non-numeric selectors must match exactly and unambiguously. |
+| `request-rereview --workflow <file>` | Validate an `issue_comment` event and safely request the exact PR current-head rerun. |
 | `eval-fixtures --dir <path>` | Evaluate committed artifact fixtures without publishing. |
 | `publish-start-signal` | Action-internal command to create/update the running placeholder summary. |
 | `publish-findings` | Action-internal command to publish eligible findings as inline PR comments. |
@@ -800,8 +858,12 @@ cargo run --locked -p reviewgate-cli -- render-summary \
   --summary-out .reviewgate/summary.md \
   --min-severity P2
 
-# Rerun the latest ReviewGate workflow for the current PR branch.
+# Rerun the newest eligible ReviewGate workflow for the current PR head.
 cargo run --locked -p reviewgate-cli -- recheck
+
+# Handle the current GitHub Actions issue_comment event.
+GITHUB_EVENT_NAME=issue_comment cargo run --locked -p reviewgate-cli -- \
+  request-rereview --workflow reviewgate.yml
 
 # Evaluate all JSON fixtures in fixtures/.
 cargo run --locked -p reviewgate-cli -- eval-fixtures --dir fixtures

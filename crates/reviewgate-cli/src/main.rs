@@ -19,8 +19,9 @@ use reviewgate_core::{
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
-    SummaryCommentAction, plan_inline_comment_drafts, plan_summary_comment_publish,
-    stale_finding_comment_ids,
+    RereviewTarget, SummaryCommentAction, WorkflowRunCandidate, find_rereview_status_comment,
+    plan_inline_comment_drafts, plan_summary_comment_publish, rereview_status_marker,
+    select_rereview_workflow_run, stale_finding_comment_ids,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -47,6 +48,7 @@ const MAX_PR_DESCRIPTION_CHARS: usize = 5_000;
 const MAX_GENERATED_FINDING_ID_CHARS: usize = 256;
 const MAX_REVIEW_ANGLE_INSTRUCTIONS_BYTES: usize = 80_000;
 const CONTEXT_FILE_TRUNCATED_MARKER: &str = "\n[truncated]\n";
+const REREVIEW_COMMAND: &str = "@reviewgate review";
 
 type CliResult<T> = anyhow::Result<T>;
 
@@ -110,6 +112,15 @@ enum Command {
         #[arg(long, default_value = "ReviewGate")]
         workflow: String,
     },
+    /// Handle an exact maintainer rereview command from an issue_comment event.
+    RequestRereview {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value = "reviewgate.yml")]
+        workflow: String,
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+    },
     /// Evaluate committed review artifact fixtures without publishing anything.
     EvalFixtures {
         #[arg(long, default_value = "fixtures")]
@@ -156,6 +167,113 @@ enum PresetArg {
     Cheap,
     Balanced,
     Strong,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RereviewRequest {
+    pull_request_number: u64,
+    comment_id: u64,
+    actor_login: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepositoryWorkflow {
+    id: u64,
+    name: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RereviewIgnoreReason {
+    UnsupportedEvent,
+    UnsupportedAction,
+    CommandMismatch,
+    UnauthorizedActor,
+    NotPullRequest,
+    PullRequestNotOpen,
+    InvalidPayload,
+}
+
+impl RereviewIgnoreReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::UnsupportedEvent => "unsupported_event",
+            Self::UnsupportedAction => "unsupported_action",
+            Self::CommandMismatch => "command_mismatch",
+            Self::UnauthorizedActor => "unauthorized_actor",
+            Self::NotPullRequest => "not_pull_request",
+            Self::PullRequestNotOpen => "pull_request_not_open",
+            Self::InvalidPayload => "invalid_payload",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RereviewEventDecision {
+    Trigger(RereviewRequest),
+    Ignore(RereviewIgnoreReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RereviewFailureReason {
+    MissingToken,
+    InvalidRepositoryContext,
+    InvalidWorkflow,
+    AuthorizationCheckFailed,
+    CommentDiscoveryFailed,
+    ReservationFailed,
+    TargetValidationFailed,
+    DiscoveryFailed,
+    NoEligibleRun,
+    RerunFailed,
+}
+
+impl RereviewFailureReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::MissingToken => "missing_token",
+            Self::InvalidRepositoryContext => "invalid_repository_context",
+            Self::InvalidWorkflow => "invalid_workflow",
+            Self::AuthorizationCheckFailed => "authorization_check_failed",
+            Self::CommentDiscoveryFailed => "comment_discovery_failed",
+            Self::ReservationFailed => "reservation_failed",
+            Self::TargetValidationFailed => "target_validation_failed",
+            Self::DiscoveryFailed => "discovery_failed",
+            Self::NoEligibleRun => "no_eligible_run",
+            Self::RerunFailed => "rerun_failed",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::MissingToken => "The rereview job does not have a GitHub token.",
+            Self::InvalidRepositoryContext => {
+                "The base repository could not be read from the GitHub Actions context."
+            }
+            Self::InvalidWorkflow => "The configured workflow identifier is invalid.",
+            Self::AuthorizationCheckFailed => {
+                "ReviewGate could not verify the comment author's repository permission."
+            }
+            Self::CommentDiscoveryFailed => {
+                "ReviewGate could not check whether this command was already processed."
+            }
+            Self::ReservationFailed => {
+                "ReviewGate could not reserve this rereview command for processing."
+            }
+            Self::TargetValidationFailed => {
+                "The pull request is no longer open or its current head could not be verified."
+            }
+            Self::DiscoveryFailed => {
+                "ReviewGate could not enumerate eligible workflow runs. Check the workflow name and `actions: write` permission."
+            }
+            Self::NoEligibleRun => {
+                "No completed ReviewGate `pull_request` run matches this PR's current head. Push a commit or run the normal review first, then request a rereview."
+            }
+            Self::RerunFailed => {
+                "The eligible current-head run was found, but GitHub rejected the rerun. Check `actions: write` permission."
+            }
+        }
+    }
 }
 
 impl From<PresetArg> for ModelPreset {
@@ -210,6 +328,11 @@ fn main() -> CliResult<()> {
             min_severity,
         }),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
+        Command::RequestRereview {
+            repo,
+            workflow,
+            event_path,
+        } => request_rereview(repo, workflow, event_path),
         Command::EvalFixtures { dir } => eval_fixtures(dir),
         Command::PublishStartSignal { repo } => publish_start_signal(repo),
         Command::PublishFindings {
@@ -572,6 +695,332 @@ fn render_summary_command(options: RenderSummaryOptions) -> CliResult<()> {
     Ok(())
 }
 
+fn parse_rereview_request(event_name: &str, event: &serde_json::Value) -> RereviewEventDecision {
+    if event_name != "issue_comment" {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::UnsupportedEvent);
+    }
+    if event.get("action").and_then(serde_json::Value::as_str) != Some("created") {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::UnsupportedAction);
+    }
+    let Some(comment) = event.get("comment") else {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::InvalidPayload);
+    };
+    if comment.get("body").and_then(serde_json::Value::as_str) != Some(REREVIEW_COMMAND) {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::CommandMismatch);
+    }
+    if !matches!(
+        comment
+            .get("author_association")
+            .and_then(serde_json::Value::as_str),
+        Some("OWNER" | "MEMBER" | "COLLABORATOR")
+    ) {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::UnauthorizedActor);
+    }
+    let Some(issue) = event.get("issue") else {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::InvalidPayload);
+    };
+    if issue.get("pull_request").is_none() {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::NotPullRequest);
+    }
+    if issue.get("state").and_then(serde_json::Value::as_str) != Some("open") {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::PullRequestNotOpen);
+    }
+    let Some(pull_request_number) = issue.get("number").and_then(serde_json::Value::as_u64) else {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::InvalidPayload);
+    };
+    let Some(comment_id) = comment.get("id").and_then(serde_json::Value::as_u64) else {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::InvalidPayload);
+    };
+    let Some(actor_login) = comment
+        .pointer("/user/login")
+        .and_then(serde_json::Value::as_str)
+        .filter(|login| {
+            !login.is_empty()
+                && login
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    else {
+        return RereviewEventDecision::Ignore(RereviewIgnoreReason::InvalidPayload);
+    };
+    RereviewEventDecision::Trigger(RereviewRequest {
+        pull_request_number,
+        comment_id,
+        actor_login: actor_login.to_string(),
+    })
+}
+
+fn parse_rereview_target(
+    raw: &str,
+    repository: &str,
+    expected_pull_request_number: u64,
+) -> CliResult<RereviewTarget> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse pull request JSON")?;
+    let pull_request_number = value
+        .get("number")
+        .and_then(serde_json::Value::as_u64)
+        .context("pull request response did not include number")?;
+    if pull_request_number != expected_pull_request_number {
+        bail!(
+            "pull request response returned #{pull_request_number}, expected #{expected_pull_request_number}"
+        );
+    }
+    if value.get("state").and_then(serde_json::Value::as_str) != Some("open") {
+        bail!("pull request #{pull_request_number} is not open");
+    }
+    let base_repository = value
+        .pointer("/base/repo/full_name")
+        .and_then(serde_json::Value::as_str)
+        .context("pull request response did not include base repository")?;
+    if base_repository != repository {
+        bail!(
+            "pull request #{pull_request_number} belongs to {base_repository}, expected {repository}"
+        );
+    }
+    let head_sha = value
+        .pointer("/head/sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| !sha.is_empty())
+        .context("pull request response did not include current head SHA")?;
+    Ok(RereviewTarget {
+        repository: repository.to_string(),
+        pull_request_number,
+        head_sha: head_sha.to_string(),
+    })
+}
+
+fn parse_workflow_run_candidates(raw: &str) -> CliResult<Vec<WorkflowRunCandidate>> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse workflow runs JSON")?;
+    let pages: Vec<&serde_json::Value> = match value.as_array() {
+        Some(values) => values.iter().collect(),
+        None => vec![&value],
+    };
+    let mut candidates = Vec::new();
+    for page in pages {
+        let runs = page
+            .get("workflow_runs")
+            .and_then(serde_json::Value::as_array)
+            .context("workflow runs response did not include workflow_runs")?;
+        for run in runs {
+            let id = run
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .context("workflow run did not include id")?;
+            let pull_request_numbers = run
+                .get("pull_requests")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|pull_request| {
+                    pull_request
+                        .get("number")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .collect();
+            candidates.push(WorkflowRunCandidate {
+                id,
+                url: run
+                    .get("html_url")
+                    .and_then(serde_json::Value::as_str)
+                    .context("workflow run did not include html_url")?
+                    .to_string(),
+                repository: run
+                    .pointer("/repository/full_name")
+                    .and_then(serde_json::Value::as_str)
+                    .context("workflow run did not include repository")?
+                    .to_string(),
+                event: run
+                    .get("event")
+                    .and_then(serde_json::Value::as_str)
+                    .context("workflow run did not include event")?
+                    .to_string(),
+                status: run
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .context("workflow run did not include status")?
+                    .to_string(),
+                head_sha: run
+                    .get("head_sha")
+                    .and_then(serde_json::Value::as_str)
+                    .context("workflow run did not include head_sha")?
+                    .to_string(),
+                pull_request_numbers,
+                created_at: run
+                    .get("created_at")
+                    .and_then(serde_json::Value::as_str)
+                    .context("workflow run did not include created_at")?
+                    .to_string(),
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+fn validate_workflow_identifier(workflow: &str) -> CliResult<()> {
+    if workflow.is_empty()
+        || !workflow
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!(
+            "workflow must be a workflow file name or numeric id containing only letters, numbers, '.', '_', or '-'"
+        );
+    }
+    Ok(())
+}
+
+fn parse_repository_workflows(raw: &str) -> CliResult<Vec<RepositoryWorkflow>> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse repository workflows JSON")?;
+    let pages: Vec<&serde_json::Value> = match value.as_array() {
+        Some(values) => values.iter().collect(),
+        None => vec![&value],
+    };
+    let mut workflows = Vec::new();
+    for page in pages {
+        let entries = page
+            .get("workflows")
+            .and_then(serde_json::Value::as_array)
+            .context("repository workflows response did not include workflows")?;
+        for entry in entries {
+            workflows.push(RepositoryWorkflow {
+                id: entry
+                    .get("id")
+                    .and_then(serde_json::Value::as_u64)
+                    .context("repository workflow did not include id")?,
+                name: entry
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .context("repository workflow did not include name")?
+                    .to_string(),
+                path: entry
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .context("repository workflow did not include path")?
+                    .to_string(),
+            });
+        }
+    }
+    Ok(workflows)
+}
+
+fn resolve_workflow_id(selector: &str, workflows: &[RepositoryWorkflow]) -> CliResult<u64> {
+    if let Ok(id) = selector.parse::<u64>() {
+        return Ok(id);
+    }
+    let mut matches = workflows
+        .iter()
+        .filter(|workflow| {
+            workflow.path == selector
+                || workflow.name == selector
+                || Path::new(&workflow.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    == Some(selector)
+        })
+        .map(|workflow| workflow.id)
+        .collect::<BTreeSet<_>>();
+    match (matches.pop_first(), matches.is_empty()) {
+        (Some(id), true) => Ok(id),
+        (Some(_), false) => bail!("workflow selector {selector:?} is ambiguous"),
+        (None, _) => bail!("workflow selector {selector:?} did not match a repository workflow"),
+    }
+}
+
+fn fetch_repository_workflows(repo: &Path, repository: &str) -> CliResult<Vec<RepositoryWorkflow>> {
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("repos/{repository}/actions/workflows?per_page=100"),
+        ],
+    )?;
+    parse_repository_workflows(&raw)
+}
+
+fn resolve_recheck_workflow_id(repo: &Path, repository: &str, selector: &str) -> CliResult<u64> {
+    if let Ok(id) = selector.parse::<u64>() {
+        return Ok(id);
+    }
+    let workflows = fetch_repository_workflows(repo, repository)?;
+    resolve_workflow_id(selector, &workflows)
+}
+
+fn parse_repository_write_permission(raw: &str) -> CliResult<bool> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse collaborator permission JSON")?;
+    let permission = value
+        .get("permission")
+        .and_then(serde_json::Value::as_str)
+        .context("collaborator permission response did not include permission")?;
+    Ok(matches!(permission, "write" | "maintain" | "admin"))
+}
+
+fn fetch_actor_write_permission(
+    repo: &Path,
+    repository: &str,
+    actor_login: &str,
+) -> CliResult<bool> {
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            &format!("repos/{repository}/collaborators/{actor_login}/permission"),
+        ],
+    )?;
+    parse_repository_write_permission(&raw)
+}
+
+fn fetch_rereview_target(
+    repo: &Path,
+    repository: &str,
+    pull_request_number: u64,
+) -> CliResult<RereviewTarget> {
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            &format!("repos/{repository}/pulls/{pull_request_number}"),
+        ],
+    )?;
+    parse_rereview_target(&raw, repository, pull_request_number)
+}
+
+fn fetch_workflow_run_candidates(
+    repo: &Path,
+    repository: &str,
+    workflow: &str,
+    head_sha: &str,
+) -> CliResult<Vec<WorkflowRunCandidate>> {
+    validate_workflow_identifier(workflow)?;
+    let endpoint = workflow_runs_endpoint(repository, workflow, head_sha);
+    let raw = gh_dyn(repo, &["api", "--paginate", "--slurp", &endpoint])?;
+    parse_workflow_run_candidates(&raw)
+}
+
+fn workflow_runs_endpoint(repository: &str, workflow: &str, head_sha: &str) -> String {
+    format!(
+        "repos/{repository}/actions/workflows/{workflow}/runs?event=pull_request&status=completed&head_sha={head_sha}&per_page=100"
+    )
+}
+
+fn rerun_workflow(repo: &Path, repository: &str, run_id: u64) -> CliResult<()> {
+    gh_dyn(
+        repo,
+        &[
+            "api",
+            "--method",
+            "POST",
+            &format!("repos/{repository}/actions/runs/{run_id}/rerun"),
+        ],
+    )?;
+    Ok(())
+}
+
 fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()> {
     let repo = repo.canonicalize().unwrap_or(repo);
     let pr_ref = pr.unwrap_or_else(|| "current branch".to_string());
@@ -582,9 +1031,9 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()>
                 "pr",
                 "view",
                 "--json",
-                "number,headRefName,url",
+                "number,url",
                 "--jq",
-                "{number:.number,headRefName:.headRefName,url:.url}",
+                "{number:.number,url:.url}",
             ],
         )?
     } else {
@@ -595,18 +1044,14 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()>
                 "view",
                 &pr_ref,
                 "--json",
-                "number,headRefName,url",
+                "number,url",
                 "--jq",
-                "{number:.number,headRefName:.headRefName,url:.url}",
+                "{number:.number,url:.url}",
             ],
         )?
     };
     let pr_value: serde_json::Value =
         serde_json::from_str(&pr_json).context("failed to parse gh pr view output")?;
-    let head_ref = pr_value
-        .get("headRefName")
-        .and_then(serde_json::Value::as_str)
-        .context("gh pr view did not return headRefName")?;
     let pr_number = pr_value
         .get("number")
         .and_then(serde_json::Value::as_u64)
@@ -616,41 +1061,252 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()>
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
 
-    let runs_json = gh(
+    let repository = gh(
         &repo,
         [
-            "run",
-            "list",
-            "--workflow",
-            &workflow,
-            "--branch",
-            head_ref,
-            "--limit",
-            "1",
+            "repo",
+            "view",
             "--json",
-            "databaseId,url,status,conclusion,headBranch",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
         ],
     )?;
-    let runs: Vec<serde_json::Value> =
-        serde_json::from_str(&runs_json).context("failed to parse gh run list output")?;
-    let Some(run) = runs.first() else {
-        bail!("no {workflow:?} workflow runs found for PR #{pr_number} branch {head_ref:?}");
+    let target = fetch_rereview_target(&repo, &repository, pr_number)?;
+    let workflow_id = resolve_recheck_workflow_id(&repo, &repository, &workflow)?;
+    let runs = fetch_workflow_run_candidates(
+        &repo,
+        &repository,
+        &workflow_id.to_string(),
+        &target.head_sha,
+    )?;
+    let Some(run) = select_rereview_workflow_run(&runs, &target) else {
+        bail!(
+            "no eligible {workflow:?} pull_request run found for PR #{pr_number} at current head {}",
+            target.head_sha
+        );
     };
-    let run_id = run
-        .get("databaseId")
-        .and_then(serde_json::Value::as_u64)
-        .context("workflow run did not include databaseId")?;
-    let run_id = run_id.to_string();
-    gh(&repo, ["run", "rerun", &run_id])?;
-    let run_url = run
-        .get("url")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
+    rerun_workflow(&repo, &repository, run.id)?;
     println!("Triggered ReviewGate recheck for PR #{pr_number} {pr_url}");
-    if !run_url.is_empty() {
-        println!("Rerun: {run_url}");
+    if !run.url.is_empty() {
+        println!("Rerun: {}", run.url);
     }
     Ok(())
+}
+
+fn request_rereview(repo: PathBuf, workflow: String, event_path: Option<PathBuf>) -> CliResult<()> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let event_name = std::env::var("GITHUB_EVENT_NAME").unwrap_or_default();
+    let event_path = event_path
+        .or_else(|| std::env::var_os("GITHUB_EVENT_PATH").map(PathBuf::from))
+        .context("GITHUB_EVENT_PATH or --event-path is required")?;
+    let event = read_github_event_from_path(&event_path)?;
+    let request = match parse_rereview_request(&event_name, &event) {
+        RereviewEventDecision::Trigger(request) => request,
+        RereviewEventDecision::Ignore(reason) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ignored",
+                    "reason": reason.code(),
+                })
+            );
+            return Ok(());
+        }
+    };
+
+    if !github_token_available() {
+        emit_rereview_failure(RereviewFailureReason::MissingToken);
+        bail!("GH_TOKEN or GITHUB_TOKEN is required for rereview requests");
+    }
+    let repository = github_repository().inspect_err(|_| {
+        emit_rereview_failure(RereviewFailureReason::InvalidRepositoryContext);
+    })?;
+    validate_workflow_identifier(&workflow).inspect_err(|_| {
+        emit_rereview_failure(RereviewFailureReason::InvalidWorkflow);
+    })?;
+    let actor_has_write_permission =
+        fetch_actor_write_permission(&repo, &repository, &request.actor_login).map_err(
+            |error| {
+                emit_rereview_failure(RereviewFailureReason::AuthorizationCheckFailed);
+                error.context("rereview actor authorization check failed")
+            },
+        )?;
+    if !actor_has_write_permission {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "ignored",
+                "reason": RereviewIgnoreReason::UnauthorizedActor.code(),
+            })
+        );
+        return Ok(());
+    }
+
+    let comments =
+        fetch_issue_comments(&repo, &repository, request.pull_request_number).map_err(|error| {
+            emit_rereview_failure(RereviewFailureReason::CommentDiscoveryFailed);
+            error.context("rereview comment discovery failed")
+        })?;
+    if let Some(existing) = find_rereview_status_comment(&comments, request.comment_id) {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "duplicate",
+                "reason": "comment_already_processed",
+                "pull_request": request.pull_request_number,
+                "source_comment_id": request.comment_id,
+                "status_comment_id": existing.id,
+            })
+        );
+        return Ok(());
+    }
+
+    add_rereview_reaction_best_effort(&repo, &repository, request.comment_id);
+    let pending_body = format!(
+        "{}\nReviewGate is validating a rereview request for PR #{}.",
+        rereview_status_marker(request.comment_id),
+        request.pull_request_number
+    );
+    let status_comment_id = create_issue_comment_with_id(
+        &repo,
+        &repository,
+        request.pull_request_number,
+        &pending_body,
+    )
+    .map_err(|error| {
+        emit_rereview_failure(RereviewFailureReason::ReservationFailed);
+        error.context("failed to reserve rereview request")
+    })?;
+
+    let target = match fetch_rereview_target(&repo, &repository, request.pull_request_number) {
+        Ok(target) => target,
+        Err(error) => {
+            update_rereview_failure_best_effort(
+                &repo,
+                &repository,
+                status_comment_id,
+                &render_rereview_failure_body(
+                    request.comment_id,
+                    request.pull_request_number,
+                    RereviewFailureReason::TargetValidationFailed,
+                ),
+            );
+            emit_rereview_failure(RereviewFailureReason::TargetValidationFailed);
+            return Err(error).context("rereview target validation failed");
+        }
+    };
+    let runs = match fetch_workflow_run_candidates(&repo, &repository, &workflow, &target.head_sha)
+    {
+        Ok(runs) => runs,
+        Err(error) => {
+            update_rereview_failure_best_effort(
+                &repo,
+                &repository,
+                status_comment_id,
+                &render_rereview_failure_body(
+                    request.comment_id,
+                    request.pull_request_number,
+                    RereviewFailureReason::DiscoveryFailed,
+                ),
+            );
+            emit_rereview_failure(RereviewFailureReason::DiscoveryFailed);
+            return Err(error).context("rereview run discovery failed");
+        }
+    };
+    let Some(run) = select_rereview_workflow_run(&runs, &target) else {
+        update_rereview_failure_best_effort(
+            &repo,
+            &repository,
+            status_comment_id,
+            &render_rereview_failure_body(
+                request.comment_id,
+                request.pull_request_number,
+                RereviewFailureReason::NoEligibleRun,
+            ),
+        );
+        emit_rereview_failure(RereviewFailureReason::NoEligibleRun);
+        bail!(
+            "rereview run discovery failed [no_eligible_run]: no completed {workflow:?} pull_request run matches PR #{} at current head {}",
+            target.pull_request_number,
+            target.head_sha
+        );
+    };
+
+    if let Err(error) = rerun_workflow(&repo, &repository, run.id) {
+        update_rereview_failure_best_effort(
+            &repo,
+            &repository,
+            status_comment_id,
+            &render_rereview_failure_body(
+                request.comment_id,
+                request.pull_request_number,
+                RereviewFailureReason::RerunFailed,
+            ),
+        );
+        emit_rereview_failure(RereviewFailureReason::RerunFailed);
+        return Err(error).context("rereview request failed");
+    }
+
+    let success_body = format!(
+        "{}\nReviewGate rereview queued for PR #{} at current head `{}`. [Workflow run]({}).",
+        rereview_status_marker(request.comment_id),
+        target.pull_request_number,
+        target.head_sha,
+        run.url
+    );
+    if let Err(error) = update_issue_comment(&repo, &repository, status_comment_id, &success_body) {
+        eprintln!("ReviewGate warning: rereview queued, but feedback update failed: {error}");
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "queued",
+            "reason": "eligible_current_head_run",
+            "pull_request": target.pull_request_number,
+            "head_sha": target.head_sha,
+            "run_id": run.id,
+            "run_url": run.url,
+            "source_comment_id": request.comment_id,
+        })
+    );
+    Ok(())
+}
+
+fn emit_rereview_failure(reason: RereviewFailureReason) {
+    println!("{}", rereview_failure_result(reason));
+}
+
+fn rereview_failure_result(reason: RereviewFailureReason) -> serde_json::Value {
+    serde_json::json!({
+        "status": "failed",
+        "reason": reason.code(),
+    })
+}
+
+fn update_rereview_failure_best_effort(
+    repo: &Path,
+    repository: &str,
+    status_comment_id: u64,
+    body: &str,
+) {
+    if let Err(error) = update_issue_comment(repo, repository, status_comment_id, body) {
+        eprintln!("ReviewGate warning: failed to update rereview feedback: {error}");
+    }
+}
+
+fn render_rereview_failure_body(
+    source_comment_id: u64,
+    pull_request_number: u64,
+    reason: RereviewFailureReason,
+) -> String {
+    format!(
+        "{}\nReviewGate could not queue a rereview for PR #{} (`{}`). {}",
+        rereview_status_marker(source_comment_id),
+        pull_request_number,
+        reason.code(),
+        reason.message()
+    )
 }
 
 fn eval_fixtures(dir: PathBuf) -> CliResult<()> {
@@ -1227,14 +1883,41 @@ fn create_issue_comment(
     pr_number: u64,
     body: &str,
 ) -> CliResult<()> {
+    create_issue_comment_with_id(repo, repository, pr_number, body)?;
+    Ok(())
+}
+
+fn create_issue_comment_with_id(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    body: &str,
+) -> CliResult<u64> {
     let payload = serde_json::json!({ "body": body });
-    gh_api_json(
+    let raw = gh_api_json(
         repo,
         "POST",
         &format!("repos/{repository}/issues/{pr_number}/comments"),
         &payload,
     )?;
-    Ok(())
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).context("failed to parse created issue comment JSON")?;
+    value
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .context("created issue comment did not include id")
+}
+
+fn add_rereview_reaction_best_effort(repo: &Path, repository: &str, comment_id: u64) {
+    let payload = serde_json::json!({ "content": "eyes" });
+    if let Err(error) = gh_api_json(
+        repo,
+        "POST",
+        &format!("repos/{repository}/issues/comments/{comment_id}/reactions"),
+        &payload,
+    ) {
+        eprintln!("ReviewGate warning: rereview acknowledgement reaction failed: {error}");
+    }
 }
 
 fn update_issue_comment(
@@ -1794,11 +2477,15 @@ fn read_github_event() -> CliResult<Option<serde_json::Value>> {
     if !path.is_file() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&path)
+    read_github_event_from_path(&path).map(Some)
+}
+
+fn read_github_event_from_path(path: &Path) -> CliResult<serde_json::Value> {
+    let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read GitHub event {}", path.display()))?;
     let event = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(Some(event))
+    Ok(event)
 }
 
 fn select_reviewed_sha(checkout_sha: &str, github_event: Option<&serde_json::Value>) -> String {
@@ -2749,6 +3436,7 @@ fn write_or_print(path: Option<PathBuf>, contents: &str, label: &str) -> CliResu
 mod tests {
     use super::*;
     use reviewgate_core::ReviewStatus;
+    use std::process::Output;
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -2767,6 +3455,544 @@ mod tests {
         let result = read_config_values(&path);
         fs::remove_dir_all(&repo).ok();
         result
+    }
+
+    #[cfg(unix)]
+    fn run_rereview_subprocess(scenario: &str, permission: &str) -> (Output, String) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = unique_test_dir("reviewgate-rereview-subprocess");
+        let event_path = test_dir.join("event.json");
+        let log_path = test_dir.join("gh.log");
+        let gh_path = test_dir.join("gh");
+        fs::write(
+            &event_path,
+            issue_comment_event("created", REREVIEW_COMMAND, "MEMBER", "open", true).to_string(),
+        )
+        .expect("write event");
+        fs::write(
+            &gh_path,
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$REVIEWGATE_TEST_GH_LOG"
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--input" ]; then
+    printf 'PAYLOAD ' >> "$REVIEWGATE_TEST_GH_LOG"
+    tr '\n' ' ' < "$argument" >> "$REVIEWGATE_TEST_GH_LOG"
+    printf '\n' >> "$REVIEWGATE_TEST_GH_LOG"
+  fi
+  previous="$argument"
+done
+case "$*" in
+  *collaborators/octocat/permission*)
+    printf '{"permission":"%s"}\n' "$REVIEWGATE_TEST_PERMISSION"
+    ;;
+  *--paginate*issues/42/comments*)
+    if [ "$REVIEWGATE_TEST_SCENARIO" = "duplicate" ]; then
+      printf '[[{"id":6100,"user":{"login":"github-actions[bot]"},"body":"<!-- reviewgate-rereview:9001 -->"}]]\n'
+    else
+      printf '[[]]\n'
+    fi
+    ;;
+  *issues/comments/9001/reactions*)
+    printf '{}\n'
+    ;;
+  *issues/42/comments*--input*)
+    printf '{"id":7001}\n'
+    ;;
+  *pulls/42*)
+    printf '{"number":42,"state":"open","head":{"sha":"current"},"base":{"repo":{"full_name":"LVTD-LLC/reviewgate"}}}\n'
+    ;;
+  *actions/workflows/reviewgate.yml/runs*)
+    printf '[{"workflow_runs":[{"id":11,"html_url":"https://github.com/LVTD-LLC/reviewgate/actions/runs/11","event":"pull_request","status":"completed","head_sha":"current","created_at":"2026-07-28T11:00:00Z","repository":{"full_name":"LVTD-LLC/reviewgate"},"pull_requests":[{"number":42}]}]}]\n'
+    ;;
+  *actions/runs/11/rerun*)
+    if [ "$REVIEWGATE_TEST_SCENARIO" = "rerun_failure" ]; then
+      printf 'rerun denied\n' >&2
+      exit 1
+    fi
+    printf '{}\n'
+    ;;
+  *issues/comments/7001*)
+    printf '{}\n'
+    ;;
+  *)
+    printf 'unexpected fake gh invocation: %s\n' "$*" >&2
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .expect("write fake gh");
+        let mut permissions = fs::metadata(&gh_path)
+            .expect("fake gh metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh_path, permissions).expect("make fake gh executable");
+
+        let existing_path = std::env::var("PATH").unwrap_or_default();
+        let output = ProcessCommand::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "tests::rereview_subprocess_helper",
+                "--nocapture",
+            ])
+            .env("REVIEWGATE_REREVIEW_HELPER", "1")
+            .env("REVIEWGATE_TEST_EVENT_PATH", &event_path)
+            .env("REVIEWGATE_TEST_GH_LOG", &log_path)
+            .env("REVIEWGATE_TEST_SCENARIO", scenario)
+            .env("REVIEWGATE_TEST_PERMISSION", permission)
+            .env("GITHUB_EVENT_NAME", "issue_comment")
+            .env("GITHUB_REPOSITORY", "LVTD-LLC/reviewgate")
+            .env("GH_TOKEN", "test-token")
+            .env("PATH", format!("{}:{existing_path}", test_dir.display()))
+            .output()
+            .expect("run rereview subprocess");
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        fs::remove_dir_all(test_dir).ok();
+        (output, log)
+    }
+
+    #[test]
+    #[ignore = "subprocess helper invoked by focused orchestration tests"]
+    fn rereview_subprocess_helper() {
+        if std::env::var("REVIEWGATE_REREVIEW_HELPER").as_deref() != Ok("1") {
+            return;
+        }
+        let event_path =
+            PathBuf::from(std::env::var_os("REVIEWGATE_TEST_EVENT_PATH").expect("event path"));
+        if let Err(error) = request_rereview(
+            PathBuf::from("."),
+            "reviewgate.yml".to_string(),
+            Some(event_path),
+        ) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+    }
+
+    fn issue_comment_event(
+        action: &str,
+        body: &str,
+        association: &str,
+        issue_state: &str,
+        include_pull_request: bool,
+    ) -> serde_json::Value {
+        let mut issue = serde_json::json!({
+            "number": 42,
+            "state": issue_state,
+        });
+        if include_pull_request {
+            issue["pull_request"] = serde_json::json!({"url": "https://api.github.com/repos/LVTD-LLC/reviewgate/pulls/42"});
+        }
+        serde_json::json!({
+            "action": action,
+            "issue": issue,
+            "comment": {
+                "id": 9001,
+                "body": body,
+                "author_association": association,
+                "user": {"login": "octocat"},
+            },
+        })
+    }
+
+    #[test]
+    fn accepts_exact_rereview_command_from_maintainer_associations() {
+        for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            let event =
+                issue_comment_event("created", "@reviewgate review", association, "open", true);
+
+            assert_eq!(
+                parse_rereview_request("issue_comment", &event),
+                RereviewEventDecision::Trigger(RereviewRequest {
+                    pull_request_number: 42,
+                    comment_id: 9001,
+                    actor_login: "octocat".to_string(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_unsafe_or_approximate_rereview_comments() {
+        let mut missing_actor =
+            issue_comment_event("created", "@reviewgate review", "OWNER", "open", true);
+        missing_actor["comment"]
+            .as_object_mut()
+            .expect("comment object")
+            .remove("user");
+        let cases = [
+            (
+                "pull_request",
+                issue_comment_event("created", "@reviewgate review", "OWNER", "open", true),
+                RereviewIgnoreReason::UnsupportedEvent,
+            ),
+            (
+                "issue_comment",
+                issue_comment_event("edited", "@reviewgate review", "OWNER", "open", true),
+                RereviewIgnoreReason::UnsupportedAction,
+            ),
+            (
+                "issue_comment",
+                issue_comment_event("created", "@reviewgate review ", "OWNER", "open", true),
+                RereviewIgnoreReason::CommandMismatch,
+            ),
+            (
+                "issue_comment",
+                issue_comment_event("created", "@ReviewGate review", "OWNER", "open", true),
+                RereviewIgnoreReason::CommandMismatch,
+            ),
+            (
+                "issue_comment",
+                issue_comment_event("created", "@reviewgate review", "CONTRIBUTOR", "open", true),
+                RereviewIgnoreReason::UnauthorizedActor,
+            ),
+            (
+                "issue_comment",
+                issue_comment_event("created", "@reviewgate review", "OWNER", "open", false),
+                RereviewIgnoreReason::NotPullRequest,
+            ),
+            (
+                "issue_comment",
+                issue_comment_event("created", "@reviewgate review", "OWNER", "closed", true),
+                RereviewIgnoreReason::PullRequestNotOpen,
+            ),
+            (
+                "issue_comment",
+                missing_actor,
+                RereviewIgnoreReason::InvalidPayload,
+            ),
+        ];
+
+        for (event_name, event, expected_reason) in cases {
+            assert_eq!(
+                parse_rereview_request(event_name, &event),
+                RereviewEventDecision::Ignore(expected_reason)
+            );
+        }
+    }
+
+    #[test]
+    fn parses_paginated_workflow_runs_for_exact_target_selection() {
+        let raw = serde_json::json!([
+            {
+                "workflow_runs": [{
+                    "id": 10,
+                    "html_url": "https://github.com/LVTD-LLC/reviewgate/actions/runs/10",
+                    "event": "pull_request",
+                    "status": "completed",
+                    "head_sha": "current",
+                    "created_at": "2026-07-28T10:00:00Z",
+                    "repository": {"full_name": "LVTD-LLC/reviewgate"},
+                    "pull_requests": [{"number": 41}]
+                }]
+            },
+            {
+                "workflow_runs": [{
+                    "id": 11,
+                    "html_url": "https://github.com/LVTD-LLC/reviewgate/actions/runs/11",
+                    "event": "pull_request",
+                    "status": "completed",
+                    "head_sha": "current",
+                    "created_at": "2026-07-28T11:00:00Z",
+                    "repository": {"full_name": "LVTD-LLC/reviewgate"},
+                    "pull_requests": [{"number": 42}]
+                }]
+            }
+        ])
+        .to_string();
+
+        let runs = parse_workflow_run_candidates(&raw).expect("parse workflow pages");
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].id, 11);
+        assert_eq!(runs[1].pull_request_numbers, vec![42]);
+    }
+
+    #[test]
+    fn parses_only_open_pull_request_target_for_current_head() {
+        let raw = serde_json::json!({
+            "number": 42,
+            "state": "open",
+            "head": {
+                "sha": "current",
+                "repo": {"full_name": "contributor/fork"}
+            },
+            "base": {
+                "repo": {"full_name": "LVTD-LLC/reviewgate"}
+            }
+        })
+        .to_string();
+
+        let target = parse_rereview_target(&raw, "LVTD-LLC/reviewgate", 42)
+            .expect("open current-head target");
+
+        assert_eq!(target.repository, "LVTD-LLC/reviewgate");
+        assert_eq!(target.pull_request_number, 42);
+        assert_eq!(target.head_sha, "current");
+    }
+
+    #[test]
+    fn rejects_invalid_rereview_workflow_identifiers() {
+        assert!(validate_workflow_identifier("reviewgate.yml").is_ok());
+        assert!(validate_workflow_identifier("123456").is_ok());
+        assert!(validate_workflow_identifier(".github/workflows/reviewgate.yml").is_err());
+        assert!(validate_workflow_identifier("--hostname=attacker.example").is_err());
+        assert!(validate_workflow_identifier("").is_err());
+    }
+
+    #[test]
+    fn rejects_closed_mismatched_foreign_and_headless_rereview_targets() {
+        let valid = serde_json::json!({
+            "number": 42,
+            "state": "open",
+            "head": {"sha": "current"},
+            "base": {"repo": {"full_name": "LVTD-LLC/reviewgate"}}
+        });
+        let cases = [
+            {
+                let mut value = valid.clone();
+                value["state"] = serde_json::json!("closed");
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value["number"] = serde_json::json!(41);
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value["base"]["repo"]["full_name"] = serde_json::json!("other/reviewgate");
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value["head"]
+                    .as_object_mut()
+                    .expect("head object")
+                    .remove("sha");
+                value
+            },
+            {
+                let mut value = valid;
+                value["head"]["sha"] = serde_json::json!("");
+                value
+            },
+        ];
+
+        for value in cases {
+            assert!(
+                parse_rereview_target(&value.to_string(), "LVTD-LLC/reviewgate", 42).is_err(),
+                "unexpectedly accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_and_resolves_recheck_workflow_selectors_to_numeric_ids() {
+        let raw = serde_json::json!([
+            {
+                "workflows": [
+                    {
+                        "id": 101,
+                        "name": "ReviewGate",
+                        "path": ".github/workflows/reviewgate.yml"
+                    },
+                    {
+                        "id": 202,
+                        "name": "CI",
+                        "path": ".github/workflows/ci.yml"
+                    }
+                ]
+            }
+        ])
+        .to_string();
+        let workflows = parse_repository_workflows(&raw).expect("parse workflows");
+
+        assert_eq!(
+            resolve_workflow_id("101", &workflows).expect("numeric id"),
+            101
+        );
+        assert_eq!(
+            resolve_workflow_id("reviewgate.yml", &workflows).expect("file name"),
+            101
+        );
+        assert_eq!(
+            resolve_workflow_id(".github/workflows/reviewgate.yml", &workflows)
+                .expect("workflow path"),
+            101
+        );
+        assert_eq!(
+            resolve_workflow_id("ReviewGate", &workflows).expect("display name"),
+            101
+        );
+        assert!(resolve_workflow_id("Missing", &workflows).is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_recheck_workflow_selectors() {
+        let workflows = vec![
+            RepositoryWorkflow {
+                id: 101,
+                name: "ReviewGate".to_string(),
+                path: ".github/workflows/reviewgate.yml".to_string(),
+            },
+            RepositoryWorkflow {
+                id: 202,
+                name: "ReviewGate".to_string(),
+                path: ".github/workflows/legacy-reviewgate.yml".to_string(),
+            },
+        ];
+
+        assert!(resolve_workflow_id("ReviewGate", &workflows).is_err());
+    }
+
+    #[test]
+    fn repository_permission_requires_effective_write_access() {
+        for permission in ["write", "maintain", "admin"] {
+            assert!(
+                parse_repository_write_permission(
+                    &serde_json::json!({"permission": permission}).to_string()
+                )
+                .expect("parse permission")
+            );
+        }
+        for permission in ["read", "triage"] {
+            assert!(
+                !parse_repository_write_permission(
+                    &serde_json::json!({"permission": permission}).to_string()
+                )
+                .expect("parse permission")
+            );
+        }
+    }
+
+    #[test]
+    fn every_post_validation_failure_has_stable_failed_json() {
+        let cases = [
+            (RereviewFailureReason::MissingToken, "missing_token"),
+            (
+                RereviewFailureReason::InvalidRepositoryContext,
+                "invalid_repository_context",
+            ),
+            (RereviewFailureReason::InvalidWorkflow, "invalid_workflow"),
+            (
+                RereviewFailureReason::AuthorizationCheckFailed,
+                "authorization_check_failed",
+            ),
+            (
+                RereviewFailureReason::CommentDiscoveryFailed,
+                "comment_discovery_failed",
+            ),
+            (
+                RereviewFailureReason::ReservationFailed,
+                "reservation_failed",
+            ),
+            (
+                RereviewFailureReason::TargetValidationFailed,
+                "target_validation_failed",
+            ),
+            (RereviewFailureReason::DiscoveryFailed, "discovery_failed"),
+            (RereviewFailureReason::NoEligibleRun, "no_eligible_run"),
+            (RereviewFailureReason::RerunFailed, "rerun_failed"),
+        ];
+
+        for (reason, code) in cases {
+            assert_eq!(
+                rereview_failure_result(reason),
+                serde_json::json!({"status": "failed", "reason": code})
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_and_triage_permissions_are_ignored_without_side_effects() {
+        for permission in ["read", "triage"] {
+            let (output, log) = run_rereview_subprocess("unauthorized", permission);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            assert!(output.status.success(), "{permission}: {stdout}");
+            assert!(stdout.contains(r#""status":"ignored""#), "{stdout}");
+            assert!(
+                stdout.contains(r#""reason":"unauthorized_actor""#),
+                "{stdout}"
+            );
+            assert!(log.contains("collaborators/octocat/permission"), "{log}");
+            assert!(!log.contains("issues/42/comments"), "{log}");
+            assert!(!log.contains("/reactions"), "{log}");
+            assert!(!log.contains("/runs"), "{log}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_rereview_marker_causes_no_mutation() {
+        let (output, log) = run_rereview_subprocess("duplicate", "write");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains(r#""status":"duplicate""#), "{stdout}");
+        assert!(!log.contains("--method POST"), "{log}");
+        assert!(!log.contains("--method PATCH"), "{log}");
+        assert!(!log.contains("/runs"), "{log}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rerun_failure_updates_reserved_comment_and_emits_failed_json() {
+        let (output, log) = run_rereview_subprocess("rerun_failure", "write");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(!output.status.success(), "{stdout}");
+        assert!(stdout.contains(r#""status":"failed""#), "{stdout}");
+        assert!(stdout.contains(r#""reason":"rerun_failed""#), "{stdout}");
+        assert_eq!(log.matches("actions/runs/11/rerun").count(), 1, "{log}");
+        assert!(log.contains("--method PATCH repos/LVTD-LLC/reviewgate/issues/comments/7001"));
+        assert!(log.contains("`rerun_failed`"), "{log}");
+        assert!(log.contains("<!-- reviewgate-rereview:9001 -->"), "{log}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_rereview_reruns_once_and_updates_the_reserved_comment() {
+        let (output, log) = run_rereview_subprocess("success", "maintain");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains(r#""status":"queued""#), "{stdout}");
+        assert_eq!(log.matches("actions/runs/11/rerun").count(), 1, "{log}");
+        assert_eq!(
+            log.matches("--method PATCH repos/LVTD-LLC/reviewgate/issues/comments/7001")
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains("rereview queued for PR #42"), "{log}");
+    }
+
+    #[test]
+    fn workflow_run_discovery_is_server_filtered_to_the_current_head() {
+        let endpoint = workflow_runs_endpoint("LVTD-LLC/reviewgate", "reviewgate.yml", "abc123");
+
+        assert!(endpoint.contains("/actions/workflows/reviewgate.yml/runs?"));
+        assert!(endpoint.contains("event=pull_request"));
+        assert!(endpoint.contains("status=completed"));
+        assert!(endpoint.contains("head_sha=abc123"));
+        assert!(endpoint.contains("per_page=100"));
+    }
+
+    #[test]
+    fn rereview_failure_feedback_is_bounded_and_keeps_the_idempotency_marker() {
+        let body = render_rereview_failure_body(9001, 42, RereviewFailureReason::NoEligibleRun);
+
+        assert!(body.starts_with("<!-- reviewgate-rereview:9001 -->"));
+        assert!(body.contains("PR #42"));
+        assert!(body.contains("`no_eligible_run`"));
+        assert!(body.contains("run the normal review first"));
+        assert!(!body.contains("@reviewgate review"));
     }
 
     #[test]
@@ -3028,7 +4254,7 @@ review_angles:
         let action = include_str!("../../../action.yml");
         assert!(action.contains("- name: Validate ReviewGate inputs"));
         assert!(action.contains("openrouter_api_key:"));
-        assert!(action.contains("required: true"));
+        assert!(action.contains("required: false"));
         assert!(action.contains("::error title=Missing OPENROUTER_API_KEY::"));
         assert!(action.contains("- name: Publish ReviewGate start signal"));
         assert!(action.contains("publish-start-signal"));
@@ -3087,7 +4313,7 @@ review_angles:
         assert!(!summary_step.contains("capture(\"<!-- reviewgate-state"));
 
         assert!(check_run_step.contains("publish-check-run"));
-        assert!(check_run_step.contains("if: ${{ always() }}"));
+        assert!(check_run_step.contains("inputs.mode == 'review' && always()"));
         assert!(check_run_step.contains("continue-on-error: true"));
         assert!(!check_run_step.contains(concat!("--gate", "-mode")));
 
@@ -3099,6 +4325,44 @@ review_angles:
         assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
+    }
+
+    #[test]
+    fn action_exposes_a_thin_rereview_mode_without_requiring_model_secrets() {
+        let action = include_str!("../../../action.yml");
+
+        assert!(action.contains("mode:"));
+        assert!(action.contains("default: review"));
+        assert!(action.contains("review_workflow:"));
+        assert!(action.contains("default: reviewgate.yml"));
+        assert!(action.contains("- name: Request ReviewGate rereview"));
+        assert!(action.contains("request-rereview"));
+        assert!(action.contains("inputs.mode == 'rereview'"));
+        assert!(action.contains("inputs.mode == 'review'"));
+
+        let rereview_start = action
+            .find("- name: Request ReviewGate rereview")
+            .expect("rereview step exists");
+        let review_start = action
+            .find("- name: Publish ReviewGate start signal")
+            .expect("review step exists");
+        let rereview_step = &action[rereview_start..review_start];
+        assert!(!rereview_step.contains("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn readme_documents_the_least_privilege_single_workflow_rereview_install() {
+        let readme = include_str!("../../../README.md");
+
+        assert!(readme.contains("issue_comment:"));
+        assert!(readme.contains("github.event.comment.body == '@reviewgate review'"));
+        assert!(readme.contains("actions: write"));
+        assert!(readme.contains("pull-requests: read"));
+        assert!(readme.contains("group: reviewgate-rereview-${{ github.event.comment.id }}"));
+        assert!(readme.contains("cancel-in-progress: false"));
+        assert!(readme.contains("mode: rereview"));
+        assert!(readme.contains("review_workflow: reviewgate.yml"));
+        assert!(readme.contains("does not check out PR code"));
     }
 
     #[test]

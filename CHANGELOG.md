@@ -2,6 +2,14 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-07-28
+
+- Added first-class maintainer-requested rereviews through the exact `@reviewgate review` command and composite-action `rereview` mode.
+- Replaced branch-name/single-result recheck discovery with paginated exact-PR, exact-workflow, and current-head run selection.
+- Hardened rereview authorization with a live effective repository-permission check, stable machine-readable failure results, and subprocess coverage for duplicate, failure, and success behavior.
+- Preserved `recheck --workflow` compatibility for exact numeric IDs, workflow file names/paths, and display names by resolving non-numeric selectors to an unambiguous workflow ID.
+- Documented the single-workflow installation, least-privilege event-specific jobs, duplicate-delivery handling, fork boundary, and bounded failure behavior.
+
 ## 2026-07-06
 
 - Expanded the root README with full local setup, architecture, configuration, command, testing, deployment, security, and troubleshooting documentation.
