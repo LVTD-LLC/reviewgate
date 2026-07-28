@@ -40,6 +40,8 @@ const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
 const MAX_CONTEXT_FILES: usize = 48;
+const MAX_CHANGED_CONTEXT_BYTES: usize = 1_000_000;
+const MAX_CHANGED_CONTEXT_FILES: usize = 512;
 // PR metadata uses character limits as the primary prompt-context bound. Byte limits
 // remain as secondary hard caps for unusually large multi-byte text.
 const MAX_PR_TITLE_BYTES: usize = 1_000;
@@ -2762,17 +2764,27 @@ fn gh_dyn(repo: &Path, args: &[&str]) -> CliResult<String> {
 }
 
 fn collect_context_files(repo: &Path, changed_files: &[String]) -> CliResult<Vec<ContextFile>> {
+    if changed_files.len() > MAX_CHANGED_CONTEXT_FILES {
+        bail!(
+            "ReviewGate changed-file repository-context limit exceeded: {} paths is greater than the supported maximum of {MAX_CHANGED_CONTEXT_FILES}",
+            changed_files.len()
+        );
+    }
+
     let mut files = Vec::new();
     let mut seen = BTreeSet::new();
     let mut scanned_test_directories = BTreeSet::new();
     let mut omitted = BTreeSet::new();
+    let mut changed_context_bytes = 0;
 
     for relative in changed_files {
-        if files.len() >= MAX_CONTEXT_FILES {
-            omitted.insert(relative.clone());
-            continue;
-        }
-        push_context_file(repo, relative, &mut files, &mut seen)?;
+        push_changed_context_file(
+            repo,
+            relative,
+            &mut files,
+            &mut seen,
+            &mut changed_context_bytes,
+        )?;
     }
 
     let local_workflows = files
@@ -2869,6 +2881,37 @@ fn collect_context_files(repo: &Path, changed_files: &[String]) -> CliResult<Vec
     }
 
     Ok(files)
+}
+
+fn push_changed_context_file(
+    repo: &Path,
+    relative: &str,
+    files: &mut Vec<ContextFile>,
+    seen: &mut BTreeSet<String>,
+    changed_context_bytes: &mut usize,
+) -> CliResult<()> {
+    if seen.contains(relative) {
+        return Ok(());
+    }
+    let Some(full_path) = confined_repo_file(repo, relative) else {
+        return Ok(());
+    };
+    let remaining = MAX_CHANGED_CONTEXT_BYTES.saturating_sub(*changed_context_bytes);
+    let Some(contents) = read_bounded_text(&full_path, remaining)? else {
+        return Ok(());
+    };
+    if contents.len() > remaining {
+        bail!(
+            "ReviewGate changed-file repository-context byte limit exceeded while loading {relative}: complete current-head contents exceed the {MAX_CHANGED_CONTEXT_BYTES}-byte budget"
+        );
+    }
+    *changed_context_bytes += contents.len();
+    seen.insert(relative.to_string());
+    files.push(ContextFile {
+        path: relative.to_string(),
+        contents,
+    });
+    Ok(())
 }
 
 fn push_context_file(
@@ -7312,7 +7355,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[test]
-    fn context_cap_prioritizes_changed_files_and_reports_omissions() {
+    fn context_cap_includes_every_changed_file_and_reports_supplementary_omissions() {
         let dir = unique_test_dir("evidence-context-cap");
         let changed_files = (0..50)
             .map(|index| format!("src/changed-{index:02}.rs"))
@@ -7339,12 +7382,50 @@ diff --git a/src/lib.rs b/src/lib.rs
                 .iter()
                 .filter(|file| file.path.starts_with("src/changed-"))
                 .count(),
-            MAX_CONTEXT_FILES
+            changed_files.len()
         );
+        assert!(paths.contains("src/changed-48.rs"));
+        assert!(paths.contains("src/changed-49.rs"));
         assert!(!paths.contains("README.md"));
-        assert!(omissions.contents.contains("src/changed-48.rs"));
-        assert!(omissions.contents.contains("src/changed-49.rs"));
         assert!(omissions.contents.contains("README.md"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn context_collection_rejects_more_changed_files_than_the_bounded_limit() {
+        let dir = unique_test_dir("evidence-context-file-limit");
+        let changed_files = (0..=MAX_CHANGED_CONTEXT_FILES)
+            .map(|index| format!("src/changed-{index:03}.rs"))
+            .collect::<Vec<_>>();
+
+        let error = collect_context_files(&dir, &changed_files)
+            .expect_err("oversized changed-file set must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("changed-file repository-context limit")
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn context_collection_rejects_incomplete_changed_file_contents() {
+        let dir = unique_test_dir("evidence-context-byte-limit");
+        let relative = "src/oversized.rs";
+        let path = dir.join(relative);
+        fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+        fs::write(&path, vec![b'x'; MAX_CHANGED_CONTEXT_BYTES + 1])
+            .expect("write oversized fixture");
+
+        let error = collect_context_files(&dir, &[relative.to_string()])
+            .expect_err("truncated changed-file context must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("complete current-head contents exceed")
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

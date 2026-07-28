@@ -510,7 +510,7 @@ The live action defaults to the built-in `general` and `adversarial` review angl
    - unified diff;
    - changed-line count;
    - bounded context files such as `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, `STRUCTURE.md`, and `.reviewgate.yml`;
-   - bounded current-head contents for changed files, sibling tests, and referenced local reusable workflows.
+   - complete current-head contents for every changed text file within explicit file-count and aggregate-byte limits, plus bounded sibling tests and referenced local reusable workflows. Reviews fail closed instead of silently dropping or truncating changed-file contents when those limits are exceeded.
 6. PR title and body are passed as separate untrusted scope context. They help understand intent but are not reviewer instructions.
 7. ReviewGate calls OpenRouter once for each enabled built-in review angle.
 8. Each model response is parsed as strict ReviewGate JSON. If needed, the parser can strip Markdown fences or extract the first valid JSON object from prose-wrapped output.
