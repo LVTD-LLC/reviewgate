@@ -1,0 +1,510 @@
+[
+  {
+    "name": "positional operands removed before flag parsing",
+    "files": {
+      "cli/cli.go": "func projectGet(args []string) error {\n\treturn parseFlags(fs, args[2:])\n}\n",
+      "cli/cli_test.go": "func TestProjectGet(t *testing.T) {\n\trun([]string{\"project\", \"get\", \"project-key\", \"--limit\", \"5\"})\n}\n"
+    },
+    "diff": "diff --git a/cli/cli.go b/cli/cli.go\n--- a/cli/cli.go\n+++ b/cli/cli.go\n@@ -1,3 +1,3 @@\n func projectGet(args []string) error {\n+\treturn parseFlags(fs, args[2:])\n }\n",
+    "finding": {
+      "id": "parser-false",
+      "scope": "line",
+      "severity": "P0",
+      "confidence": 0.99,
+      "file": "cli/cli.go",
+      "line": 2,
+      "title": "parseFlags rejects positional operands",
+      "detail": "The positional project key reaches parseFlags and is rejected.",
+      "agent_instruction": "Allow positional operands.",
+      "grounding": {
+        "claim": "The project key reaches parseFlags.",
+        "causal_path": "project get -> projectGet -> parseFlags",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": "cli/cli.go", "side": "new", "line": 2, "excerpt": "return parseFlags(fs, args[2:])", "reason": "Flag parser call"}],
+        "related_tests": [{"path": "cli/cli_test.go", "side": "new", "line": 2, "excerpt": "\"project\", \"get\", \"project-key\", \"--limit\", \"5\"", "reason": "Exact command-path regression test"}],
+        "reproduction": "Run project get project-key --limit 5.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "unsliced positional operands are a real parser defect",
+    "files": {
+      "cli/cli.go": "func projectGet(args []string) error {\n\treturn parseFlags(fs, args)\n}\n"
+    },
+    "diff": "diff --git a/cli/cli.go b/cli/cli.go\n--- a/cli/cli.go\n+++ b/cli/cli.go\n@@ -1,3 +1,3 @@\n func projectGet(args []string) error {\n+\treturn parseFlags(fs, args)\n }\n",
+    "finding": {
+      "id": "parser-real",
+      "scope": "line",
+      "severity": "P0",
+      "confidence": 0.99,
+      "file": "cli/cli.go",
+      "line": 2,
+      "title": "parseFlags receives positional operands",
+      "detail": "The full argument slice, including the project key, reaches parseFlags.",
+      "agent_instruction": "Slice off the command and project key before parsing flags.",
+      "grounding": {
+        "claim": "The project key reaches parseFlags.",
+        "causal_path": "project get -> projectGet -> parseFlags",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": "cli/cli.go", "side": "new", "line": 2, "excerpt": "return parseFlags(fs, args)", "reason": "Unsliced arguments reach the parser"}],
+        "related_tests": [],
+        "reproduction": "Run project get project-key --limit 5.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "upload artifact does not require actions write",
+    "files": {
+      ".github/workflows/publish.yml": "jobs:\n  cli:\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/upload-artifact@v4\n"
+    },
+    "diff": "diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml\n--- a/.github/workflows/publish.yml\n+++ b/.github/workflows/publish.yml\n@@ -5,2 +5,2 @@\n     steps:\n+      - uses: actions/upload-artifact@v4\n",
+    "finding": {
+      "id": "artifact-auth-false",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.98,
+      "file": ".github/workflows/publish.yml",
+      "line": 6,
+      "title": "Artifact upload lacks actions write",
+      "detail": "actions/upload-artifact requires actions: write on GITHUB_TOKEN.",
+      "agent_instruction": "Add actions: write.",
+      "grounding": {
+        "claim": "actions/upload-artifact authenticates with GITHUB_TOKEN actions:write.",
+        "causal_path": "cli job -> upload-artifact -> Actions artifact service",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/publish.yml", "side": "new", "line": 6, "excerpt": "- uses: actions/upload-artifact@v4", "reason": "Upload step"}],
+        "related_tests": [],
+        "reproduction": null,
+        "proof": "The action would receive only the declared GITHUB_TOKEN permissions."
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "job level packages write satisfies tag publishing",
+    "files": {
+      ".github/workflows/publish.yml": "on:\n  push:\n    tags: ['v*']\npermissions:\n  contents: read\njobs:\n  app-image:\n    permissions:\n      packages: write\n    steps:\n      - run: docker buildx imagetools create example\n"
+    },
+    "diff": "diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml\n--- a/.github/workflows/publish.yml\n+++ b/.github/workflows/publish.yml\n@@ -9,2 +9,3 @@\n       packages: write\n     steps:\n+      - run: docker buildx imagetools create example\n",
+    "finding": {
+      "id": "packages-false",
+      "scope": "line",
+      "severity": "P0",
+      "confidence": 0.99,
+      "file": ".github/workflows/publish.yml",
+      "line": 11,
+      "title": "Tag publishing lacks packages write",
+      "detail": "The app-image job cannot promote image tags.",
+      "agent_instruction": "Add packages: write.",
+      "grounding": {
+        "claim": "The app-image job lacks packages:write.",
+        "causal_path": "tag push -> app-image -> imagetools create -> GHCR",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/publish.yml", "side": "new", "line": 11, "excerpt": "- run: docker buildx imagetools create example", "reason": "Package mutation step"}],
+        "related_tests": [],
+        "reproduction": "Push a release tag.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "missing packages write is a real publishing defect",
+    "files": {
+      ".github/workflows/publish.yml": "on:\n  push:\n    tags: ['v*']\npermissions:\n  contents: read\njobs:\n  app-image:\n    steps:\n      - run: docker buildx imagetools create example\n"
+    },
+    "diff": "diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml\n--- a/.github/workflows/publish.yml\n+++ b/.github/workflows/publish.yml\n@@ -7,2 +7,3 @@\n   app-image:\n+    steps:\n+      - run: docker buildx imagetools create example\n",
+    "finding": {
+      "id": "packages-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/publish.yml",
+      "line": 9,
+      "title": "Image promotion lacks packages write",
+      "detail": "The app-image job invokes imagetools create without effective packages:write.",
+      "agent_instruction": "Grant packages: write to app-image.",
+      "grounding": {
+        "claim": "The app-image job lacks packages:write.",
+        "causal_path": "tag push -> app-image -> imagetools create -> GHCR",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/publish.yml", "side": "new", "line": 9, "excerpt": "- run: docker buildx imagetools create example", "reason": "Package mutation"}],
+        "related_tests": [],
+        "reproduction": "Push a release tag and observe GHCR reject the write.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "reusable workflow caller passes packages write",
+    "files": {
+      ".github/workflows/release-cutter.yml": "jobs:\n  publish:\n    permissions:\n      contents: write\n      packages: write\n    uses: ./.github/workflows/publish.yml\n",
+      ".github/workflows/publish.yml": "on: workflow_call\njobs:\n  app-image:\n    steps:\n      - run: docker buildx imagetools create example\n"
+    },
+    "diff": "diff --git a/.github/workflows/release-cutter.yml b/.github/workflows/release-cutter.yml\n--- a/.github/workflows/release-cutter.yml\n+++ b/.github/workflows/release-cutter.yml\n@@ -5,1 +5,2 @@\n       packages: write\n+    uses: ./.github/workflows/publish.yml\n",
+    "finding": {
+      "id": "workflow-call-packages-false",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release-cutter.yml",
+      "line": 6,
+      "title": "Reusable publish call lacks packages write",
+      "detail": "The caller does not pass packages:write to the reusable workflow.",
+      "agent_instruction": "Grant packages: write on the caller.",
+      "grounding": {
+        "claim": "The publish caller lacks packages:write.",
+        "causal_path": "release-cutter -> publish workflow_call -> app-image -> GHCR",
+        "test_assessment": "Inspected the caller and called workflow permission paths.",
+        "evidence": [{"path": ".github/workflows/release-cutter.yml", "side": "new", "line": 6, "excerpt": "uses: ./.github/workflows/publish.yml", "reason": "Reusable workflow call"}],
+        "related_tests": [],
+        "reproduction": "Run release-cutter.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "reusable workflow caller missing packages write is real",
+    "files": {
+      ".github/workflows/release-cutter.yml": "jobs:\n  publish:\n    permissions:\n      contents: write\n    uses: ./.github/workflows/publish.yml\n",
+      ".github/workflows/publish.yml": "on: workflow_call\njobs:\n  app-image:\n    steps:\n      - run: docker buildx imagetools create example\n"
+    },
+    "diff": "diff --git a/.github/workflows/release-cutter.yml b/.github/workflows/release-cutter.yml\n--- a/.github/workflows/release-cutter.yml\n+++ b/.github/workflows/release-cutter.yml\n@@ -3,2 +3,3 @@\n     permissions:\n       contents: write\n+    uses: ./.github/workflows/publish.yml\n",
+    "finding": {
+      "id": "workflow-call-packages-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release-cutter.yml",
+      "line": 5,
+      "title": "Reusable publish call lacks packages write",
+      "detail": "The caller caps the reusable workflow at contents:write, so app-image cannot mutate GHCR.",
+      "agent_instruction": "Grant packages: write on the caller.",
+      "grounding": {
+        "claim": "The publish caller lacks packages:write.",
+        "causal_path": "release-cutter -> publish workflow_call -> app-image -> GHCR",
+        "test_assessment": "Inspected the caller and called workflow permission paths.",
+        "evidence": [{"path": ".github/workflows/release-cutter.yml", "side": "new", "line": 5, "excerpt": "uses: ./.github/workflows/publish.yml", "reason": "Reusable workflow call"}],
+        "related_tests": [],
+        "reproduction": "Run release-cutter and observe GHCR reject the write.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "workflow event claim is absent from actual triggers",
+    "files": {
+      ".github/workflows/deploy.yml": "on:\n  push:\n    branches:\n      - main\nenv:\n  BEFORE_SHA: ${{ github.event.before }}\n"
+    },
+    "diff": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n--- a/.github/workflows/deploy.yml\n+++ b/.github/workflows/deploy.yml\n@@ -5,1 +5,2 @@\n env:\n+  BEFORE_SHA: ${{ github.event.before }}\n",
+    "finding": {
+      "id": "event-false",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/deploy.yml",
+      "line": 6,
+      "title": "Empty before SHA breaks workflow dispatch",
+      "detail": "github.event.before is empty for workflow_dispatch, so this workflow fails.",
+      "agent_instruction": "Handle workflow_dispatch.",
+      "grounding": {
+        "claim": "The workflow runs on workflow_dispatch with an empty before SHA.",
+        "causal_path": "workflow_dispatch -> BEFORE_SHA -> git diff",
+        "test_assessment": "Inspected the workflow trigger and deploy step.",
+        "evidence": [{"path": ".github/workflows/deploy.yml", "side": "new", "line": 6, "excerpt": "BEFORE_SHA: ${{ github.event.before }}", "reason": "Event before value"}],
+        "related_tests": [],
+        "reproduction": "Manually dispatch the workflow.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "present workflow environment value disproves missing value",
+    "files": {
+      ".github/workflows/deploy.yml": "steps:\n  - name: Notify IndexNow\n    env:\n      INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}\n    run: python3 -m scripts.submit_indexnow\n"
+    },
+    "diff": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n--- a/.github/workflows/deploy.yml\n+++ b/.github/workflows/deploy.yml\n@@ -3,2 +3,3 @@\n     env:\n+      INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}\n     run: python3 -m scripts.submit_indexnow\n",
+    "finding": {
+      "id": "env-false",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/deploy.yml",
+      "line": 4,
+      "title": "INDEXNOW_KEY is not passed to the script",
+      "detail": "The script reads INDEXNOW_KEY but the workflow omits it.",
+      "agent_instruction": "Add INDEXNOW_KEY to env.",
+      "grounding": {
+        "claim": "The Notify IndexNow step lacks INDEXNOW_KEY.",
+        "causal_path": "deploy -> Notify IndexNow -> submit_indexnow",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/deploy.yml", "side": "new", "line": 4, "excerpt": "INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}", "reason": "Step environment"}],
+        "related_tests": [],
+        "reproduction": "Run the deploy workflow.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "python module invocation supports namespace packages",
+    "files": {
+      ".github/workflows/deploy.yml": "steps:\n  - run: python3 -m scripts.submit_indexnow\n",
+      "scripts/submit_indexnow.py": "def main():\n    return 0\n"
+    },
+    "diff": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n--- a/.github/workflows/deploy.yml\n+++ b/.github/workflows/deploy.yml\n@@ -1,2 +1,2 @@\n steps:\n+  - run: python3 -m scripts.submit_indexnow\n",
+    "finding": {
+      "id": "namespace-package-false",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.98,
+      "file": ".github/workflows/deploy.yml",
+      "line": 2,
+      "title": "Missing scripts init prevents module invocation",
+      "detail": "python3 -m scripts.submit_indexnow requires scripts/__init__.py.",
+      "agent_instruction": "Add scripts/__init__.py.",
+      "grounding": {
+        "claim": "Python requires scripts/__init__.py for -m invocation.",
+        "causal_path": "deploy -> python -m -> module discovery",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/deploy.yml", "side": "new", "line": 2, "excerpt": "- run: python3 -m scripts.submit_indexnow", "reason": "Module invocation"}],
+        "related_tests": [],
+        "reproduction": "Run python3 -m scripts.submit_indexnow from the repository root.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "explicit sha fetch works from a shallow checkout",
+    "files": {
+      ".github/workflows/deploy.yml": "steps:\n  - run: git fetch --no-tags --depth=1 origin \"$BEFORE_SHA\"\n"
+    },
+    "diff": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n--- a/.github/workflows/deploy.yml\n+++ b/.github/workflows/deploy.yml\n@@ -1,2 +1,2 @@\n steps:\n+  - run: git fetch --no-tags --depth=1 origin \"$BEFORE_SHA\"\n",
+    "finding": {
+      "id": "shallow-fetch-false",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.98,
+      "file": ".github/workflows/deploy.yml",
+      "line": 2,
+      "title": "Explicit comparison fetch always fails in a shallow checkout",
+      "detail": "The checkout is shallow, so git fetch of the explicit before SHA will fail.",
+      "agent_instruction": "Use fetch-depth zero.",
+      "grounding": {
+        "claim": "An explicit SHA fetch fails solely because the checkout is shallow.",
+        "causal_path": "checkout -> git fetch explicit SHA -> git diff",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/deploy.yml", "side": "new", "line": 2, "excerpt": "- run: git fetch --no-tags --depth=1 origin \"$BEFORE_SHA\"", "reason": "Explicit fetch"}],
+        "related_tests": [],
+        "reproduction": "Run the explicit SHA fetch after a depth-one checkout.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "finding explanation retracts its title",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    permissions:\n      contents: write\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -3,1 +3,2 @@\n     permissions:\n+      contents: write\n",
+    "finding": {
+      "id": "retracted-false",
+      "scope": "line",
+      "severity": "P0",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 4,
+      "title": "Release job lacks contents write",
+      "detail": "The release job correctly has contents:write, so this is fine and no issue exists here.",
+      "agent_instruction": "Add contents: write.",
+      "grounding": {
+        "claim": "The release job lacks contents:write.",
+        "causal_path": "release -> gh release create",
+        "test_assessment": "Searched changed and sibling tests for the alleged path.",
+        "evidence": [{"path": ".github/workflows/release.yml", "side": "new", "line": 4, "excerpt": "contents: write", "reason": "Effective job permission"}],
+        "related_tests": [],
+        "reproduction": "Run the release job.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "ungrounded uncertainty becomes a note",
+    "files": {
+      "src/lib.rs": "pub fn stable() -> bool { true }\n"
+    },
+    "diff": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n+pub fn stable() -> bool { true }\n",
+    "finding": {
+      "id": "uncertain-false",
+      "scope": "line",
+      "severity": "P2",
+      "confidence": 0.55,
+      "file": "src/lib.rs",
+      "line": 1,
+      "title": "This may fail in an unexpected environment",
+      "detail": "A hypothetical environment could behave differently.",
+      "agent_instruction": "Consider adding defensive code.",
+      "grounding": {
+        "claim": "An unspecified environment may behave differently.",
+        "causal_path": "unspecified environment -> stable",
+        "test_assessment": "No concrete failing environment or exact-path test was identified.",
+        "evidence": [{"path": "src/lib.rs", "side": "new", "line": 1, "excerpt": "pub fn stable() -> bool { true }", "reason": "Changed function"}],
+        "related_tests": [],
+        "reproduction": null,
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "deleted authorization guard is a real defect",
+    "files": {
+      "src/auth.rs": "pub fn update_record(user: &User, record: &Record) {\n    record.update();\n}\n"
+    },
+    "diff": "diff --git a/src/auth.rs b/src/auth.rs\n--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -1,4 +1,3 @@\n pub fn update_record(user: &User, record: &Record) {\n-    assert!(record.is_owned_by(user));\n     record.update();\n }\n",
+    "finding": {
+      "id": "deleted-guard-real",
+      "scope": "file",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": "src/auth.rs",
+      "line": null,
+      "title": "Record ownership check was removed",
+      "detail": "The mutation now runs without checking that the record belongs to the caller.",
+      "agent_instruction": "Restore the ownership check before the mutation.",
+      "grounding": {
+        "claim": "Removing the ownership assertion permits a caller to update another user's record.",
+        "causal_path": "update_record -> missing ownership assertion -> record.update",
+        "test_assessment": "No test covers an update attempted by a non-owner.",
+        "evidence": [{"path": "src/auth.rs", "side": "old", "line": 2, "excerpt": "assert!(record.is_owned_by(user));", "reason": "The deleted line enforced record ownership"}],
+        "related_tests": [],
+        "reproduction": "Call update_record with a record owned by a different user and observe record.update execute.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "partial excerpt cannot ground a finding",
+    "files": {
+      ".github/workflows/release.yml": "permissions:\n  packages: write\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1,1 +1,2 @@\n permissions:\n+  packages: write\n",
+    "finding": {
+      "id": "partial-excerpt-false",
+      "scope": "line",
+      "severity": "P2",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 2,
+      "title": "Release permission is unsafe",
+      "detail": "The added permission allegedly grants a broader capability than the checked line.",
+      "agent_instruction": "Change the permission.",
+      "grounding": {
+        "claim": "The workflow grants unrestricted write access.",
+        "causal_path": "permissions -> release job -> package mutation",
+        "test_assessment": "No workflow permission test exists.",
+        "evidence": [{"path": ".github/workflows/release.yml", "side": "new", "line": 2, "excerpt": "write", "reason": "Only a substring of the changed line"}],
+        "related_tests": [],
+        "reproduction": null,
+        "proof": "The exact checked line would have to show unrestricted permission."
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "environment value in another step does not satisfy consumer",
+    "files": {
+      ".github/workflows/deploy.yml": "jobs:\n  deploy:\n    steps:\n      - name: Notify IndexNow\n        run: python3 -m scripts.submit_indexnow\n      - name: Other task\n        env:\n          INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}\n        run: echo other\n"
+    },
+    "diff": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n--- a/.github/workflows/deploy.yml\n+++ b/.github/workflows/deploy.yml\n@@ -1,3 +1,9 @@\n jobs:\n   deploy:\n     steps:\n+      - name: Notify IndexNow\n+        run: python3 -m scripts.submit_indexnow\n+      - name: Other task\n+        env:\n+          INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}\n+        run: echo other\n",
+    "finding": {
+      "id": "step-env-real",
+      "scope": "line",
+      "severity": "P2",
+      "confidence": 0.99,
+      "file": ".github/workflows/deploy.yml",
+      "line": 5,
+      "title": "Notify step lacks INDEXNOW_KEY",
+      "detail": "The key is configured only for a later, unrelated step.",
+      "agent_instruction": "Pass INDEXNOW_KEY to the Notify IndexNow step.",
+      "grounding": {
+        "claim": "The Notify IndexNow step lacks INDEXNOW_KEY.",
+        "causal_path": "deploy -> Notify IndexNow -> submit_indexnow",
+        "test_assessment": "No test supplies step-scoped environment to this workflow.",
+        "evidence": [{"path": ".github/workflows/deploy.yml", "side": "new", "line": 5, "excerpt": "run: python3 -m scripts.submit_indexnow", "reason": "Consumer step has no effective INDEXNOW_KEY"}],
+        "related_tests": [],
+        "reproduction": null,
+        "proof": "GitHub step-level env applies only to the step where it is declared."
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "safe parser call elsewhere does not hide unsafe callsite",
+    "files": {
+      "cli/cli.go": "func safe(args []string) error {\n\treturn parseFlags(fs, args[2:])\n}\n\nfunc unsafe(args []string) error {\n\treturn parseFlags(fs, args)\n}\n"
+    },
+    "diff": "diff --git a/cli/cli.go b/cli/cli.go\n--- a/cli/cli.go\n+++ b/cli/cli.go\n@@ -3,3 +3,5 @@\n }\n \n func unsafe(args []string) error {\n+\treturn parseFlags(fs, args)\n+}\n",
+    "finding": {
+      "id": "mixed-parser-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": "cli/cli.go",
+      "line": 6,
+      "title": "Unsafe command passes positional operands to parseFlags",
+      "detail": "This callsite passes the full argument slice; the separate safe command does not change this path.",
+      "agent_instruction": "Slice positional operands before parsing flags in unsafe.",
+      "grounding": {
+        "claim": "The unsafe command's positional operands reach parseFlags.",
+        "causal_path": "unsafe command -> full args -> parseFlags",
+        "test_assessment": "No test covers positional operands on the unsafe command.",
+        "evidence": [{"path": "cli/cli.go", "side": "new", "line": 6, "excerpt": "return parseFlags(fs, args)", "reason": "The unsafe callsite passes the unsliced argument list"}],
+        "related_tests": [],
+        "reproduction": "Run the unsafe command with a positional operand before a flag.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "missing event sha remains a real shallow fetch defect",
+    "files": {
+      ".github/workflows/deploy.yml": "on: workflow_dispatch\nenv:\n  BEFORE_SHA: ${{ github.event.before }}\njobs:\n  deploy:\n    steps:\n      - run: git fetch --no-tags --depth=1 origin \"$BEFORE_SHA\"\n"
+    },
+    "diff": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n--- a/.github/workflows/deploy.yml\n+++ b/.github/workflows/deploy.yml\n@@ -1,3 +1,7 @@\n on: workflow_dispatch\n env:\n   BEFORE_SHA: ${{ github.event.before }}\n+jobs:\n+  deploy:\n+    steps:\n+      - run: git fetch --no-tags --depth=1 origin \"$BEFORE_SHA\"\n",
+    "finding": {
+      "id": "missing-event-sha-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/deploy.yml",
+      "line": 7,
+      "title": "Manual dispatch fetches an empty push-only SHA",
+      "detail": "workflow_dispatch does not provide the push event's before SHA, so the explicit fetch receives an empty ref.",
+      "agent_instruction": "Use an event-appropriate base SHA or guard the fetch when BEFORE_SHA is absent.",
+      "grounding": {
+        "claim": "The shallow fetch fails during workflow_dispatch because BEFORE_SHA is empty.",
+        "causal_path": "workflow_dispatch -> missing github.event.before -> empty git fetch ref",
+        "test_assessment": "No workflow test covers manual dispatch payloads.",
+        "evidence": [{"path": ".github/workflows/deploy.yml", "side": "new", "line": 7, "excerpt": "- run: git fetch --no-tags --depth=1 origin \"$BEFORE_SHA\"", "reason": "The fetch consumes the push-only value without a guard"}],
+        "related_tests": [],
+        "reproduction": "Dispatch the workflow manually and observe git fetch receive an empty ref.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  }
+]

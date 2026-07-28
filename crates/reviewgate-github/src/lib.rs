@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use reviewgate_core::{Finding, SUMMARY_MARKER, SecretString, Severity, extract_summary_state};
+use reviewgate_core::{
+    Finding, FindingEvidence, SUMMARY_MARKER, SecretString, Severity, extract_summary_state,
+};
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
@@ -506,6 +508,20 @@ fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
         body.push_str(detail.trim());
         body.push_str("\n\n");
     }
+    if let Some(grounding) = &finding.grounding {
+        body.push_str("Checked claim: ");
+        body.push_str(grounding.claim.trim());
+        body.push_str("\n\nCausal path: ");
+        body.push_str(grounding.causal_path.trim());
+        body.push_str("\n\n");
+        for evidence in &grounding.evidence {
+            body.push_str(&format!(
+                "Evidence: `{}` — {}\n\n",
+                evidence_location(evidence),
+                evidence.reason.trim()
+            ));
+        }
+    }
     if let Some(location) = finding_location(finding) {
         body.push_str("Location: ");
         body.push_str(&location);
@@ -513,6 +529,18 @@ fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
     }
     body.push_str("Agent instruction: ");
     body.push_str(finding.agent_instruction.trim());
+}
+
+fn evidence_location(evidence: &FindingEvidence) -> String {
+    let location = format!(
+        "{}:{}",
+        evidence.path.trim().replace('`', "\\`"),
+        evidence.line
+    );
+    match evidence.side {
+        reviewgate_core::FindingEvidenceSide::New => location,
+        reviewgate_core::FindingEvidenceSide::Old => format!("{location} (deleted line)"),
+    }
 }
 
 fn finding_comment_heading_prefix(finding: &Finding) -> String {
@@ -999,6 +1027,21 @@ mod tests {
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.92,
+            grounding: Some(reviewgate_core::FindingGrounding {
+                claim: "The changed branch drops the error.".to_string(),
+                causal_path: "request -> changed branch -> silent success".to_string(),
+                test_assessment: "No test covers the error branch.".to_string(),
+                evidence: vec![FindingEvidence {
+                    path: "src/lib.rs".to_string(),
+                    side: reviewgate_core::FindingEvidenceSide::New,
+                    line: 42,
+                    excerpt: "changed".to_string(),
+                    reason: "Error is discarded here.".to_string(),
+                }],
+                related_tests: vec![],
+                reproduction: Some("Trigger the error branch.".to_string()),
+                proof: None,
+            }),
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
             title: "Missing error handling".to_string(),
@@ -1023,6 +1066,24 @@ mod tests {
             plan.drafts[0]
                 .body
                 .contains("Agent instruction: Handle and test")
+        );
+        assert!(plan.drafts[0].body.contains("Causal path: request"));
+        assert!(plan.drafts[0].body.contains("Evidence: `src/lib.rs:42`"));
+    }
+
+    #[test]
+    fn labels_deleted_lines_in_published_evidence() {
+        let evidence = FindingEvidence {
+            path: "src/auth.rs".to_string(),
+            side: reviewgate_core::FindingEvidenceSide::Old,
+            line: 12,
+            excerpt: "assert!(authorized);".to_string(),
+            reason: "Deleted authorization guard.".to_string(),
+        };
+
+        assert_eq!(
+            evidence_location(&evidence),
+            "src/auth.rs:12 (deleted line)"
         );
     }
 
@@ -1064,6 +1125,7 @@ mod tests {
                 scope: reviewgate_core::FindingScope::File,
                 severity: Severity::P2,
                 confidence: 0.72,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: None,
                 title: "Module behavior needs coverage".to_string(),
@@ -1076,6 +1138,7 @@ mod tests {
                 scope: reviewgate_core::FindingScope::Pr,
                 severity: Severity::P1,
                 confidence: 0.9,
+                grounding: None,
                 file: None,
                 line: None,
                 title: "Cross-file release risk".to_string(),
@@ -1206,6 +1269,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 scope: reviewgate_core::FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.95,
+                grounding: None,
                 file: Some(".github/workflows/reviewgate.yml".to_string()),
                 line: Some(6),
                 title: "Fork-safety guard removed".to_string(),
@@ -1222,6 +1286,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 scope: reviewgate_core::FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.95,
+                grounding: None,
                 file: Some(".github/workflows/reviewgate.yml".to_string()),
                 line: Some(15),
                 title: "Token permissions are writable".to_string(),
@@ -1253,6 +1318,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(20),
             title: "Unrelated text".to_string(),
@@ -1281,6 +1347,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/other.rs".to_string()),
             line: Some(11),
             title: "Changed".to_string(),
@@ -1306,6 +1373,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(10),
             title: "Already posted".to_string(),
@@ -1351,6 +1419,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::File,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(10),
             title: "File-level concern".to_string(),
@@ -1388,6 +1457,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::File,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: None,
             title: "File-level concern".to_string(),
@@ -1415,6 +1485,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Pr,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: None,
             line: None,
             title: "No anchor available".to_string(),
@@ -1453,6 +1524,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                     scope: reviewgate_core::FindingScope::Line,
                     severity: Severity::P1,
                     confidence: 0.95,
+                    grounding: None,
                     file: Some("src/lib.rs".to_string()),
                     line: Some(10),
                     title: "Already posted".to_string(),
@@ -1480,6 +1552,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(10),
             title: "Already posted".to_string(),

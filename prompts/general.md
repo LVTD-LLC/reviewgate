@@ -1,5 +1,5 @@
 # General Correctness Review
 
-Find concrete correctness, reliability, compatibility, and maintainability risks in the PR diff. Prefer evidence-backed findings over broad commentary, and err on the side of surfacing plausible risks with calibrated severity and confidence instead of marking risky changes clean.
+Find concrete correctness, reliability, compatibility, and maintainability risks in the PR diff. Prefer a short review with checked repository evidence over plausible but unverified blockers.
 
-Return structured findings with file and line evidence whenever possible. Use `scope: line` only for findings tied to one exact changed line; use `scope: file` or `scope: pr` for broader feedback that should remain in the summary.
+Trace relevant call sites and existing tests before emitting a P0-P3 finding. Return structured grounding with the checked claim, causal path, exact full-line excerpts (`side: new` for current-head lines or `side: old` for deleted diff lines), related tests, and reproduction or proof where required. Use `scope: line` only for findings tied to one exact changed right-side line; use `scope: file` or `scope: pr` for broader or deletion-only feedback that should remain in the summary. Put uncertain or optional ideas in notes or P4 findings.

@@ -197,11 +197,46 @@ pub struct Finding {
     pub scope: FindingScope,
     pub severity: Severity,
     pub confidence: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grounding: Option<FindingGrounding>,
     pub file: Option<String>,
     pub line: Option<u32>,
     pub title: String,
     pub detail: Option<String>,
     pub agent_instruction: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FindingGrounding {
+    pub claim: String,
+    pub causal_path: String,
+    pub test_assessment: String,
+    #[serde(default)]
+    pub evidence: Vec<FindingEvidence>,
+    #[serde(default)]
+    pub related_tests: Vec<FindingEvidence>,
+    #[serde(default)]
+    pub reproduction: Option<String>,
+    #[serde(default)]
+    pub proof: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FindingEvidence {
+    pub path: String,
+    #[serde(default)]
+    pub side: FindingEvidenceSide,
+    pub line: u32,
+    pub excerpt: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingEvidenceSide {
+    #[default]
+    New,
+    Old,
 }
 
 impl Finding {
@@ -1540,6 +1575,7 @@ mod tests {
             scope: FindingScope::Pr,
             severity,
             confidence: 1.0,
+            grounding: None,
             file: None,
             line: None,
             title: "Invariant fixture".to_string(),
@@ -1808,6 +1844,7 @@ mod tests {
             scope: FindingScope::Line,
             severity: Severity::P2,
             confidence: 0.9,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
             title: "Missing regression test".to_string(),
@@ -1826,6 +1863,7 @@ mod tests {
             scope: FindingScope::Line,
             severity: Severity::P0,
             confidence: 0.98,
+            grounding: None,
             file: Some("src/auth.rs".to_string()),
             line: Some(7),
             title: "Authentication bypass".to_string(),
@@ -1844,6 +1882,7 @@ mod tests {
             scope: FindingScope::File,
             severity: Severity::P2,
             confidence: 0.95,
+            grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
             title: "Module-level behavior needs a test".to_string(),
@@ -1885,6 +1924,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 0.9,
+                grounding: None,
                 file: None,
                 line: None,
                 title: "Style note".to_string(),
@@ -1897,6 +1937,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.9,
+                grounding: None,
                 file: None,
                 line: None,
                 title: "Security issue".to_string(),
@@ -2049,6 +2090,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                grounding: None,
                 file: Some("./src//a|b.rs".to_string()),
                 line: Some(42),
                 title: "Pipe | \"<tag>\" & issue".to_string(),
@@ -2195,6 +2237,7 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    grounding: None,
                     file: None,
                     line: None,
                     title: "Visible reliability issue".to_string(),
@@ -2207,6 +2250,7 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.9,
+                    grounding: None,
                     file: None,
                     line: None,
                     title: "Hidden style note".to_string(),
@@ -2254,6 +2298,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.9,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
                 title: "Target-blocking advisory finding".to_string(),
@@ -2354,6 +2399,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
                 title: "Missing regression test".to_string(),
@@ -2391,6 +2437,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
                 title: "Missing regression test".to_string(),
@@ -2570,6 +2617,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.95,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
                 title: "Security issue".to_string(),
@@ -2609,6 +2657,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 1.2,
+                grounding: None,
                 file: None,
                 line: None,
                 title: "Invalid confidence".to_string(),
@@ -2752,6 +2801,7 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    grounding: None,
                     file: Some("src/lib.rs".to_string()),
                     line: Some(42),
                     title: "Missing test".to_string(),
@@ -2764,6 +2814,7 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.8,
+                    grounding: None,
                     file: None,
                     line: None,
                     title: "Style note".to_string(),
@@ -2818,6 +2869,7 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
                 title: "Lower severity finding".to_string(),
@@ -2893,5 +2945,23 @@ mod tests {
             client.transport.seen_auth.as_deref(),
             Some("Bearer sk-or-secret")
         );
+    }
+
+    #[test]
+    fn grounding_serializes_absent_proof_fields_as_schema_nulls() {
+        let grounding = FindingGrounding {
+            claim: "Checked claim.".to_string(),
+            causal_path: "change -> failure".to_string(),
+            test_assessment: "No test covers the path.".to_string(),
+            evidence: vec![],
+            related_tests: vec![],
+            reproduction: None,
+            proof: None,
+        };
+
+        let value = serde_json::to_value(grounding).expect("grounding serializes");
+
+        assert_eq!(value["reproduction"], serde_json::Value::Null);
+        assert_eq!(value["proof"], serde_json::Value::Null);
     }
 }

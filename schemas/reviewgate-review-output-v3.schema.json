@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewgate.lvtd.dev/schemas/reviewgate-review-output-v3.schema.json",
+  "title": "ReviewGate Review Output v3",
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "review_error" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "score": { "type": "null" },
+          "angle_errors": { "type": "array", "minItems": 1 }
+        },
+        "required": ["angle_errors"]
+      },
+      "else": {
+        "properties": {
+          "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+          "angle_errors": { "type": "array", "maxItems": 0 }
+        }
+      }
+    }
+  ],
+  "required": [
+    "score",
+    "reviewed_sha",
+    "status",
+    "verdict",
+    "models",
+    "findings",
+    "notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "score": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 5,
+      "description": "Derived from validated findings for completed reviews; null for review_error."
+    },
+    "reviewed_sha": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["passed", "needs_changes", "review_error"]
+    },
+    "verdict": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concise overall verdict. Do not introduce concrete defects here unless they also appear as findings."
+    },
+    "models": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "estimated_cost_usd": { "type": ["number", "null"], "minimum": 0 },
+    "cost_summary": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["current_run_usd", "components"],
+      "properties": {
+        "current_run_usd": { "type": "number", "minimum": 0 },
+        "source": {
+          "type": ["string", "null"],
+          "enum": ["open_router_usage", "fallback_pricing", "unknown", null]
+        },
+        "components": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/cost_component" }
+        }
+      }
+    },
+    "metrics": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "finding_count",
+        "blocking_finding_count",
+        "inline_eligible_count",
+        "p0_count",
+        "p1_count",
+        "p2_count",
+        "p3_count",
+        "p4_count",
+        "cost_source"
+      ],
+      "properties": {
+        "finding_count": { "type": "integer", "minimum": 0 },
+        "blocking_finding_count": { "type": "integer", "minimum": 0 },
+        "inline_eligible_count": { "type": "integer", "minimum": 0 },
+        "p0_count": { "type": "integer", "minimum": 0 },
+        "p1_count": { "type": "integer", "minimum": 0 },
+        "p2_count": { "type": "integer", "minimum": 0 },
+        "p3_count": { "type": "integer", "minimum": 0 },
+        "p4_count": { "type": "integer", "minimum": 0 },
+        "analyzed_line_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Number of added and deleted diff lines ReviewGate included as changed code for this report. ReviewGate may recompute this value from local diff context."
+        },
+        "current_run_cost_usd": { "type": ["number", "null"], "minimum": 0 },
+        "cost_source": {
+          "type": "string",
+          "enum": ["open_router_usage", "fallback_pricing", "unknown"]
+        }
+      }
+    },
+    "review_stages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/review_stage" }
+    },
+    "angle_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/review_angle_result" },
+      "description": "Successfully completed per-angle review outcomes. Failed angles are recorded separately in angle_errors and never contribute a numeric score."
+    },
+    "angle_errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/review_angle_error" },
+      "description": "Typed reviewer failures. A non-empty value makes the top-level status review_error and score null."
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "cost_component": {
+      "type": "object",
+      "required": ["label", "model", "estimated_cost_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "prompt_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "completion_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "estimated_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "review_stage": {
+      "type": "object",
+      "required": ["name", "model", "status", "reason", "estimated_cost_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "estimated_cost_usd": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "review_angle_result": {
+      "type": "object",
+      "required": ["id", "name", "score", "status", "verdict", "model", "finding_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Derived from the findings referenced by finding_ids."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "needs_changes"]
+        },
+        "verdict": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "finding_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "review_angle_error": {
+      "type": "object",
+      "required": ["angle_id", "angle_name", "kind", "retryable", "message", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "angle_id": { "type": "string", "minLength": 1 },
+        "angle_name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["timeout", "malformed_response", "empty_response", "provider_error", "transport_error"]
+        },
+        "retryable": { "type": "boolean" },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Sanitized reviewer failure summary that does not contain provider response bodies, credentials, or prompt content."
+        },
+        "model": { "type": "string", "minLength": 1 }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "id",
+        "scope",
+        "severity",
+        "confidence",
+        "file",
+        "line",
+        "title",
+        "detail",
+        "agent_instruction"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "angle_id": {
+          "type": ["string", "null"],
+          "description": "Review angle that produced this finding, such as general or adversarial."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["line", "file", "pr"],
+          "description": "Use line only for findings that belong to one exact changed line in the new/right side of the diff; use file or pr for broader feedback. Publishing still uses inline PR comments, with fallback right-side diff line anchors when needed."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["P0", "P1", "P2", "P3", "P4"]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "grounding": {
+          "anyOf": [
+            { "$ref": "#/$defs/finding_grounding" },
+            { "type": "null" }
+          ],
+          "description": "Required by ReviewGate for P0-P3 publication. P4 advisory findings may omit it."
+        },
+        "file": { "type": ["string", "null"] },
+        "line": { "type": ["integer", "null"], "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "detail": { "type": ["string", "null"] },
+        "agent_instruction": { "type": "string", "minLength": 1 }
+      }
+    },
+    "finding_grounding": {
+      "type": "object",
+      "required": ["claim", "causal_path", "test_assessment", "evidence", "related_tests", "reproduction", "proof"],
+      "additionalProperties": false,
+      "properties": {
+        "claim": { "type": "string", "minLength": 1 },
+        "causal_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Trace the changed or deleted line through the affected code path to the concrete failure."
+        },
+        "test_assessment": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What existing tests were inspected and whether they exercise or contradict the alleged path."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/finding_evidence" }
+        },
+        "related_tests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding_evidence" }
+        },
+        "reproduction": { "type": ["string", "null"] },
+        "proof": { "type": ["string", "null"] }
+      }
+    },
+    "finding_evidence": {
+      "type": "object",
+      "required": ["path", "side", "line", "excerpt", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "side": {
+          "type": "string",
+          "enum": ["new", "old"],
+          "description": "Use new for the checked-out head and old only for a deleted line present in the reviewed diff."
+        },
+        "line": { "type": "integer", "minimum": 1 },
+        "excerpt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The exact full source line, ignoring only leading, trailing, and repeated whitespace."
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

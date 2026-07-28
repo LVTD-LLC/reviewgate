@@ -120,6 +120,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # ReviewGate is early, so @v0 is the recommended moving channel.
       # Pin to an exact commit SHA if your repository policy requires immutable actions.
@@ -508,22 +509,29 @@ The live action defaults to the built-in `general` and `adversarial` review angl
    - changed files;
    - unified diff;
    - changed-line count;
-   - bounded context files such as `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, `STRUCTURE.md`, and `.reviewgate.yml`.
+   - bounded context files such as `AGENTS.md`, `README.md`, `TECH.md`, `PRODUCT.md`, `STRUCTURE.md`, and `.reviewgate.yml`;
+   - bounded current-head contents for changed files, sibling tests, and referenced local reusable workflows.
 6. PR title and body are passed as separate untrusted scope context. They help understand intent but are not reviewer instructions.
 7. ReviewGate calls OpenRouter once for each enabled built-in review angle.
 8. Each model response is parsed as strict ReviewGate JSON. If needed, the parser can strip Markdown fences or extract the first valid JSON object from prose-wrapped output.
-9. Angle artifacts are aggregated:
+9. P0-P3 findings pass a read-only evidence gate before they can affect scoring or publication:
+   - exact path, side, one-based line, and full-line excerpt references must match the checked-out head (`new`) or a deleted diff line (`old`);
+   - at least one reference must be a changed line in the reviewed diff;
+   - a causal path and test assessment are required;
+   - P0-P1 require a concrete reproduction or exceptional proof;
+   - checked platform-contract contradictions become auditable non-blocking notes, while prompts direct self-retracting or uncertain claims away from blocking findings.
+10. Angle artifacts are aggregated:
    - findings receive angle prefixes and `angle_id`;
    - per-angle scores are recorded;
    - costs are added across model calls;
    - failed angles become typed, sanitized `angle_errors` and never become numeric code scores.
-10. The top-level score and status are recomputed deterministically. Any reviewer failure produces `status: "review_error"` and `score: null`.
-11. ReviewGate writes:
+11. The top-level score and status are recomputed deterministically. Any reviewer failure produces `status: "review_error"` and `score: null`.
+12. ReviewGate writes:
    - `.reviewgate/review.json`;
    - `.reviewgate/summary.md`.
-12. Eligible findings are published as inline PR comments when possible.
-13. The final summary replaces the running placeholder or updates the existing canonical summary comment.
-14. A check run reports review availability:
+13. Eligible findings are published as inline PR comments when possible, including their checked claim, causal path, and evidence references.
+14. The final summary replaces the running placeholder or updates the existing canonical summary comment.
+15. A check run reports review availability:
    - `success` for `passed`;
    - `neutral` for `needs_changes`;
    - `failure` for `review_error` or if the review artifact cannot be read.
@@ -643,13 +651,16 @@ The machine-readable artifact is written to:
 The current public schema lives at:
 
 ```text
-schemas/reviewgate-review-output-v2.schema.json
+schemas/reviewgate-review-output-v3.schema.json
 ```
 
-Version 2 adds `review_error`, a nullable score, and typed `angle_errors`. The
-original `schemas/reviewgate-review-output.schema.json` remains the immutable
-version 1 contract for artifacts produced by ReviewGate v0.1.x. Consumers must
-use the version 2 schema for artifacts produced by v0.2.0 and later.
+Version 3 adds optional structured finding `grounding` while ReviewGate requires
+it before a P0-P3 can be published or affect scoring. Version 2 added
+`review_error`, a nullable score, and typed `angle_errors`. The immutable
+`schemas/reviewgate-review-output.schema.json` and
+`schemas/reviewgate-review-output-v2.schema.json` remain available for older
+consumers. Consumers should use version 3 for artifacts produced by the release
+that introduces evidence grounding and later.
 
 Required top-level fields:
 
@@ -683,6 +694,7 @@ Finding fields:
 | `scope` | `line`, `file`, or `pr` | Semantic target of the finding. It is not the publishing mode. |
 | `severity` | `P0` through `P4` | Severity that determines the score ceiling. |
 | `confidence` | number `0..1` | Model confidence. Current publishing filters by severity, not confidence. |
+| `grounding` | object or null | Required for P0-P3 publication; contains the checked claim, causal path, test assessment, exact evidence (`new` for current-head lines, `old` for deleted diff lines), related tests, and P0-P1 reproduction/proof. |
 | `file` | string or null | Target file when known. |
 | `line` | integer or null | Right-side changed line for line findings when known. |
 | `title` | string | Short finding title. |
@@ -1216,6 +1228,7 @@ Use:
 - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
   with:
     fetch-depth: 0
+    persist-credentials: false
 ```
 
 For local testing:
