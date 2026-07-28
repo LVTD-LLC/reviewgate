@@ -11,11 +11,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, ModelPreset, ModelPricing,
     OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
-    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleResult,
-    ReviewArtifact, ReviewStage, ReviewStatus, Severity, SummaryOptions, SummaryState,
-    compute_effective_score, compute_metrics, compute_score, estimate_model_cost_usd,
-    extract_summary_state, fallback_model_pricing, parse_openrouter_model_pricing, render_summary,
-    render_summary_with_options,
+    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleError,
+    ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewStage, ReviewStatus, Severity,
+    SummaryOptions, SummaryState, compute_effective_score, compute_metrics, compute_score,
+    estimate_model_cost_usd, extract_summary_state, fallback_model_pricing,
+    parse_openrouter_model_pricing, render_summary, render_summary_with_options,
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
@@ -485,6 +485,92 @@ struct ReviewAngle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum AngleReviewFailure {
+    Timeout,
+    Transport,
+    EmptyResponse,
+    MalformedResponse,
+    Provider { retryable: bool },
+}
+
+impl AngleReviewFailure {
+    fn from_request_error(error: &anyhow::Error) -> Self {
+        let diagnostic = format!("{error:#}").to_ascii_lowercase();
+        if diagnostic.contains("curl: (28)") || diagnostic.contains("timed out") {
+            return Self::Timeout;
+        }
+        if [
+            "curl: (6)",
+            "curl: (7)",
+            "curl: (35)",
+            "curl: (52)",
+            "curl: (56)",
+        ]
+        .iter()
+        .any(|needle| diagnostic.contains(needle))
+        {
+            return Self::Transport;
+        }
+        let retryable = provider_error_is_retryable(&diagnostic);
+        Self::Provider { retryable }
+    }
+
+    fn empty_response() -> Self {
+        Self::EmptyResponse
+    }
+
+    fn malformed_response() -> Self {
+        Self::MalformedResponse
+    }
+
+    fn kind(&self) -> ReviewErrorKind {
+        match self {
+            Self::Timeout => ReviewErrorKind::Timeout,
+            Self::Transport => ReviewErrorKind::TransportError,
+            Self::EmptyResponse => ReviewErrorKind::EmptyResponse,
+            Self::MalformedResponse => ReviewErrorKind::MalformedResponse,
+            Self::Provider { .. } => ReviewErrorKind::ProviderError,
+        }
+    }
+
+    fn retryable(&self) -> bool {
+        match self {
+            Self::Provider { retryable } => *retryable,
+            Self::Timeout | Self::Transport | Self::EmptyResponse | Self::MalformedResponse => true,
+        }
+    }
+
+    fn message(&self) -> &'static str {
+        match self {
+            Self::Timeout => "The reviewer request timed out.",
+            Self::Transport => "The reviewer transport failed.",
+            Self::EmptyResponse => "The reviewer returned an empty response.",
+            Self::MalformedResponse => "The reviewer returned an invalid structured response.",
+            Self::Provider { .. } => {
+                "The reviewer provider rejected or could not complete the request."
+            }
+        }
+    }
+}
+
+fn provider_error_is_retryable(diagnostic: &str) -> bool {
+    let tokens = diagnostic
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let status = tokens.windows(2).find_map(|pair| {
+        (pair[0] == "http")
+            .then(|| pair[1].parse::<u16>().ok())
+            .flatten()
+    });
+    match status {
+        Some(408 | 429) => true,
+        Some(400..=499) => false,
+        _ => true,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReviewAngleSource {
     BuiltinPrompt,
     InlinePrompt,
@@ -553,18 +639,8 @@ fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
         for angle in review_angles {
             match run_live_angle_review(&context, &angle, &base_url, &api_key, &model) {
                 Ok(artifact) => angle_artifacts.push((angle, artifact)),
-                Err(error) => failed_angles.push((angle, error.to_string())),
+                Err(error) => failed_angles.push((angle, error)),
             }
-        }
-        if angle_artifacts.is_empty() {
-            bail!(
-                "all ReviewGate review angles failed: {}",
-                failed_angles
-                    .iter()
-                    .map(|(angle, error)| format!("{}: {error}", angle.id))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            );
         }
         let mut artifact =
             aggregate_angle_artifacts(&context.reviewed_sha, &model, angle_artifacts)?;
@@ -1329,8 +1405,12 @@ fn eval_fixtures(dir: PathBuf) -> CliResult<()> {
     let mut finding_count = 0usize;
     let mut blocking_count = 0usize;
     let mut score_sum = 0u64;
+    let mut scored_fixture_count = 0usize;
     for (_, artifact) in &artifacts {
-        score_sum += u64::from(artifact.score);
+        if let Some(score) = artifact.score {
+            score_sum += u64::from(score);
+            scored_fixture_count += 1;
+        }
         let metrics = compute_metrics(artifact, SummaryOptions::default().min_severity);
         finding_count += metrics.finding_count as usize;
         blocking_count += metrics.blocking_finding_count as usize;
@@ -1338,10 +1418,10 @@ fn eval_fixtures(dir: PathBuf) -> CliResult<()> {
             total_cost += cost;
         }
     }
-    let average_score = if total == 0 {
+    let average_score = if scored_fixture_count == 0 {
         0.0
     } else {
-        score_sum as f64 / total as f64
+        score_sum as f64 / scored_fixture_count as f64
     };
 
     let report = serde_json::json!({
@@ -1669,16 +1749,9 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> CliResult<(
                 .unwrap_or(&artifact.reviewed_sha)
                 .to_string();
             let conclusion = check_run_conclusion_for_status(&artifact.status);
-            (
-                head_sha,
-                conclusion,
-                format!(
-                    "ReviewGate: {}/5 ({}, review completed)",
-                    artifact.score,
-                    artifact.status.as_str()
-                ),
-                artifact.verdict,
-            )
+            let title = check_run_title(&artifact);
+            let summary = check_run_summary(&artifact);
+            (head_sha, conclusion, title, summary)
         }
         Err(error) => {
             let head_sha = event
@@ -1715,10 +1788,37 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> CliResult<(
     Ok(())
 }
 
+fn check_run_title(artifact: &ReviewArtifact) -> String {
+    match artifact.score {
+        Some(score) => format!(
+            "ReviewGate: {score}/5 ({}, review completed)",
+            artifact.status.as_str()
+        ),
+        None => "ReviewGate: review error (inconclusive)".to_string(),
+    }
+}
+
+fn check_run_summary(artifact: &ReviewArtifact) -> String {
+    if artifact.status != ReviewStatus::ReviewError {
+        return artifact.verdict.clone();
+    }
+    let errors = serde_json::to_string_pretty(&artifact.angle_errors)
+        .unwrap_or_else(|_| "[]".to_string())
+        .lines()
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{}\n\nOutcome: `review_error` (no numeric score).\n\nTyped angle errors:\n\n{errors}",
+        artifact.verdict
+    )
+}
+
 fn check_run_conclusion_for_status(status: &ReviewStatus) -> &'static str {
     match status {
         ReviewStatus::Passed => "success",
         ReviewStatus::NeedsChanges => "neutral",
+        ReviewStatus::ReviewError => "failure",
     }
 }
 
@@ -2680,7 +2780,7 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
 }
 
 fn build_review_prompt_for_angle(context: &ReviewContext, angle: &ReviewAngle) -> String {
-    let schema = include_str!("../../../schemas/reviewgate-review-output.schema.json");
+    let schema = include_str!("../../../schemas/reviewgate-review-output-v2.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
@@ -2802,7 +2902,7 @@ fn run_live_angle_review(
     base_url: &str,
     api_key: &str,
     model: &str,
-) -> CliResult<ReviewArtifact> {
+) -> Result<ReviewArtifact, AngleReviewFailure> {
     let prompt = build_review_prompt_for_angle(context, angle);
     let pull_request_scope = build_pull_request_scope_message(&context.pull_request);
     let response = call_openrouter_with_curl(
@@ -2812,9 +2912,8 @@ fn run_live_angle_review(
         pull_request_scope.as_deref(),
         &prompt,
     )
-    .with_context(|| format!("{} review angle request failed", angle.id))?;
-    let mut artifact = parse_model_artifact(&response.content)
-        .with_context(|| format!("{} review angle returned invalid JSON", angle.id))?;
+    .map_err(|error| AngleReviewFailure::from_request_error(&error))?;
+    let mut artifact = parse_angle_artifact_content(&response.content)?;
     if artifact.models.is_empty() {
         artifact.models = vec![model.to_string()];
     }
@@ -2831,6 +2930,21 @@ fn run_live_angle_review(
         cost_source,
         &angle.id,
     );
+    Ok(artifact)
+}
+
+fn parse_angle_artifact_content(content: &str) -> Result<ReviewArtifact, AngleReviewFailure> {
+    if content.trim().is_empty() {
+        return Err(AngleReviewFailure::empty_response());
+    }
+    let artifact =
+        parse_model_artifact(content).map_err(|_| AngleReviewFailure::malformed_response())?;
+    if artifact.status == ReviewStatus::ReviewError || !artifact.angle_errors.is_empty() {
+        return Err(AngleReviewFailure::malformed_response());
+    }
+    artifact
+        .validate()
+        .map_err(|_| AngleReviewFailure::malformed_response())?;
     Ok(artifact)
 }
 
@@ -2854,10 +2968,6 @@ fn aggregate_angle_artifacts(
     default_model: &str,
     angle_artifacts: Vec<(ReviewAngle, ReviewArtifact)>,
 ) -> CliResult<ReviewArtifact> {
-    if angle_artifacts.is_empty() {
-        bail!("at least one ReviewGate review angle artifact is required");
-    }
-
     let mut models = Vec::new();
     let mut findings = Vec::new();
     let mut angle_results = Vec::new();
@@ -2970,7 +3080,7 @@ fn aggregate_angle_artifacts(
     }
 
     let artifact = ReviewArtifact {
-        score,
+        score: Some(score),
         target_score: DEFAULT_TARGET_SCORE,
         reviewed_sha: reviewed_sha.to_string(),
         status,
@@ -2981,6 +3091,7 @@ fn aggregate_angle_artifacts(
         metrics: None,
         review_stages,
         angle_results,
+        angle_errors: vec![],
         findings,
         notes,
     };
@@ -2991,31 +3102,32 @@ fn aggregate_angle_artifacts(
 fn append_failed_angle_reviews(
     artifact: &mut ReviewArtifact,
     default_model: &str,
-    failed_angles: Vec<(ReviewAngle, String)>,
+    failed_angles: Vec<(ReviewAngle, AngleReviewFailure)>,
 ) -> CliResult<()> {
+    if failed_angles.is_empty() {
+        return Ok(());
+    }
     for (angle, error) in failed_angles {
-        let verdict = format!("{} review angle failed: {error}", angle.name);
+        let message = error.message().to_string();
         artifact.review_stages.push(ReviewStage {
             name: angle.id.clone(),
             model: default_model.to_string(),
             status: "failed".to_string(),
-            reason: verdict.clone(),
+            reason: message.clone(),
             estimated_cost_usd: None,
         });
-        artifact.notes.push(verdict.clone());
-        artifact.angle_results.push(ReviewAngleResult {
-            id: angle.id,
-            name: angle.name,
-            score: 0,
-            status: ReviewStatus::NeedsChanges,
-            verdict,
+        artifact.angle_errors.push(ReviewAngleError {
+            angle_id: angle.id,
+            angle_name: angle.name,
+            kind: error.kind(),
+            retryable: error.retryable(),
+            message,
             model: default_model.to_string(),
-            finding_ids: vec![],
         });
     }
-    artifact.score = compute_effective_score(&artifact.findings, &artifact.angle_results);
-    artifact.status = status_for_score(artifact.score);
-    artifact.verdict = aggregate_verdict(&artifact.angle_results);
+    artifact.score = None;
+    artifact.status = ReviewStatus::ReviewError;
+    artifact.verdict = "ReviewGate could not complete every enabled review angle.".to_string();
     artifact.validate()?;
     Ok(())
 }
@@ -4433,6 +4545,51 @@ review_angles:
             check_run_conclusion_for_status(&ReviewStatus::NeedsChanges),
             "neutral"
         );
+        assert_eq!(
+            check_run_conclusion_for_status(&ReviewStatus::ReviewError),
+            "failure"
+        );
+    }
+
+    #[test]
+    fn inconclusive_summary_and_check_projection_report_the_same_review_error() {
+        let artifact = ReviewArtifact {
+            score: None,
+            target_score: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::ReviewError,
+            verdict: "ReviewGate could not complete every enabled review angle.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "general".to_string(),
+                angle_name: "General".to_string(),
+                kind: ReviewErrorKind::Timeout,
+                retryable: true,
+                message: "The reviewer request timed out.".to_string(),
+                model: "balanced".to_string(),
+            }],
+            findings: vec![],
+            notes: vec![],
+        };
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("Review incomplete"));
+        assert!(summary.contains("timeout"));
+        assert_eq!(
+            check_run_title(&artifact),
+            "ReviewGate: review error (inconclusive)"
+        );
+        assert_eq!(check_run_conclusion_for_status(&artifact.status), "failure");
+        let check_summary = check_run_summary(&artifact);
+        assert!(check_summary.contains("Outcome: `review_error` (no numeric score)."));
+        assert!(check_summary.contains("\"kind\": \"timeout\""));
+        assert!(check_summary.contains("\"retryable\": true"));
     }
 
     #[test]
@@ -4535,7 +4692,7 @@ Thanks {also not json}."#;
 
         let artifact = parse_model_artifact(raw).expect("wrapped artifact repairs");
 
-        assert_eq!(artifact.score, 5);
+        assert_eq!(artifact.score, Some(5));
         assert_eq!(artifact.verdict, "Clean.");
     }
 
@@ -4563,7 +4720,7 @@ Thanks {also not json}."#;
     #[test]
     fn applies_usage_cost_summary_from_fallback_pricing() {
         let mut artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -4574,6 +4731,7 @@ Thanks {also not json}."#;
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -5068,7 +5226,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn aggregates_angle_artifacts_and_tags_findings_by_angle() {
         let general = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "stale".to_string(),
             status: ReviewStatus::Passed,
@@ -5079,11 +5237,12 @@ diff --git a/src/lib.rs b/src/lib.rs
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
         let adversarial = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "stale".to_string(),
             status: ReviewStatus::Passed,
@@ -5094,6 +5253,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![reviewgate_core::Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -5119,7 +5279,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         )
         .expect("aggregate builds");
 
-        assert_eq!(aggregate.score, 3);
+        assert_eq!(aggregate.score, Some(3));
         assert_eq!(aggregate.status, ReviewStatus::NeedsChanges);
         assert_eq!(aggregate.findings[0].id, "adversarial:rg_001");
         assert_eq!(
@@ -5141,7 +5301,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn failed_angle_reviews_are_recorded_without_discarding_successful_results() {
         let general = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "stale".to_string(),
             status: ReviewStatus::Passed,
@@ -5152,6 +5312,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -5167,42 +5328,67 @@ diff --git a/src/lib.rs b/src/lib.rs
             "deepseek/deepseek-v4-flash",
             vec![(
                 adversarial_review_angle(),
-                "adversarial review angle returned invalid JSON".to_string(),
+                AngleReviewFailure::malformed_response(),
             )],
         )
         .expect("failed angle append validates");
 
-        assert_eq!(aggregate.score, 0);
-        assert_eq!(aggregate.status, ReviewStatus::NeedsChanges);
-        assert_eq!(aggregate.angle_results.len(), 2);
-        assert_eq!(aggregate.angle_results[1].id, "adversarial");
-        assert_eq!(aggregate.angle_results[1].score, 0);
+        assert_eq!(aggregate.score, None);
+        assert_eq!(aggregate.status, ReviewStatus::ReviewError);
+        assert_eq!(aggregate.angle_results.len(), 1);
+        assert_eq!(aggregate.angle_results[0].score, 5);
+        assert_eq!(aggregate.angle_errors.len(), 1);
+        assert_eq!(aggregate.angle_errors[0].angle_id, "adversarial");
         assert_eq!(
-            aggregate.angle_results[1].status,
-            ReviewStatus::NeedsChanges
+            aggregate.angle_errors[0].kind,
+            ReviewErrorKind::MalformedResponse
         );
-        assert!(
-            aggregate.angle_results[1]
-                .verdict
-                .contains("adversarial review angle returned invalid JSON")
-        );
-        assert!(aggregate.verdict.contains("Adversarial"));
+        assert!(aggregate.angle_errors[0].retryable);
         assert!(aggregate.review_stages.iter().any(|stage| {
             stage.name == "adversarial"
                 && stage.status == "failed"
-                && stage
-                    .reason
-                    .contains("adversarial review angle returned invalid JSON")
+                && stage.reason.contains("invalid structured response")
         }));
-        assert!(aggregate.notes.iter().any(|note| {
-            note.contains("Adversarial review angle failed") && note.contains("invalid JSON")
-        }));
+        assert!(!aggregate.verdict.contains("0/5"));
+    }
+
+    #[test]
+    fn no_failed_angles_preserve_the_completed_review_outcome() {
+        let general = ReviewArtifact {
+            score: Some(5),
+            target_score: 5,
+            reviewed_sha: "stale".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "General review found no issues.".to_string(),
+            models: vec!["deepseek/deepseek-v4-flash".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+        let mut aggregate = aggregate_angle_artifacts(
+            "abc123",
+            "deepseek/deepseek-v4-flash",
+            vec![(general_review_angle(), general)],
+        )
+        .expect("aggregate builds");
+
+        append_failed_angle_reviews(&mut aggregate, "deepseek/deepseek-v4-flash", vec![])
+            .expect("no failures leave the artifact unchanged");
+
+        assert_eq!(aggregate.score, Some(5));
+        assert_eq!(aggregate.status, ReviewStatus::Passed);
+        assert!(aggregate.angle_errors.is_empty());
     }
 
     #[test]
     fn aggregate_angle_artifacts_makes_prefixed_finding_ids_unique() {
         let adversarial = ReviewArtifact {
-            score: 3,
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "stale".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -5213,6 +5399,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![
                 reviewgate_core::Finding {
                     id: "rg_001".to_string(),
@@ -5264,7 +5451,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn aggregate_angle_artifacts_bounds_long_generated_finding_ids() {
         let long_id = "x".repeat(MAX_GENERATED_FINDING_ID_CHARS + 100);
         let adversarial = ReviewArtifact {
-            score: 3,
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "stale".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -5275,6 +5462,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![reviewgate_core::Finding {
                 id: long_id,
                 angle_id: None,
@@ -5304,7 +5492,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn aggregate_angle_artifacts_rejects_duplicate_angle_ids() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "stale".to_string(),
             status: ReviewStatus::Passed,
@@ -5315,6 +5503,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -5342,15 +5531,120 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[test]
-    fn aggregate_angle_artifacts_rejects_empty_angle_artifacts() {
-        let error = aggregate_angle_artifacts("abc123", "deepseek/deepseek-v4-flash", vec![])
-            .expect_err("empty angle artifacts are rejected");
+    fn all_failed_angles_still_produce_an_inconclusive_artifact() {
+        let mut artifact =
+            aggregate_angle_artifacts("abc123", "deepseek/deepseek-v4-flash", vec![])
+                .expect("empty completed angles initialize an artifact");
+        append_failed_angle_reviews(
+            &mut artifact,
+            "deepseek/deepseek-v4-flash",
+            vec![
+                (general_review_angle(), AngleReviewFailure::empty_response()),
+                (
+                    adversarial_review_angle(),
+                    AngleReviewFailure::Provider { retryable: true },
+                ),
+            ],
+        )
+        .expect("review errors validate");
 
-        assert!(
-            error
-                .to_string()
-                .contains("at least one ReviewGate review angle artifact is required")
+        assert_eq!(artifact.score, None);
+        assert_eq!(artifact.status, ReviewStatus::ReviewError);
+        assert!(artifact.angle_results.is_empty());
+        assert_eq!(artifact.angle_errors.len(), 2);
+        assert_eq!(
+            artifact.angle_errors[0].kind,
+            ReviewErrorKind::EmptyResponse
         );
+    }
+
+    #[test]
+    fn reviewer_failure_classification_identifies_retryable_timeouts_and_provider_errors() {
+        let timeout = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+            "curl: (28) Operation timed out"
+        ));
+        let transport =
+            AngleReviewFailure::from_request_error(&anyhow::anyhow!("curl: (7) Failed to connect"));
+        let provider = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+            "OpenRouter request failed: HTTP 503"
+        ));
+        let authorization = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+            "OpenRouter request failed: HTTP 401 Authorization: Bearer canary-secret"
+        ));
+
+        assert_eq!(timeout.kind(), ReviewErrorKind::Timeout);
+        assert!(timeout.retryable());
+        assert_eq!(transport.kind(), ReviewErrorKind::TransportError);
+        assert!(transport.retryable());
+        assert_eq!(provider.kind(), ReviewErrorKind::ProviderError);
+        assert!(provider.retryable());
+        assert_eq!(authorization.kind(), ReviewErrorKind::ProviderError);
+        assert!(!authorization.retryable());
+        assert!(!provider.message().contains("503"));
+        assert!(!authorization.message().contains("401"));
+        assert!(!authorization.message().contains("canary-secret"));
+    }
+
+    #[test]
+    fn provider_failure_retryability_distinguishes_permanent_and_transient_statuses() {
+        for status in [400, 401, 403, 404, 422] {
+            let failure = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+                "OpenRouter request failed: HTTP {status}"
+            ));
+            assert!(!failure.retryable(), "HTTP {status} is permanent");
+        }
+        for status in [408, 429, 500, 503] {
+            let failure = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+                "OpenRouter request failed: HTTP {status}"
+            ));
+            assert!(failure.retryable(), "HTTP {status} is retryable");
+        }
+    }
+
+    #[test]
+    fn empty_and_malformed_model_outputs_have_distinct_typed_errors() {
+        let empty = parse_angle_artifact_content(" \n").expect_err("empty response fails");
+        let malformed =
+            parse_angle_artifact_content("{not-json").expect_err("malformed response fails");
+        let invalid_confidence =
+            include_str!("../../../fixtures/simple-review.json").replace("0.86", "1.1");
+        let invalid =
+            parse_angle_artifact_content(&invalid_confidence).expect_err("invalid artifact fails");
+
+        assert_eq!(empty.kind(), ReviewErrorKind::EmptyResponse);
+        assert_eq!(malformed.kind(), ReviewErrorKind::MalformedResponse);
+        assert_eq!(invalid.kind(), ReviewErrorKind::MalformedResponse);
+        assert!(empty.retryable());
+        assert!(malformed.retryable());
+    }
+
+    #[test]
+    fn model_supplied_review_errors_are_rejected_as_malformed() {
+        let content = serde_json::json!({
+            "score": null,
+            "target_score": 5,
+            "reviewed_sha": "abc123",
+            "status": "review_error",
+            "verdict": "The model claimed its own reviewer failure.",
+            "models": ["untrusted/model"],
+            "angle_errors": [{
+                "angle_id": "general",
+                "angle_name": "General",
+                "kind": "provider_error",
+                "retryable": false,
+                "message": "Untrusted model-supplied state.",
+                "model": "untrusted/model"
+            }],
+            "findings": [],
+            "notes": []
+        })
+        .to_string();
+
+        let failure = parse_angle_artifact_content(&content)
+            .expect_err("ReviewGate owns reviewer error classification");
+
+        assert_eq!(failure.kind(), ReviewErrorKind::MalformedResponse);
+        assert!(failure.retryable());
     }
 
     #[test]

@@ -30,6 +30,8 @@ pub enum ReviewGateError {
     InvalidCostComponent { field: &'static str },
     #[error("review angle {field} must not be empty")]
     InvalidReviewAngle { field: &'static str },
+    #[error("review outcome is invalid: {0}")]
+    InvalidReviewOutcome(String),
     #[error("invalid severity {0:?}; expected P0, P1, P2, P3, or P4")]
     InvalidSeverity(String),
     #[error("summary state is invalid: {0}")]
@@ -44,6 +46,7 @@ pub enum ReviewStatus {
     Passed,
     #[serde(alias = "failed")]
     NeedsChanges,
+    ReviewError,
 }
 
 impl ReviewStatus {
@@ -51,7 +54,56 @@ impl ReviewStatus {
         match self {
             ReviewStatus::Passed => "passed",
             ReviewStatus::NeedsChanges => "needs_changes",
+            ReviewStatus::ReviewError => "review_error",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewErrorKind {
+    Timeout,
+    MalformedResponse,
+    EmptyResponse,
+    ProviderError,
+    TransportError,
+}
+
+impl ReviewErrorKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReviewErrorKind::Timeout => "timeout",
+            ReviewErrorKind::MalformedResponse => "malformed_response",
+            ReviewErrorKind::EmptyResponse => "empty_response",
+            ReviewErrorKind::ProviderError => "provider_error",
+            ReviewErrorKind::TransportError => "transport_error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReviewAngleError {
+    pub angle_id: String,
+    pub angle_name: String,
+    pub kind: ReviewErrorKind,
+    pub retryable: bool,
+    pub message: String,
+    pub model: String,
+}
+
+impl ReviewAngleError {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        for (field, value) in [
+            ("error.angle_id", self.angle_id.as_str()),
+            ("error.angle_name", self.angle_name.as_str()),
+            ("error.message", self.message.as_str()),
+            ("error.model", self.model.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ReviewGateError::InvalidReviewAngle { field });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -285,6 +337,12 @@ impl ReviewAngleResult {
             return Err(ReviewGateError::InvalidReviewAngle { field: "name" });
         }
         validate_score(self.score)?;
+        if self.status == ReviewStatus::ReviewError {
+            return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                "successful angle {} cannot have review_error status",
+                self.id
+            )));
+        }
         if self.verdict.trim().is_empty() {
             return Err(ReviewGateError::InvalidReviewAngle { field: "verdict" });
         }
@@ -297,7 +355,7 @@ impl ReviewAngleResult {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReviewArtifact {
-    pub score: u8,
+    pub score: Option<u8>,
     #[serde(default = "default_target_score", skip_serializing)]
     pub target_score: u8,
     pub reviewed_sha: String,
@@ -313,14 +371,44 @@ pub struct ReviewArtifact {
     pub review_stages: Vec<ReviewStage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub angle_results: Vec<ReviewAngleResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub angle_errors: Vec<ReviewAngleError>,
     pub findings: Vec<Finding>,
     pub notes: Vec<String>,
 }
 
 impl ReviewArtifact {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
-        validate_score(self.score)?;
+        if let Some(score) = self.score {
+            validate_score(score)?;
+        }
         validate_score(self.target_score)?;
+        match self.status {
+            ReviewStatus::ReviewError => {
+                if self.score.is_some() {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "review_error must not expose a numeric score".to_string(),
+                    ));
+                }
+                if self.angle_errors.is_empty() {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "review_error must include at least one angle error".to_string(),
+                    ));
+                }
+            }
+            ReviewStatus::Passed | ReviewStatus::NeedsChanges => {
+                if self.score.is_none() {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "completed review must expose a numeric score".to_string(),
+                    ));
+                }
+                if !self.angle_errors.is_empty() {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "angle errors require review_error status".to_string(),
+                    ));
+                }
+            }
+        }
         if let Some(cost) = self.estimated_cost_usd {
             validate_estimated_cost(cost)?;
         }
@@ -336,6 +424,9 @@ impl ReviewArtifact {
         for angle in &self.angle_results {
             angle.validate()?;
         }
+        for error in &self.angle_errors {
+            error.validate()?;
+        }
         for finding in &self.findings {
             finding.validate()?;
         }
@@ -343,13 +434,19 @@ impl ReviewArtifact {
     }
 
     pub fn with_computed_score(mut self) -> Result<Self, ReviewGateError> {
-        self.score = compute_effective_score(&self.findings, &self.angle_results);
         self.target_score = DEFAULT_TARGET_SCORE;
-        self.status = if self.score >= DEFAULT_TARGET_SCORE {
-            ReviewStatus::Passed
+        if self.angle_errors.is_empty() {
+            let score = compute_effective_score(&self.findings, &self.angle_results);
+            self.score = Some(score);
+            self.status = if score >= DEFAULT_TARGET_SCORE {
+                ReviewStatus::Passed
+            } else {
+                ReviewStatus::NeedsChanges
+            };
         } else {
-            ReviewStatus::NeedsChanges
-        };
+            self.score = None;
+            self.status = ReviewStatus::ReviewError;
+        }
         self.validate()?;
         Ok(self)
     }
@@ -576,6 +673,12 @@ impl SummaryCostRun {
 pub struct SummaryState {
     pub version: u8,
     pub last_reviewed_sha: String,
+    #[serde(default)]
+    pub last_valid_reviewed_sha: Option<String>,
+    #[serde(default)]
+    pub last_valid_score: Option<u8>,
+    #[serde(default)]
+    pub last_valid_status: Option<ReviewStatus>,
     pub reviewed_shas: Vec<String>,
     pub run_count: u32,
     pub cumulative_cost_usd: f64,
@@ -615,9 +718,30 @@ impl SummaryState {
             cost_history.drain(0..cost_history.len() - limit);
         }
 
+        let (last_valid_reviewed_sha, last_valid_score, last_valid_status) =
+            if artifact.status == ReviewStatus::ReviewError {
+                previous
+                    .map(|state| {
+                        (
+                            state.last_valid_reviewed_sha.clone(),
+                            state.last_valid_score,
+                            state.last_valid_status.clone(),
+                        )
+                    })
+                    .unwrap_or((None, None, None))
+            } else {
+                (
+                    Some(artifact.reviewed_sha.clone()),
+                    artifact.score,
+                    Some(artifact.status.clone()),
+                )
+            };
         let mut state = SummaryState {
             version: 1,
             last_reviewed_sha: artifact.reviewed_sha.clone(),
+            last_valid_reviewed_sha,
+            last_valid_score,
+            last_valid_status,
             reviewed_shas,
             run_count: previous
                 .map(|state| state.run_count.saturating_add(1))
@@ -647,6 +771,21 @@ impl SummaryState {
         if self.last_reviewed_sha.trim().is_empty() {
             return Err(ReviewGateError::InvalidSummaryState(
                 "last_reviewed_sha must not be empty".to_string(),
+            ));
+        }
+        if let Some(score) = self.last_valid_score {
+            validate_score(score)?;
+        }
+        if self.last_valid_score.is_some() != self.last_valid_reviewed_sha.is_some()
+            || self.last_valid_score.is_some() != self.last_valid_status.is_some()
+        {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "latest valid review fields must be present together".to_string(),
+            ));
+        }
+        if self.last_valid_status == Some(ReviewStatus::ReviewError) {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "latest valid review cannot have review_error status".to_string(),
             ));
         }
         validate_estimated_cost(self.cumulative_cost_usd)?;
@@ -834,10 +973,34 @@ pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, Revi
     };
     let state_end = state_start + relative_end;
     let raw = &summary[state_start..state_end];
-    let state: SummaryState = serde_json::from_str(raw)
+    let mut state: SummaryState = serde_json::from_str(raw)
         .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
+    if state.last_valid_score.is_none()
+        && let Some(score) = extract_legacy_summary_score(summary)
+    {
+        state.last_valid_reviewed_sha = Some(state.last_reviewed_sha.clone());
+        state.last_valid_score = Some(score);
+        state.last_valid_status = Some(if score >= DEFAULT_TARGET_SCORE {
+            ReviewStatus::Passed
+        } else {
+            ReviewStatus::NeedsChanges
+        });
+    }
     state.validate()?;
     Ok(Some(state))
+}
+
+fn extract_legacy_summary_score(summary: &str) -> Option<u8> {
+    let score = summary
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("<h2 align=\"left\">Confidence Score: ")?
+                .strip_suffix("/5</h2>")
+        })?
+        .trim()
+        .parse::<u8>()
+        .ok()?;
+    (score <= DEFAULT_TARGET_SCORE).then_some(score)
 }
 
 pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateError> {
@@ -881,8 +1044,9 @@ fn render_concise_summary_body(
 
     output.push_str(artifact.verdict.trim());
     output.push_str("\n\n");
-    render_score_block(output, artifact);
+    render_score_block(output, artifact, state);
     render_angle_score_table(output, artifact);
+    render_angle_errors(output, artifact);
     output.push_str(&format!(
         "Findings: {} total, {} blocking, {} inline candidates\n",
         metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
@@ -895,7 +1059,11 @@ fn render_concise_summary_body(
     }
 
     output.push('\n');
-    if metrics.finding_count == 0 {
+    if artifact.status == ReviewStatus::ReviewError {
+        output.push_str(
+            "This review is inconclusive. Retry the reviewer errors before using it as a code-quality decision.\n",
+        );
+    } else if metrics.finding_count == 0 {
         output.push_str("No findings. Re-run ReviewGate if new commits land.\n");
     } else {
         output.push_str(&format!(
@@ -909,11 +1077,24 @@ fn render_concise_summary_body(
     render_summary_footer(output, state, artifact);
 }
 
-fn render_score_block(output: &mut String, artifact: &ReviewArtifact) {
-    output.push_str(&format!(
-        "<h2 align=\"left\">Confidence Score: {}/5</h2>\n\n",
-        artifact.score
-    ));
+fn render_score_block(output: &mut String, artifact: &ReviewArtifact, state: &SummaryState) {
+    if let Some(score) = artifact.score {
+        output.push_str(&format!(
+            "<h2 align=\"left\">Confidence Score: {score}/5</h2>\n\n"
+        ));
+        return;
+    }
+
+    output.push_str("<h2 align=\"left\">Review incomplete</h2>\n\n");
+    if let (Some(score), Some(reviewed_sha)) = (
+        state.last_valid_score,
+        state.last_valid_reviewed_sha.as_deref(),
+    ) {
+        output.push_str(&format!(
+            "Latest valid score: {score}/5 on <code>{}</code>. The current review did not replace it.\n\n",
+            escape_html_text(reviewed_sha)
+        ));
+    }
 }
 
 fn render_angle_score_table(output: &mut String, artifact: &ReviewArtifact) {
@@ -929,6 +1110,24 @@ fn render_angle_score_table(output: &mut String, artifact: &ReviewArtifact) {
             markdown_table_cell(&angle.name),
             angle.score,
             angle.finding_ids.len()
+        ));
+    }
+    output.push('\n');
+}
+
+fn render_angle_errors(output: &mut String, artifact: &ReviewArtifact) {
+    if artifact.angle_errors.is_empty() {
+        return;
+    }
+
+    output.push_str("| Review angle error | Kind | Retryable |\n");
+    output.push_str("| --- | --- | --- |\n");
+    for error in &artifact.angle_errors {
+        output.push_str(&format!(
+            "| {} | {} | {} |\n",
+            markdown_table_cell(&error.angle_name),
+            error.kind.as_str(),
+            if error.retryable { "yes" } else { "no" }
         ));
     }
     output.push('\n');
@@ -976,10 +1175,11 @@ fn render_flowchart(output: &mut String, artifact: &ReviewArtifact) {
     );
     output.push_str("    B --> C[\"Model review stages\"]\n");
     output.push_str("    C --> D[\"Structured JSON artifact\"]\n");
-    output.push_str(&format!(
-        "    D --> E[\"Confidence Score: {}/5\"]\n",
-        artifact.score
-    ));
+    if let Some(score) = artifact.score {
+        output.push_str(&format!("    D --> E[\"Confidence Score: {score}/5\"]\n"));
+    } else {
+        output.push_str("    D --> E[\"Review incomplete\"]\n");
+    }
     output.push_str("    D --> F[\"Canonical PR summary comment\"]\n");
     output.push_str("    F --> G[\"Human or agent fixes findings\"]\n");
     output.push_str(&format!(
@@ -1181,7 +1381,7 @@ mod tests {
         assert!(is_inline_comment_eligible(&finding, Severity::P2));
 
         let artifact = ReviewArtifact {
-            score: 3,
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1192,6 +1392,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![finding],
             notes: vec![],
         };
@@ -1237,7 +1438,7 @@ mod tests {
     #[test]
     fn renders_canonical_summary_marker_and_score() {
         let artifact = ReviewArtifact {
-            score: 4,
+            score: Some(4),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1248,6 +1449,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1356,7 +1558,7 @@ mod tests {
     #[test]
     fn concise_summary_escapes_important_file_table_cells() {
         let artifact = ReviewArtifact {
-            score: 3,
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1367,6 +1569,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -1391,7 +1594,7 @@ mod tests {
     #[test]
     fn renders_cost_summary_in_footer_only() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1412,6 +1615,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1427,7 +1631,7 @@ mod tests {
     #[test]
     fn extracts_and_carries_hidden_summary_state() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1442,6 +1646,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1476,9 +1681,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_summary_state_recovers_its_visible_score_for_an_inconclusive_rerun() {
+        let legacy = concat!(
+            "<!-- reviewgate-summary -->\n\n",
+            "<!-- reviewgate-state {\"version\":1,\"last_reviewed_sha\":\"legacy-sha\",",
+            "\"reviewed_shas\":[\"legacy-sha\"],\"run_count\":1,",
+            "\"cumulative_cost_usd\":0.01,\"cost_history\":[]} -->\n\n",
+            "<p>Model verdict mentioned Confidence Score: 1/5 before the owned heading.</p>\n",
+            "<h2 align=\"left\">Confidence Score: 3/5</h2>\n"
+        );
+
+        let state = extract_summary_state(legacy)
+            .expect("legacy state parses")
+            .expect("state exists");
+
+        assert_eq!(state.last_valid_score, Some(3));
+        assert_eq!(state.last_valid_reviewed_sha.as_deref(), Some("legacy-sha"));
+        assert_eq!(state.last_valid_status, Some(ReviewStatus::NeedsChanges));
+    }
+
+    #[test]
     fn min_severity_filters_inline_candidate_count_without_listing_findings() {
         let artifact = ReviewArtifact {
-            score: 4,
+            score: Some(4),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1489,6 +1714,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
@@ -1537,7 +1763,7 @@ mod tests {
     #[test]
     fn min_severity_can_hide_lower_severity_finding_details_from_summary() {
         let artifact = ReviewArtifact {
-            score: 4,
+            score: Some(4),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1548,6 +1774,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -1583,7 +1810,7 @@ mod tests {
     #[test]
     fn validation_rejects_empty_cost_component_model() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1604,6 +1831,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1635,7 +1863,7 @@ mod tests {
     #[test]
     fn summary_does_not_render_agent_instructions_for_findings() {
         let artifact = ReviewArtifact {
-            score: 3,
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1646,6 +1874,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -1671,7 +1900,7 @@ mod tests {
     #[test]
     fn computed_status_below_target_needs_changes_instead_of_failed() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1682,6 +1911,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -1701,14 +1931,14 @@ mod tests {
             .with_computed_score()
             .expect("computed artifact is valid");
 
-        assert_eq!(artifact.score, 3);
+        assert_eq!(artifact.score, Some(3));
         assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
     }
 
     #[test]
-    fn computed_score_includes_failed_angle_results() {
+    fn reviewer_errors_make_the_review_inconclusive_without_a_numeric_score() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1718,25 +1948,104 @@ mod tests {
             cost_summary: None,
             metrics: None,
             review_stages: vec![],
-            angle_results: vec![ReviewAngleResult {
-                id: "adversarial".to_string(),
-                name: "Adversarial".to_string(),
-                score: 0,
-                status: ReviewStatus::NeedsChanges,
-                verdict: "Adversarial review angle failed.".to_string(),
+            angle_results: vec![],
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "adversarial".to_string(),
+                angle_name: "Adversarial".to_string(),
+                kind: ReviewErrorKind::MalformedResponse,
+                retryable: true,
+                message: "The reviewer returned an invalid structured response.".to_string(),
                 model: "balanced".to_string(),
-                finding_ids: vec![],
             }],
             findings: vec![],
             notes: vec![],
         };
 
+        assert!(
+            artifact.validate().is_err(),
+            "a completed numeric result cannot also carry angle errors"
+        );
         let artifact = artifact
             .with_computed_score()
             .expect("computed artifact is valid");
 
-        assert_eq!(artifact.score, 0);
-        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
+        assert_eq!(artifact.score, None);
+        assert_eq!(artifact.status, ReviewStatus::ReviewError);
+        assert_eq!(artifact.angle_errors.len(), 1);
+        assert!(artifact.angle_errors[0].retryable);
+
+        let mut missing_error_detail = artifact.clone();
+        missing_error_detail.angle_errors.clear();
+        assert!(
+            missing_error_detail.validate().is_err(),
+            "review_error requires typed angle error details"
+        );
+        let mut numeric_review_error = artifact.clone();
+        numeric_review_error.score = Some(0);
+        assert!(
+            numeric_review_error.validate().is_err(),
+            "review_error cannot expose a numeric score"
+        );
+    }
+
+    #[test]
+    fn inconclusive_summary_preserves_the_latest_valid_score() {
+        let valid = ReviewArtifact {
+            score: Some(4),
+            target_score: 5,
+            reviewed_sha: "valid-sha".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "One valid finding remains.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+        let previous = SummaryState::for_artifact(&valid, None, 20).expect("valid state");
+        let inconclusive = ReviewArtifact {
+            score: None,
+            target_score: 5,
+            reviewed_sha: "error-sha".to_string(),
+            status: ReviewStatus::ReviewError,
+            verdict: "ReviewGate could not complete every enabled review angle.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "general".to_string(),
+                angle_name: "General".to_string(),
+                kind: ReviewErrorKind::Timeout,
+                retryable: true,
+                message: "The reviewer timed out.".to_string(),
+                model: "balanced".to_string(),
+            }],
+            findings: vec![],
+            notes: vec![],
+        };
+
+        let summary =
+            render_summary_with_options(&inconclusive, SummaryOptions::default(), Some(&previous))
+                .expect("summary renders");
+        let current = extract_summary_state(&summary)
+            .expect("state parses")
+            .expect("state exists");
+
+        assert_eq!(current.last_valid_score, Some(4));
+        assert_eq!(
+            current.last_valid_reviewed_sha.as_deref(),
+            Some("valid-sha")
+        );
+        assert!(summary.contains("Review incomplete"));
+        assert!(summary.contains("Latest valid score: 4/5"));
+        assert!(!summary.contains("Confidence Score: 0/5"));
     }
 
     #[test]
@@ -1770,7 +2079,7 @@ mod tests {
     #[test]
     fn computed_status_uses_fixed_five_point_target() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 4,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1781,6 +2090,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -1800,7 +2110,7 @@ mod tests {
             .with_computed_score()
             .expect("computed artifact is valid");
 
-        assert_eq!(artifact.score, 4);
+        assert_eq!(artifact.score, Some(4));
         assert_eq!(artifact.target_score, DEFAULT_TARGET_SCORE);
         assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
     }
@@ -1808,7 +2118,7 @@ mod tests {
     #[test]
     fn validation_rejects_out_of_range_confidence() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1819,6 +2129,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,
@@ -1843,7 +2154,7 @@ mod tests {
     #[test]
     fn validation_rejects_negative_estimated_cost() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -1854,6 +2165,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![],
             notes: vec![],
         };
@@ -1944,7 +2256,7 @@ mod tests {
     #[test]
     fn computes_metrics_from_findings_and_cost() {
         let artifact = ReviewArtifact {
-            score: 3,
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -1959,6 +2271,7 @@ mod tests {
             metrics: None,
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![
                 Finding {
                     id: "rg_001".to_string(),
@@ -2002,7 +2315,7 @@ mod tests {
     #[test]
     fn summary_metrics_are_recomputed_from_render_options() {
         let artifact = ReviewArtifact {
-            score: 5,
+            score: Some(5),
             target_score: 3,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::Passed,
@@ -2025,6 +2338,7 @@ mod tests {
             }),
             review_stages: vec![],
             angle_results: vec![],
+            angle_errors: vec![],
             findings: vec![Finding {
                 id: "rg_001".to_string(),
                 angle_id: None,

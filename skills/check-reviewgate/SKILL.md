@@ -41,7 +41,7 @@ When `.reviewgate/review.json` exists, use it as the source of truth:
 
 ```bash
 jq -r '
-  "score: \(.score)/5",
+  "score: \(if .score == null then "unavailable" else "\(.score)/5" end)",
   "status: \(.status)",
   "reviewed_sha: \(.reviewed_sha)",
   "findings: \(.findings | length)"
@@ -67,6 +67,15 @@ jq -r '
   .angle_results[]?
   | select(.score < 5 or .status != "passed")
   | "- \(.name): \(.score)/5 \(.status) - \(.verdict)"
+' .reviewgate/review.json
+```
+
+Inspect reviewer failures separately. They make the run inconclusive; they are not code findings.
+
+```bash
+jq -r '
+  .angle_errors[]?
+  | "- \(.angle_name): \(.kind) retryable=\(.retryable) - \(.message)"
 ' .reviewgate/review.json
 ```
 
@@ -97,6 +106,7 @@ Use these categories:
 | Category | Meaning |
 | --- | --- |
 | Score-blocking | `P0` through `P3` finding, failing angle result, or top-level `score < 5` / `status == "needs_changes"` |
+| Review error | `status == "review_error"` and `score == null`; retry the listed `angle_errors` instead of changing PR code |
 | Advisory | `P4` finding or non-blocking ReviewGate comment |
 | Stale | Finding/comment targets an older `reviewed_sha` or code that has already changed |
 | Needs human judgment | ReviewGate asks for a product, security, or API decision the agent cannot safely infer |
@@ -108,7 +118,7 @@ Do not ignore ReviewGate findings because other CI checks are green. ReviewGate 
 Report:
 
 - PR title, URL, branch, and detected head SHA.
-- ReviewGate score, status, and reviewed SHA, including whether the artifact is fresh.
+- ReviewGate score (or unavailable), status, and reviewed SHA, including whether the artifact is fresh.
 - Score-blocking findings with severity, file/line, title, and agent instruction.
 - Advisory or stale items with reasons.
 - Pending or failing non-ReviewGate checks.

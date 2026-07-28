@@ -516,8 +516,8 @@ The live action defaults to the built-in `general` and `adversarial` review angl
    - findings receive angle prefixes and `angle_id`;
    - per-angle scores are recorded;
    - costs are added across model calls;
-   - failed angles become `0/5` angle results.
-10. The top-level score and status are recomputed deterministically.
+   - failed angles become typed, sanitized `angle_errors` and never become numeric code scores.
+10. The top-level score and status are recomputed deterministically. Any reviewer failure produces `status: "review_error"` and `score: null`.
 11. ReviewGate writes:
    - `.reviewgate/review.json`;
    - `.reviewgate/summary.md`.
@@ -526,7 +526,7 @@ The live action defaults to the built-in `general` and `adversarial` review angl
 14. A check run reports review availability:
    - `success` for `passed`;
    - `neutral` for `needs_changes`;
-   - `failure` if the review artifact cannot be read.
+   - `failure` for `review_error` or if the review artifact cannot be read.
 
 ### Summary Comment Flow
 
@@ -546,12 +546,13 @@ That hidden state tracks:
 
 - state version;
 - last reviewed SHA;
+- latest valid score, status, and reviewed SHA;
 - bounded list of reviewed SHAs;
 - run count;
 - cumulative cost;
 - bounded cost history.
 
-Reruns use this state to preserve cumulative PR history without parsing visible Markdown text.
+Reruns use this state to preserve cumulative PR history. Legacy summaries created before latest-valid fields existed recover their visible score once during migration so an inconclusive rerun cannot erase it.
 
 ### Inline Finding Flow
 
@@ -613,12 +614,12 @@ ReviewGate uses a fixed `5/5` passing target.
 
 The finding-derived score is the minimum score ceiling across all findings, or `5` when there are no findings.
 
-The effective top-level score is the minimum of:
+For a completed review, the effective top-level score is the minimum of:
 
 - the finding-derived score;
 - every enabled review angle score.
 
-That means an incomplete or failed angle can keep the top-level score below `5/5` even if there are no individual findings. Failed live angles are represented as `0/5` angle results so missing review coverage cannot be reported as clean.
+If an angle times out, returns empty or malformed output, or fails at the provider or transport boundary, the run is inconclusive. ReviewGate records a typed `angle_errors` entry, sets `status` to `review_error`, and sets `score` to `null`; it never turns reviewer failure into a code-quality zero. The canonical summary preserves and labels the latest valid score instead of replacing it with the inconclusive run.
 
 ### Status
 
@@ -626,6 +627,7 @@ That means an incomplete or failed angle can keep the top-level score below `5/5
 | --- | --- |
 | `5` | `passed` |
 | `0` through `4` | `needs_changes` |
+| no score because review was inconclusive | `review_error` |
 
 The legacy JSON status value `failed` can still deserialize for recomputation, but current artifacts serialize `needs_changes`.
 
@@ -641,19 +643,24 @@ The machine-readable artifact is written to:
 .reviewgate/review.json
 ```
 
-The public schema lives at:
+The current public schema lives at:
 
 ```text
-schemas/reviewgate-review-output.schema.json
+schemas/reviewgate-review-output-v2.schema.json
 ```
+
+Version 2 adds `review_error`, a nullable score, and typed `angle_errors`. The
+original `schemas/reviewgate-review-output.schema.json` remains the immutable
+version 1 contract for artifacts produced by ReviewGate v0.1.x. Consumers must
+use the version 2 schema for artifacts produced by v0.2.0 and later.
 
 Required top-level fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `score` | integer `0..5` | Effective ReviewGate score after deterministic recomputation. |
+| `score` | integer `0..5` or null | Effective score after deterministic recomputation, or null for `review_error`. |
 | `reviewed_sha` | string | Commit SHA reviewed by this artifact. In PR events, this is the PR head SHA. |
-| `status` | `"passed"` or `"needs_changes"` | Derived from the fixed `5/5` target. |
+| `status` | `"passed"`, `"needs_changes"`, or `"review_error"` | Completed outcomes derive from the fixed `5/5` target; reviewer failures use `review_error`. |
 | `verdict` | string | Concise overall verdict. Concrete defects mentioned here should also appear as findings. |
 | `models` | string array | Model IDs used by the review. |
 | `findings` | finding array | Structured findings. |
@@ -668,6 +675,7 @@ Optional top-level fields:
 | `metrics` | object or null | Finding counts, severity counts, inline candidate count, analyzed line count, and cost source. |
 | `review_stages` | array | Review stages that ran or were selected for reporting. |
 | `angle_results` | array | Per-angle score, status, verdict, model, and finding IDs. |
+| `angle_errors` | array | Sanitized typed failures with angle, kind, retryability, message, and model. |
 
 Finding fields:
 
@@ -688,7 +696,7 @@ Example artifact inspection:
 
 ```bash
 jq -r '
-  "score: \(.score)/5",
+  "score: \(if .score == null then "unavailable" else "\(.score)/5" end)",
   "status: \(.status)",
   "reviewed_sha: \(.reviewed_sha)",
   "findings: \(.findings | length)"
@@ -712,6 +720,16 @@ jq -r '
   .angle_results[]?
   | select(.score < 5 or .status != "passed")
   | "- \(.name): \(.score)/5 \(.status) - \(.verdict)"
+' .reviewgate/review.json
+```
+
+List retryable reviewer errors:
+
+```bash
+jq -r '
+  .angle_errors[]?
+  | select(.retryable)
+  | "- \(.angle_name): \(.kind) - \(.message)"
 ' .reviewgate/review.json
 ```
 
@@ -1217,7 +1235,8 @@ That is intentional. ReviewGate distinguishes review results from execution fail
 - `score < 5` means `status: "needs_changes"`.
 - The ReviewGate check run conclusion is `neutral`.
 - The workflow exits successfully if review and required publishing completed.
-- Execution or publishing failures exit non-zero.
+- Reviewer failures produce `status: "review_error"`, `score: null`, and a failing ReviewGate check without blaming the PR.
+- Other execution or publishing failures exit non-zero.
 
 Read `.reviewgate/review.json` or the canonical summary to decide what to fix next.
 
