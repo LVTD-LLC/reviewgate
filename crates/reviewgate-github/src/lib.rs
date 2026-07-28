@@ -5,6 +5,61 @@ use reviewgate_core::{Finding, SUMMARY_MARKER, SecretString, Severity, extract_s
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
 pub const FINDING_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding-comment:";
+pub const REREVIEW_STATUS_MARKER_PREFIX: &str = "<!-- reviewgate-rereview:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RereviewTarget {
+    pub repository: String,
+    pub pull_request_number: u64,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunCandidate {
+    pub id: u64,
+    pub url: String,
+    pub repository: String,
+    pub event: String,
+    pub status: String,
+    pub head_sha: String,
+    pub pull_request_numbers: Vec<u64>,
+    pub created_at: String,
+}
+
+pub fn select_rereview_workflow_run<'a>(
+    runs: &'a [WorkflowRunCandidate],
+    target: &RereviewTarget,
+) -> Option<&'a WorkflowRunCandidate> {
+    runs.iter()
+        .filter(|run| {
+            run.repository == target.repository
+                && run.event == "pull_request"
+                && run.status == "completed"
+                && run.head_sha == target.head_sha
+                && run
+                    .pull_request_numbers
+                    .contains(&target.pull_request_number)
+        })
+        .max_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+}
+
+pub fn rereview_status_marker(comment_id: u64) -> String {
+    format!("{REREVIEW_STATUS_MARKER_PREFIX}{comment_id} -->")
+}
+
+pub fn find_rereview_status_comment(
+    comments: &[ExistingSummaryComment],
+    comment_id: u64,
+) -> Option<&ExistingSummaryComment> {
+    let marker = rereview_status_marker(comment_id);
+    comments.iter().find(|comment| {
+        is_github_actions_author(comment.author_login.as_deref()) && comment.body.contains(&marker)
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingSummaryComment {
@@ -635,6 +690,141 @@ fn resolve_finding_inline_anchor(
 mod tests {
     use super::*;
     use reviewgate_core::ReviewArtifact;
+
+    fn rereview_run(
+        id: u64,
+        repository: &str,
+        event: &str,
+        status: &str,
+        head_sha: &str,
+        pull_request_numbers: &[u64],
+        created_at: &str,
+    ) -> WorkflowRunCandidate {
+        WorkflowRunCandidate {
+            id,
+            url: format!("https://github.com/{repository}/actions/runs/{id}"),
+            repository: repository.to_string(),
+            event: event.to_string(),
+            status: status.to_string(),
+            head_sha: head_sha.to_string(),
+            pull_request_numbers: pull_request_numbers.to_vec(),
+            created_at: created_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn selects_newest_completed_current_head_run_for_exact_pull_request() {
+        let runs = vec![
+            rereview_run(
+                10,
+                "LVTD-LLC/reviewgate",
+                "pull_request",
+                "completed",
+                "current",
+                &[42],
+                "2026-07-28T10:00:00Z",
+            ),
+            rereview_run(
+                11,
+                "LVTD-LLC/reviewgate",
+                "pull_request",
+                "completed",
+                "current",
+                &[42],
+                "2026-07-28T11:00:00Z",
+            ),
+        ];
+        let target = RereviewTarget {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 42,
+            head_sha: "current".to_string(),
+        };
+
+        let selected = select_rereview_workflow_run(&runs, &target).expect("eligible run");
+
+        assert_eq!(selected.id, 11);
+    }
+
+    #[test]
+    fn rejects_foreign_pr_stale_non_pr_in_progress_and_foreign_repository_runs() {
+        let runs = vec![
+            rereview_run(
+                10,
+                "LVTD-LLC/reviewgate",
+                "pull_request",
+                "completed",
+                "current",
+                &[41],
+                "2026-07-28T10:00:00Z",
+            ),
+            rereview_run(
+                11,
+                "LVTD-LLC/reviewgate",
+                "pull_request",
+                "completed",
+                "stale",
+                &[42],
+                "2026-07-28T11:00:00Z",
+            ),
+            rereview_run(
+                12,
+                "LVTD-LLC/reviewgate",
+                "workflow_dispatch",
+                "completed",
+                "current",
+                &[42],
+                "2026-07-28T12:00:00Z",
+            ),
+            rereview_run(
+                13,
+                "LVTD-LLC/reviewgate",
+                "pull_request",
+                "in_progress",
+                "current",
+                &[42],
+                "2026-07-28T13:00:00Z",
+            ),
+            rereview_run(
+                14,
+                "other/reviewgate",
+                "pull_request",
+                "completed",
+                "current",
+                &[42],
+                "2026-07-28T14:00:00Z",
+            ),
+        ];
+        let target = RereviewTarget {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 42,
+            head_sha: "current".to_string(),
+        };
+
+        assert!(select_rereview_workflow_run(&runs, &target).is_none());
+    }
+
+    #[test]
+    fn only_bot_owned_status_marker_suppresses_redelivery() {
+        let marker = rereview_status_marker(9001);
+        let comments = vec![
+            ExistingSummaryComment {
+                id: 1,
+                author_login: Some("maintainer".to_string()),
+                body: marker.clone(),
+            },
+            ExistingSummaryComment {
+                id: 2,
+                author_login: Some("github-actions[bot]".to_string()),
+                body: marker,
+            },
+        ];
+
+        assert_eq!(
+            find_rereview_status_comment(&comments, 9001).map(|comment| comment.id),
+            Some(2)
+        );
+        assert!(find_rereview_status_comment(&comments, 9002).is_none());
+    }
 
     #[test]
     fn finds_canonical_summary_comment_by_marker() {

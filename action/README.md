@@ -52,7 +52,9 @@ Use `prompt` for short inline text, `prompt_file` for repo-relative prompt files
 
 ## Inputs
 
-- `openrouter_api_key`: OpenRouter API key. Required for live review.
+- `mode`: `review` for the normal model-backed path or `rereview` for the exact maintainer comment command. Defaults to `review`.
+- `openrouter_api_key`: OpenRouter API key. Required only in `review` mode.
+- `review_workflow`: Workflow file name selected by rereview mode. Defaults to `reviewgate.yml`.
 - `config`: ReviewGate config path. Defaults to `.reviewgate.yml`.
 - `model`: Exact OpenRouter model id. Defaults to ReviewGate's built-in model.
 - `min_severity`: Lowest severity published as ReviewGate PR comments. Defaults to `P4`.
@@ -61,7 +63,9 @@ Scores below `5` are reported as `needs_changes` in the JSON artifact and PR sum
 
 ## Runtime
 
-The composite action first validates that the `openrouter_api_key` input is present, then posts or updates a short `ReviewGate: running` placeholder on pull requests. It then runs the Rust CLI from the action checkout, includes the pull request title and description as separate bounded untrusted scope context, runs the configured review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+In `review` mode, the composite action first validates that the `openrouter_api_key` input is present, then posts or updates a short `ReviewGate: running` placeholder on pull requests. It runs the Rust CLI from the action checkout, includes the pull request title and description as separate bounded untrusted scope context, runs the configured review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+
+In `rereview` mode the action does not require `openrouter_api_key`, does not check out PR code, and does not run any model-backed review step. It validates the exact `@reviewgate review` command, uses maintainer association as an early filter, verifies that the actor currently has effective `write`, `maintain`, or `admin` repository permission, verifies the open PR current head, enumerates the configured workflow's runs with pagination, and reruns only the newest completed `pull_request` run for that exact PR and SHA.
 
 When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count that the concise footer renders as the number of changed lines analyzed for the report.
 
@@ -71,7 +75,7 @@ Canonical summary publishing is not silent: GitHub API or permission failures em
 
 ## Trigger Guidance
 
-The simplest install runs on PR updates and `workflow_dispatch`. Teams that want tighter cost control can use manual dispatch or the CLI `reviewgate recheck` helper to rerun the latest ReviewGate workflow run for a PR branch.
+The simplest full install uses one workflow file with separate `pull_request` and `issue_comment` jobs. The event-specific jobs keep review and rereview permissions separate. Use the root README example as the canonical configuration.
 
 The documented default install uses `LVTD-LLC/reviewgate@v0` so repositories receive compatible v0 updates. Pin to an exact commit SHA instead when your repository policy requires immutable third-party action references.
 
@@ -91,3 +95,18 @@ jobs:
 ```
 
 GitHub does not expose repository secrets to forked PRs or Dependabot PR events, so this guard prevents a ReviewGate run from failing only because `OPENROUTER_API_KEY` is unavailable. Keep untrusted fork review workflows on `pull_request`; do not switch to `pull_request_target` to get secret access.
+
+The rereview job must use:
+
+```yaml
+permissions:
+  actions: write
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: reviewgate-rereview-${{ github.event.comment.id }}
+  cancel-in-progress: false
+```
+
+The command contract is exact and case-sensitive. Only `OWNER`, `MEMBER`, and `COLLABORATOR` associations pass the early event filter, and the subsequent live permission check requires effective `write`, `maintain`, or `admin` access. The status marker keyed by `comment.id`, together with the concurrency group, suppresses event redelivery; a later command in a new comment remains an intentional retry. Reactions and final feedback updates are best effort and never control whether an eligible rerun is requested.
