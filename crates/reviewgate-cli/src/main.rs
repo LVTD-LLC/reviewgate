@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::process::Stdio;
@@ -9,8 +9,8 @@ use std::process::Stdio;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
-    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, ModelPreset, ModelPricing,
-    OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
+    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, FindingEvidenceSide, ModelPreset,
+    ModelPricing, OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
     OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleError,
     ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewStage, ReviewStatus, Severity,
     SummaryOptions, SummaryState, compute_effective_score, compute_metrics, compute_score,
@@ -39,6 +39,9 @@ const REMOVED_REPORT_ONLY_CONFIG_KEY: &str = concat!("report", "_only");
 const REMOVED_GATE_MODE_CONFIG_KEY: &str = concat!("gate", "_mode");
 
 const MAX_CONTEXT_BYTES_PER_FILE: usize = 20_000;
+const MAX_CONTEXT_FILES: usize = 48;
+const MAX_CHANGED_CONTEXT_BYTES: usize = 1_000_000;
+const MAX_CHANGED_CONTEXT_FILES: usize = 512;
 // PR metadata uses character limits as the primary prompt-context bound. Byte limits
 // remain as secondary hard caps for unusually large multi-byte text.
 const MAX_PR_TITLE_BYTES: usize = 1_000;
@@ -620,8 +623,8 @@ fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
         .clone()
         .unwrap_or_else(|| options.preset.default_model().to_string());
 
-    let artifact = if let Some(mock_artifact) = options.mock_artifact {
-        read_mock_artifact(&mock_artifact)?
+    let (artifact, enforce_grounding) = if let Some(mock_artifact) = options.mock_artifact {
+        (read_mock_artifact(&mock_artifact)?, false)
     } else {
         let api_key = std::env::var(OPENROUTER_API_KEY_ENV)
             .with_context(|| format!("{OPENROUTER_API_KEY_ENV} is required for live review"))?;
@@ -640,23 +643,17 @@ fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
         let mut artifact =
             aggregate_angle_artifacts(&context.reviewed_sha, &model, angle_artifacts)?;
         append_failed_angle_reviews(&mut artifact, &model, failed_angles)?;
-        artifact
+        (artifact, true)
     };
 
-    let mut artifact = artifact;
-    artifact.reviewed_sha = context.reviewed_sha.clone();
-    artifact.target_score = DEFAULT_TARGET_SCORE;
-    if artifact.models.is_empty() {
-        artifact.models = vec![model];
-    }
-    append_missing_review_stages(
-        &mut artifact.review_stages,
-        select_review_stages(&context, &artifact.models[0]),
-    );
-    let mut artifact = artifact.with_computed_score()?;
-    let mut metrics = compute_metrics(&artifact, min_severity);
-    metrics.analyzed_line_count = Some(context.analyzed_line_count);
-    artifact.metrics = Some(metrics);
+    let artifact = finalize_review_artifact(
+        &repo,
+        &context,
+        artifact,
+        &model,
+        min_severity,
+        enforce_grounding,
+    )?;
     let summary = render_summary_with_options(
         &artifact,
         SummaryOptions {
@@ -671,6 +668,33 @@ fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
     write_or_print(options.summary_out, &summary, "review summary")?;
 
     Ok(())
+}
+
+fn finalize_review_artifact(
+    repo: &Path,
+    context: &ReviewContext,
+    mut artifact: ReviewArtifact,
+    model: &str,
+    min_severity: Severity,
+    enforce_grounding: bool,
+) -> CliResult<ReviewArtifact> {
+    artifact.reviewed_sha = context.reviewed_sha.clone();
+    artifact.target_score = DEFAULT_TARGET_SCORE;
+    if artifact.models.is_empty() {
+        artifact.models = vec![model.to_string()];
+    }
+    append_missing_review_stages(
+        &mut artifact.review_stages,
+        select_review_stages(context, &artifact.models[0]),
+    );
+    if enforce_grounding {
+        ground_artifact_findings(repo, context, &mut artifact)?;
+    }
+    let mut artifact = artifact.with_computed_score()?;
+    let mut metrics = compute_metrics(&artifact, min_severity);
+    metrics.analyzed_line_count = Some(context.analyzed_line_count);
+    artifact.metrics = Some(metrics);
+    Ok(artifact)
 }
 
 fn select_review_stages(context: &ReviewContext, model: &str) -> Vec<ReviewStage> {
@@ -2424,7 +2448,7 @@ fn resolve_review_angle(repo: &Path, config: &ReviewAngleConfig) -> CliResult<Re
     } else if let Some(prompt_file) = config.prompt_file.as_ref() {
         let (relative, display_path) = resolve_config_repo_path(&id, "prompt_file", prompt_file)?;
         (
-            read_bounded_text_file(&repo.join(&relative), "review angle prompt file")?,
+            read_bounded_repo_text_file(repo, &relative, "review angle prompt file")?,
             ReviewAngleSource::PromptFile { path: display_path },
             "Configured prompt-file review angle.".to_string(),
         )
@@ -2433,7 +2457,7 @@ fn resolve_review_angle(repo: &Path, config: &ReviewAngleConfig) -> CliResult<Re
         let skill_relative = resolve_skill_file_relative_path(repo, relative);
         let display_path = display_repo_relative_path(&skill_relative);
         (
-            read_bounded_text_file(&repo.join(&skill_relative), "review angle skill")?,
+            read_bounded_repo_text_file(repo, &skill_relative, "review angle skill")?,
             ReviewAngleSource::Skill {
                 path: display_path.clone(),
             },
@@ -2530,9 +2554,13 @@ fn display_repo_relative_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn read_bounded_text_file(path: &Path, label: &str) -> CliResult<String> {
-    let mut contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {label} {}", path.display()))?;
+fn read_bounded_repo_text_file(repo: &Path, relative: &Path, label: &str) -> CliResult<String> {
+    let display = display_repo_relative_path(relative);
+    let path = confined_repo_file(repo, &display)
+        .with_context(|| format!("{label} must be a regular non-symlink repository file"))?;
+    let Some(mut contents) = read_bounded_text(&path, MAX_REVIEW_ANGLE_INSTRUCTIONS_BYTES)? else {
+        bail!("{label} {} must be UTF-8 text", path.display());
+    };
     truncate_context_contents(&mut contents, MAX_REVIEW_ANGLE_INSTRUCTIONS_BYTES);
     Ok(contents)
 }
@@ -2573,6 +2601,7 @@ fn collect_review_context(repo: &Path) -> CliResult<ReviewContext> {
         .collect::<Vec<_>>();
     let analyzed_line_count = count_changed_diff_lines(&diff);
     let data_integrity_review_needed = operational_data_sync_review_needed(&changed_files, &diff);
+    let context_files = collect_context_files(repo, &changed_files)?;
 
     Ok(ReviewContext {
         reviewed_sha,
@@ -2581,7 +2610,7 @@ fn collect_review_context(repo: &Path) -> CliResult<ReviewContext> {
         analyzed_line_count,
         data_integrity_review_needed,
         diff,
-        context_files: collect_context_files(repo)?,
+        context_files,
     })
 }
 
@@ -2734,25 +2763,187 @@ fn gh_dyn(repo: &Path, args: &[&str]) -> CliResult<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn collect_context_files(repo: &Path) -> CliResult<Vec<ContextFile>> {
+fn collect_context_files(repo: &Path, changed_files: &[String]) -> CliResult<Vec<ContextFile>> {
+    if changed_files.len() > MAX_CHANGED_CONTEXT_FILES {
+        bail!(
+            "ReviewGate changed-file repository-context limit exceeded: {} paths is greater than the supported maximum of {MAX_CHANGED_CONTEXT_FILES}",
+            changed_files.len()
+        );
+    }
+
     let mut files = Vec::new();
-    for relative in DEFAULT_CONTEXT_FILES {
-        let Some(path) = safe_relative_path(relative) else {
-            continue;
-        };
-        let full_path = repo.join(&path);
-        if !full_path.is_file() {
+    let mut seen = BTreeSet::new();
+    let mut scanned_test_directories = BTreeSet::new();
+    let mut omitted = BTreeSet::new();
+    let mut changed_context_bytes = 0;
+
+    for relative in changed_files {
+        push_changed_context_file(
+            repo,
+            relative,
+            &mut files,
+            &mut seen,
+            &mut changed_context_bytes,
+        )?;
+    }
+
+    let local_workflows = files
+        .iter()
+        .flat_map(|file| {
+            file.contents.lines().filter_map(|line| {
+                let value = line.trim().strip_prefix("uses:")?.trim();
+                let value = value.trim_matches(['\'', '"']);
+                value
+                    .strip_prefix("./")
+                    .filter(|path| path.starts_with(".github/workflows/"))
+                    .map(str::to_string)
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    for workflow in local_workflows {
+        if files.len() >= MAX_CONTEXT_FILES {
+            omitted.insert(workflow);
             continue;
         }
-        let mut contents = fs::read_to_string(&full_path)
-            .with_context(|| format!("failed to read {}", full_path.display()))?;
-        truncate_context_contents(&mut contents, MAX_CONTEXT_BYTES_PER_FILE);
+        push_context_file(repo, &workflow, &mut files, &mut seen)?;
+    }
+
+    for relative in DEFAULT_CONTEXT_FILES {
+        if files.len() >= MAX_CONTEXT_FILES {
+            omitted.insert(relative.to_string());
+            continue;
+        }
+        push_context_file(repo, relative, &mut files, &mut seen)?;
+    }
+
+    if files.len() < MAX_CONTEXT_FILES {
+        for relative in changed_files {
+            let Some(path) = safe_relative_path(relative) else {
+                continue;
+            };
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            if !scanned_test_directories.insert(parent.to_path_buf()) {
+                continue;
+            }
+            let directory = repo.join(parent);
+            let Ok(entries) = fs::read_dir(directory) else {
+                continue;
+            };
+            let mut candidates = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            candidates.sort();
+            for candidate in candidates {
+                let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !related_test_filename(name) {
+                    continue;
+                }
+                let Ok(relative_candidate) = candidate.strip_prefix(repo) else {
+                    continue;
+                };
+                let Some(relative_candidate) = relative_candidate.to_str() else {
+                    continue;
+                };
+                if files.len() >= MAX_CONTEXT_FILES {
+                    omitted.insert(relative_candidate.to_string());
+                    continue;
+                }
+                push_context_file(repo, relative_candidate, &mut files, &mut seen)?;
+            }
+        }
+    }
+
+    if !omitted.is_empty() {
+        let omitted_count = omitted.len();
+        let mut contents = format!(
+            "ReviewGate reached the {MAX_CONTEXT_FILES}-file repository-context cap. The unified diff and changed-file manifest still include the whole PR, but full current-head contents were not loaded for {omitted_count} path(s):\n"
+        );
+        for path in omitted.iter().take(MAX_CONTEXT_FILES) {
+            contents.push_str("- ");
+            contents.push_str(path);
+            contents.push('\n');
+        }
+        if omitted_count > MAX_CONTEXT_FILES {
+            contents.push_str(&format!(
+                "- ... and {} more path(s)\n",
+                omitted_count - MAX_CONTEXT_FILES
+            ));
+        }
         files.push(ContextFile {
-            path: relative.to_string(),
+            path: "[ReviewGate context omissions]".to_string(),
             contents,
         });
     }
+
     Ok(files)
+}
+
+fn push_changed_context_file(
+    repo: &Path,
+    relative: &str,
+    files: &mut Vec<ContextFile>,
+    seen: &mut BTreeSet<String>,
+    changed_context_bytes: &mut usize,
+) -> CliResult<()> {
+    if seen.contains(relative) {
+        return Ok(());
+    }
+    let Some(full_path) = confined_repo_file(repo, relative) else {
+        return Ok(());
+    };
+    let remaining = MAX_CHANGED_CONTEXT_BYTES.saturating_sub(*changed_context_bytes);
+    let Some(contents) = read_bounded_text(&full_path, remaining)? else {
+        return Ok(());
+    };
+    if contents.len() > remaining {
+        bail!(
+            "ReviewGate changed-file repository-context byte limit exceeded while loading {relative}: complete current-head contents exceed the {MAX_CHANGED_CONTEXT_BYTES}-byte budget"
+        );
+    }
+    *changed_context_bytes += contents.len();
+    seen.insert(relative.to_string());
+    files.push(ContextFile {
+        path: relative.to_string(),
+        contents,
+    });
+    Ok(())
+}
+
+fn push_context_file(
+    repo: &Path,
+    relative: &str,
+    files: &mut Vec<ContextFile>,
+    seen: &mut BTreeSet<String>,
+) -> CliResult<()> {
+    if files.len() >= MAX_CONTEXT_FILES || seen.contains(relative) {
+        return Ok(());
+    }
+    let Some(full_path) = confined_repo_file(repo, relative) else {
+        return Ok(());
+    };
+    let Some(mut contents) = read_bounded_text(&full_path, MAX_CONTEXT_BYTES_PER_FILE)? else {
+        return Ok(());
+    };
+    truncate_context_contents(&mut contents, MAX_CONTEXT_BYTES_PER_FILE);
+    seen.insert(relative.to_string());
+    files.push(ContextFile {
+        path: relative.to_string(),
+        contents,
+    });
+    Ok(())
+}
+
+fn related_test_filename(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("_test.")
+        || lower.starts_with("test_")
+        || lower.contains(".test.")
+        || lower.contains(".spec.")
 }
 
 fn truncate_context_contents(contents: &mut String, max_bytes: usize) {
@@ -2766,6 +2957,25 @@ fn truncate_context_contents(contents: &mut String, max_bytes: usize) {
         .unwrap_or(0);
     contents.truncate(truncate_at);
     contents.push_str(CONTEXT_FILE_TRUNCATED_MARKER);
+}
+
+fn read_bounded_text(path: &Path, max_bytes: usize) -> CliResult<Option<String>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    match String::from_utf8(bytes) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid_up_to = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid_up_to);
+            Ok(String::from_utf8(bytes).ok())
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 fn truncate_pull_request_context(
@@ -2814,8 +3024,39 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
     }
 }
 
+fn confined_repo_file(repo: &Path, relative: &str) -> Option<PathBuf> {
+    let relative = safe_relative_path(relative)?;
+    if relative
+        .components()
+        .any(|component| component.as_os_str() == ".git")
+    {
+        return None;
+    }
+    let repo = repo.canonicalize().ok()?;
+    let mut unresolved = repo.clone();
+    for component in relative.components() {
+        unresolved.push(component.as_os_str());
+        if fs::symlink_metadata(&unresolved)
+            .ok()?
+            .file_type()
+            .is_symlink()
+        {
+            return None;
+        }
+    }
+    let path = unresolved.canonicalize().ok()?;
+    let canonical_relative = path.strip_prefix(&repo).ok()?;
+    if canonical_relative
+        .components()
+        .any(|component| component.as_os_str() == ".git")
+    {
+        return None;
+    }
+    path.is_file().then_some(path)
+}
+
 fn build_review_prompt_for_angle(context: &ReviewContext, angle: &ReviewAngle) -> String {
-    let schema = include_str!("../../../schemas/reviewgate-review-output-v2.schema.json");
+    let schema = include_str!("../../../schemas/reviewgate-review-output-v3.schema.json");
     let mut prompt = String::new();
     prompt.push_str("Review this pull request. Return only JSON matching the schema below. ");
     prompt.push_str("Do not include Markdown fences or prose outside the JSON.\n\n");
@@ -2850,10 +3091,10 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: &ReviewAngle) -
         "Every concrete defect mentioned in the verdict or notes must also appear as a separate finding with an actionable agent_instruction. Do not mention specific problems only in prose. If a diff changes scoring, review publishing, GitHub token permissions, comment ownership checks, marker encoding, secret handling, or workflow triggers, review each changed behavior independently and emit separate findings for distinct regressions.\n\n",
     );
     prompt.push_str(
-        "Err on the side of surfacing concrete, evidence-backed risks instead of returning a clean 5/5. If a risk is plausible from the diff but lower confidence, emit it as a lower-severity file or PR finding with the confidence value calibrated honestly instead of omitting it.\n\n",
+        "P0-P3 findings are score-blocking and must include grounding with: one concise checked claim; a causal_path from the changed line to the user-visible failure; repository evidence whose path, side, one-based line, and exact full-line excerpt match either the checked-out head (`side: new`) or a deleted line in the reviewed diff (`side: old`); and related_tests for every existing test that exercises the alleged path (related tests must use `side: new`). At least one evidence entry must cite a changed line in the diff. P0-P1 additionally require a concrete reproduction or an exceptionally strong proof. If those requirements are not met, do not emit a blocking finding: put the uncertainty in notes or emit a P4 advisory. Never let a finding title assert a defect that its detail later retracts, redirects, calls acceptable, or describes as optional.\n\n",
     );
     prompt.push_str(
-        "ReviewGate workflow guidance: if the diff adds or updates a GitHub Actions workflow using `LVTD-LLC/reviewgate`, evaluate it against ReviewGate's documented installation contract. `uses: LVTD-LLC/reviewgate@v0` is the documented default install; do not emit a finding solely because it uses the moving v0 tag unless repository instructions require SHA-pinned third-party actions, the PR weakens an existing pin, or the diff provides concrete evidence that this repository must pin every action. For a full-featured ReviewGate workflow, `contents: read`, `pull-requests: write`, `issues: write`, and `checks: write` are the documented least-privilege permissions: `issues: write` publishes the canonical summary PR comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run. Do not flag that permission set as excessive for a fork-safe ReviewGate workflow. Flag permissions above that set, use of `pull_request_target` for untrusted code, or missing same-repository/Dependabot guards when repository secrets are used. Concurrency findings for workflow group expressions need a concrete collision or cancellation risk within the workflow's declared triggers; do not flag normal `cancel-in-progress` behavior or hypothetical collisions with unrelated workflows when the group is workflow-scoped. Optional hardening preferences such as action SHA pinning, job timeouts, extra secret preflight checks, or alternative concurrency fallback keys should not become findings unless repository policy requires them or the diff creates a material failure mode.\n\n",
+        "GitHub workflow claims require a contract trace across the actual `on` triggers, workflow-level permissions, job-level permission overrides, local reusable-workflow callers, and the step that consumes the permission. Job-level permissions determine that job's effective grant, while a reusable workflow cannot elevate above its caller. `actions/upload-artifact` uses the Actions runtime artifact service and does not require `actions: write` on GITHUB_TOKEN. Check step-level env before claiming a value is missing. An explicit `git fetch --depth=1 origin <sha>` is not invalid merely because the initial checkout is shallow. Python 3 can resolve namespace packages for `python -m` without `__init__.py`. For CLI parsing claims, trace the argument slice at every call site and inspect exact-path tests before alleging that positional operands reach a flag parser.\n\nReviewGate workflow guidance: if the diff adds or updates a GitHub Actions workflow using `LVTD-LLC/reviewgate`, evaluate it against ReviewGate's documented installation contract. `uses: LVTD-LLC/reviewgate@v0` is the documented default install; do not emit a finding solely because it uses the moving v0 tag unless repository instructions require SHA-pinned third-party actions, the PR weakens an existing pin, or the diff provides concrete evidence that this repository must pin every action. For a full-featured ReviewGate workflow, `contents: read`, `pull-requests: write`, `issues: write`, and `checks: write` are the documented least-privilege permissions: `issues: write` publishes the canonical summary PR comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run. Do not flag that permission set as excessive for a fork-safe ReviewGate workflow. Flag permissions above that set, use of `pull_request_target` for untrusted code, or missing same-repository/Dependabot guards when repository secrets are used. Concurrency findings for workflow group expressions need a concrete collision or cancellation risk within the workflow's declared triggers; do not flag normal `cancel-in-progress` behavior or hypothetical collisions with unrelated workflows when the group is workflow-scoped. Optional hardening preferences such as action SHA pinning, job timeouts, extra secret preflight checks, or alternative concurrency fallback keys should not become findings unless repository policy requires them or the diff creates a material failure mode.\n\n",
     );
     prompt.push_str(
         "For deploy hooks, startup tasks, background jobs, data sync code, and ORM/database writes, explicitly check concurrency, idempotency, transaction boundaries, database-enforced uniqueness, partial failure behavior, and retry safety.\n\n",
@@ -2875,11 +3116,14 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: &ReviewAngle) -
         prompt.push_str(file);
         prompt.push('\n');
     }
-    prompt.push_str("\nContext files:\n");
+    prompt.push_str(
+        "\nChecked repository files (line prefixes are reference numbers, not file content):\n",
+    );
     for file in &context.context_files {
         prompt.push_str(&format!("\n--- {} ---\n", file.path));
-        prompt.push_str(&file.contents);
-        prompt.push('\n');
+        for (index, line) in file.contents.lines().enumerate() {
+            prompt.push_str(&format!("{} | {line}\n", index + 1));
+        }
     }
     prompt.push_str("\nDiff:\n```diff\n");
     prompt.push_str(&context.diff);
@@ -3135,6 +3379,601 @@ fn aggregate_angle_artifacts(
     };
     artifact.validate()?;
     Ok(artifact)
+}
+
+fn ground_artifact_findings(
+    repo: &Path,
+    context: &ReviewContext,
+    artifact: &mut ReviewArtifact,
+) -> CliResult<()> {
+    let diff_evidence = DiffEvidenceSet::from_unified_diff(&context.diff);
+    let mut grounded_findings = Vec::new();
+    for finding in artifact.findings.drain(..) {
+        if !finding.is_blocking(DEFAULT_TARGET_SCORE) {
+            grounded_findings.push(finding);
+            continue;
+        }
+        match finding_grounding_rejection(repo, &diff_evidence, &finding)? {
+            Some(reason) => artifact.notes.push(format!(
+                "Suppressed ungrounded finding {}: {reason}.",
+                finding.id
+            )),
+            None => grounded_findings.push(finding),
+        }
+    }
+    artifact.findings = grounded_findings;
+
+    for angle in &mut artifact.angle_results {
+        angle.finding_ids = artifact
+            .findings
+            .iter()
+            .filter(|finding| finding.angle_id.as_deref() == Some(angle.id.as_str()))
+            .map(|finding| finding.id.clone())
+            .collect();
+        let angle_findings = artifact
+            .findings
+            .iter()
+            .filter(|finding| angle.finding_ids.contains(&finding.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        angle.score = compute_score(&angle_findings);
+        angle.status = status_for_score(angle.score);
+        angle.verdict = if angle.status == ReviewStatus::Passed {
+            "No grounded score-blocking findings.".to_string()
+        } else {
+            let count = angle_findings
+                .iter()
+                .filter(|finding| finding.is_blocking(DEFAULT_TARGET_SCORE))
+                .count();
+            format!("{count} grounded score-blocking finding(s) remain.")
+        };
+    }
+    if artifact.angle_errors.is_empty() {
+        let score = compute_score(&artifact.findings);
+        artifact.score = Some(score);
+        artifact.status = status_for_score(score);
+        artifact.verdict = aggregate_verdict(&artifact.angle_results);
+    } else {
+        artifact.score = None;
+        artifact.status = ReviewStatus::ReviewError;
+        artifact.verdict = "ReviewGate could not complete every enabled review angle.".to_string();
+    }
+    artifact.validate()?;
+    Ok(())
+}
+
+fn finding_grounding_rejection(
+    repo: &Path,
+    diff_evidence: &DiffEvidenceSet,
+    finding: &reviewgate_core::Finding,
+) -> CliResult<Option<&'static str>> {
+    let Some(grounding) = finding.grounding.as_ref() else {
+        return Ok(Some("missing checked claim and repository evidence"));
+    };
+    if grounding.claim.trim().is_empty()
+        || grounding.causal_path.trim().is_empty()
+        || grounding.test_assessment.trim().is_empty()
+    {
+        return Ok(Some("missing claim, causal path, or test assessment"));
+    }
+    if grounding.evidence.is_empty() {
+        return Ok(Some("missing repository evidence"));
+    }
+
+    let mut changed_evidence = false;
+    for evidence in &grounding.evidence {
+        if !evidence_reference_matches(repo, diff_evidence, evidence)? {
+            return Ok(Some(
+                "repository evidence does not match the checked-out head",
+            ));
+        }
+        if diff_evidence.contains(evidence) {
+            changed_evidence = true;
+        }
+    }
+    for evidence in &grounding.related_tests {
+        if evidence.side != FindingEvidenceSide::New
+            || !evidence_reference_matches(repo, diff_evidence, evidence)?
+        {
+            return Ok(Some(
+                "related test evidence does not match the checked-out head",
+            ));
+        }
+    }
+    if !changed_evidence {
+        return Ok(Some(
+            "no evidence cites a changed line in the reviewed diff",
+        ));
+    }
+
+    if matches!(finding.severity, Severity::P0 | Severity::P1)
+        && !non_empty_option(&grounding.reproduction)
+        && !non_empty_option(&grounding.proof)
+    {
+        return Ok(Some("P0-P1 finding lacks reproduction-grade evidence"));
+    }
+
+    let explanation = finding
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let uncertainty_text = format!("{explanation}\n{}", grounding.claim.to_ascii_lowercase());
+    if finding.confidence < 0.8
+        && !non_empty_option(&grounding.reproduction)
+        && !non_empty_option(&grounding.proof)
+        && [" may ", " might ", " could ", "hypothetical", "consider "]
+            .iter()
+            .any(|phrase| uncertainty_text.contains(phrase))
+    {
+        return Ok(Some("uncertain claim lacks reproduction or proof"));
+    }
+    if contradicts_checked_contract(repo, finding)? {
+        return Ok(Some(
+            "checked repository or platform contract disproves the claim",
+        ));
+    }
+    Ok(None)
+}
+
+fn evidence_reference_matches(
+    repo: &Path,
+    diff_evidence: &DiffEvidenceSet,
+    evidence: &reviewgate_core::FindingEvidence,
+) -> CliResult<bool> {
+    if evidence.line == 0 || evidence.excerpt.trim().is_empty() || evidence.reason.trim().is_empty()
+    {
+        return Ok(false);
+    }
+    if let Some(line) = diff_evidence.line(evidence) {
+        return Ok(normalize_evidence_line(line) == normalize_evidence_line(&evidence.excerpt));
+    }
+    if evidence.side == FindingEvidenceSide::Old {
+        return Ok(false);
+    }
+    let Some(path) = confined_repo_file(repo, &evidence.path) else {
+        return Ok(false);
+    };
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() <= 1_000_000 => {}
+        _ => return Ok(false),
+    }
+    let Some(contents) = read_bounded_text(&path, 1_000_000)? else {
+        return Ok(false);
+    };
+    let line = contents
+        .lines()
+        .nth(evidence.line.saturating_sub(1) as usize);
+    Ok(line.is_some_and(|line| {
+        normalize_evidence_line(line) == normalize_evidence_line(&evidence.excerpt)
+    }))
+}
+
+#[derive(Debug, Default)]
+struct DiffEvidenceSet {
+    lines: BTreeMap<(FindingEvidenceSide, String, u32), String>,
+}
+
+impl DiffEvidenceSet {
+    fn from_unified_diff(diff: &str) -> Self {
+        let mut result = Self::default();
+        let mut old_path = None;
+        let mut new_path = None;
+        let mut old_line = None;
+        let mut new_line = None;
+        for line in diff.lines() {
+            if let Some(path) = line.strip_prefix("--- ") {
+                old_path = parse_diff_path(path);
+                continue;
+            }
+            if let Some(path) = line.strip_prefix("+++ ") {
+                new_path = parse_diff_path(path);
+                continue;
+            }
+            if line.starts_with("@@") {
+                (old_line, new_line) = parse_diff_hunk_starts(line);
+                continue;
+            }
+            match line.as_bytes().first() {
+                Some(b'+') => {
+                    if let (Some(path), Some(number)) = (new_path.as_ref(), new_line) {
+                        result.lines.insert(
+                            (FindingEvidenceSide::New, path.clone(), number),
+                            line[1..].to_string(),
+                        );
+                        new_line = number.checked_add(1);
+                    }
+                }
+                Some(b'-') => {
+                    if let (Some(path), Some(number)) = (old_path.as_ref(), old_line) {
+                        result.lines.insert(
+                            (FindingEvidenceSide::Old, path.clone(), number),
+                            line[1..].to_string(),
+                        );
+                        old_line = number.checked_add(1);
+                    }
+                }
+                Some(b' ') => {
+                    old_line = old_line.and_then(|number| number.checked_add(1));
+                    new_line = new_line.and_then(|number| number.checked_add(1));
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+
+    fn contains(&self, evidence: &reviewgate_core::FindingEvidence) -> bool {
+        self.line(evidence).is_some()
+    }
+
+    fn line(&self, evidence: &reviewgate_core::FindingEvidence) -> Option<&str> {
+        self.lines
+            .get(&(evidence.side, evidence.path.clone(), evidence.line))
+            .map(String::as_str)
+    }
+}
+
+fn parse_diff_path(raw: &str) -> Option<String> {
+    let path = raw.split('\t').next().unwrap_or(raw).trim();
+    if path == "/dev/null" {
+        return None;
+    }
+    Some(
+        path.strip_prefix("a/")
+            .or_else(|| path.strip_prefix("b/"))
+            .unwrap_or(path)
+            .to_string(),
+    )
+}
+
+fn parse_diff_hunk_starts(header: &str) -> (Option<u32>, Option<u32>) {
+    let mut old = None;
+    let mut new = None;
+    for part in header.split_whitespace() {
+        if let Some(value) = part.strip_prefix('-') {
+            old = value.split(',').next().and_then(|value| value.parse().ok());
+        } else if let Some(value) = part.strip_prefix('+') {
+            new = value.split(',').next().and_then(|value| value.parse().ok());
+        }
+    }
+    (old, new)
+}
+
+fn normalize_evidence_line(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn non_empty_option(value: &Option<String>) -> bool {
+    value
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn contradicts_checked_contract(
+    repo: &Path,
+    finding: &reviewgate_core::Finding,
+) -> CliResult<bool> {
+    let Some(grounding) = finding.grounding.as_ref() else {
+        return Ok(false);
+    };
+    let claim = grounding.claim.to_ascii_lowercase();
+    let evidence_contains = |needle: &str| {
+        grounding
+            .evidence
+            .iter()
+            .any(|evidence| evidence.excerpt.to_ascii_lowercase().contains(needle))
+    };
+
+    if claim.contains("upload-artifact")
+        && claim.contains("actions:write")
+        && (claim.contains("requires actions:write")
+            || (claim.contains("authenticates with") && claim.contains("github_token")))
+        && evidence_contains("actions/upload-artifact")
+    {
+        return Ok(true);
+    }
+    if claim.contains("python")
+        && claim.contains("__init__.py")
+        && (claim.contains("require") || claim.contains("prevent"))
+        && evidence_contains("python3 -m")
+    {
+        return Ok(true);
+    }
+
+    let source = finding
+        .file
+        .as_deref()
+        .and_then(|path| confined_repo_file(repo, path))
+        .map(|path| read_bounded_text(&path, 1_000_000))
+        .transpose()?
+        .flatten()
+        .unwrap_or_default();
+    if finding
+        .file
+        .as_deref()
+        .is_some_and(|path| path.starts_with(".github/workflows/"))
+    {
+        for trigger in [
+            "workflow_dispatch",
+            "workflow_call",
+            "pull_request_target",
+            "pull_request",
+            "schedule",
+            "push",
+        ] {
+            if claim_asserts_trigger_present(&claim, trigger)
+                && !workflow_declares_trigger(&source, trigger)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    if claim_asserts_shallow_checkout_alone_prevents_fetch(&claim)
+        && grounding.evidence.iter().any(|evidence| {
+            let excerpt = evidence.excerpt.to_ascii_lowercase();
+            excerpt.contains("git fetch")
+                && excerpt.contains("--depth=1")
+                && excerpt.contains(" origin ")
+        })
+    {
+        return Ok(true);
+    }
+    if claim.contains("parseflags")
+        && claim.contains("positional")
+        && grounding.evidence.iter().any(|evidence| {
+            let excerpt = evidence
+                .excerpt
+                .split_whitespace()
+                .collect::<String>()
+                .to_ascii_lowercase();
+            evidence.side == FindingEvidenceSide::New
+                && finding.file.as_deref() == Some(evidence.path.as_str())
+                && finding.line == Some(evidence.line)
+                && (excerpt.contains("parseflags(fs,args[")
+                    || excerpt.contains("parsepaginationflags(fs,args["))
+        })
+    {
+        return Ok(true);
+    }
+    if claim.contains("packages")
+        && claim.contains("write")
+        && claim_names_value_as_absent(&claim, "packages:write")
+        && (workflow_has_effective_write_for_step(&source, "packages", "imagetools create")
+            || workflow_has_effective_write_for_step(
+                &source,
+                "packages",
+                "uses: ./.github/workflows/",
+            ))
+    {
+        return Ok(true);
+    }
+
+    if finding_location_evidence_disproves_absence(finding, &claim) {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn claim_asserts_shallow_checkout_alone_prevents_fetch(claim: &str) -> bool {
+    (claim.contains("fails solely because") && claim.contains("checkout is shallow"))
+        || claim.contains("shallow checkout alone prevents")
+}
+
+fn finding_location_evidence_disproves_absence(
+    finding: &reviewgate_core::Finding,
+    claim: &str,
+) -> bool {
+    let (Some(file), Some(line), Some(grounding)) = (
+        finding.file.as_deref(),
+        finding.line,
+        finding.grounding.as_ref(),
+    ) else {
+        return false;
+    };
+    let claimed_values = claim
+        .split(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != ':'
+        })
+        .filter(|token| token.contains('_') || token.contains(':'))
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    claimed_values
+        .iter()
+        .filter(|value| claim_names_value_as_absent(claim, value))
+        .any(|value| {
+            grounding.evidence.iter().any(|evidence| {
+                evidence.side == FindingEvidenceSide::New
+                    && evidence.path == file
+                    && evidence.line == line
+                    && evidence_line_defines_value(&evidence.excerpt, value)
+            })
+        })
+}
+
+fn evidence_line_defines_value(line: &str, value: &str) -> bool {
+    let line = line
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if value.contains(':') {
+        return line.split_whitespace().collect::<String>() == value;
+    }
+    line.starts_with(&format!("{value}:")) || line.starts_with(&format!("{value}="))
+}
+
+fn claim_names_value_as_absent(claim: &str, value: &str) -> bool {
+    let claim = claim
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    [value.to_string(), value.replace(':', " ")]
+        .iter()
+        .any(|value| {
+            [
+                format!("lacks {value}"),
+                format!("missing {value}"),
+                format!("omits {value}"),
+                format!("{value} is missing"),
+                format!("{value} is absent"),
+                format!("does not pass {value}"),
+                format!("does not set {value}"),
+                format!("does not grant {value}"),
+            ]
+            .iter()
+            .any(|phrase| claim.contains(phrase))
+        })
+}
+
+fn workflow_has_effective_write_for_step(
+    source: &str,
+    permission: &str,
+    step_marker: &str,
+) -> bool {
+    let lines = source.lines().collect::<Vec<_>>();
+    let top_level_write = permission_block_grants(&lines, 0, permission);
+    let Some(jobs_index) = lines
+        .iter()
+        .position(|line| yaml_indent(line) == 0 && line.trim() == "jobs:")
+    else {
+        return false;
+    };
+
+    let mut index = jobs_index + 1;
+    let mut saw_matching_job = false;
+    while index < lines.len() {
+        let line = lines[index];
+        let indent = yaml_indent(line);
+        if indent == 0 && !line.trim().is_empty() {
+            break;
+        }
+        if indent != 2 || !line.trim_end().ends_with(':') {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < lines.len() {
+            let candidate = lines[index];
+            if yaml_indent(candidate) == 2
+                && candidate.trim_end().ends_with(':')
+                && !candidate.trim_start().starts_with('-')
+            {
+                break;
+            }
+            if yaml_indent(candidate) == 0 && !candidate.trim().is_empty() {
+                break;
+            }
+            index += 1;
+        }
+        let job = &lines[start..index];
+        if !job.iter().any(|line| line.contains(step_marker)) {
+            continue;
+        }
+        saw_matching_job = true;
+        let declares_permissions = job
+            .iter()
+            .any(|line| yaml_indent(line) == 4 && line.trim_start().starts_with("permissions:"));
+        let granted = if declares_permissions {
+            permission_block_grants(job, 4, permission)
+        } else {
+            top_level_write
+        };
+        if !granted {
+            return false;
+        }
+    }
+    saw_matching_job
+}
+
+fn workflow_declares_trigger(source: &str, trigger: &str) -> bool {
+    let mut in_on_mapping = false;
+    for raw in source.lines() {
+        let without_comment = raw.split('#').next().unwrap_or_default();
+        let line = without_comment.trim();
+        let indent = yaml_indent(without_comment);
+        if line.is_empty() {
+            continue;
+        }
+        if indent == 0 {
+            in_on_mapping = line == "on:";
+            if line == format!("on: {trigger}")
+                || (line.starts_with("on: [")
+                    && line
+                        .trim_start_matches("on:")
+                        .trim_matches([' ', '[', ']'])
+                        .split(',')
+                        .map(str::trim)
+                        .any(|candidate| candidate == trigger))
+            {
+                return true;
+            }
+            continue;
+        }
+        if in_on_mapping && indent == 2 && line == format!("{trigger}:") {
+            return true;
+        }
+    }
+    false
+}
+
+fn claim_asserts_trigger_present(claim: &str, trigger: &str) -> bool {
+    [
+        format!("runs on {trigger}"),
+        format!("triggered by {trigger}"),
+        format!("{trigger} trigger runs"),
+        format!("{trigger} event runs"),
+    ]
+    .iter()
+    .any(|phrase| claim.contains(phrase))
+}
+
+fn permission_block_grants(lines: &[&str], parent_indent: usize, permission: &str) -> bool {
+    for (index, line) in lines.iter().enumerate() {
+        let content = line.split('#').next().unwrap_or_default();
+        if yaml_indent(line) != parent_indent || !content.trim_start().starts_with("permissions:") {
+            continue;
+        }
+        let inline = content.trim();
+        let value = inline
+            .strip_prefix("permissions:")
+            .unwrap_or_default()
+            .trim();
+        if value == "write-all" {
+            return true;
+        }
+        if value.starts_with('{')
+            && value
+                .trim_matches(['{', '}', ' '])
+                .split(',')
+                .map(str::trim)
+                .any(|entry| entry == format!("{permission}: write"))
+        {
+            return true;
+        }
+        for nested in &lines[index + 1..] {
+            let content = nested.split('#').next().unwrap_or_default();
+            if content.trim().is_empty() {
+                continue;
+            }
+            let indent = yaml_indent(nested);
+            if indent <= parent_indent {
+                break;
+            }
+            if content.trim() == format!("{permission}: write") {
+                return true;
+            }
+        }
+        return false;
+    }
+    false
+}
+
+fn yaml_indent(line: &str) -> usize {
+    line.len().saturating_sub(line.trim_start().len())
 }
 
 fn append_failed_angle_reviews(
@@ -4739,6 +5578,7 @@ review_angles:
                         scope: reviewgate_core::FindingScope::Pr,
                         severity,
                         confidence: 1.0,
+                        grounding: None,
                         file: None,
                         line: None,
                         title: "Projection fixture".to_string(),
@@ -5345,7 +6185,12 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("Every concrete defect mentioned in the verdict or notes"));
         assert!(prompt.contains("comment ownership checks"));
         assert!(prompt.contains("marker encoding"));
-        assert!(prompt.contains("Err on the side of surfacing concrete"));
+        assert!(prompt.contains("P0-P3 findings are score-blocking"));
+        assert!(prompt.contains("related_tests"));
+        assert!(prompt.contains("P0-P1 additionally require a concrete reproduction"));
+        assert!(prompt.contains("actions/upload-artifact"));
+        assert!(prompt.contains("argument slice at every call site"));
+        assert!(prompt.contains("1 | Read me"));
         assert!(prompt.contains("ReviewGate workflow guidance"));
         assert!(prompt.contains("LVTD-LLC/reviewgate@v0"));
         assert!(prompt.contains("documented default install"));
@@ -5449,6 +6294,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 scope: reviewgate_core::FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
                 title: "Missing error handling".to_string(),
@@ -5596,6 +6442,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     scope: reviewgate_core::FindingScope::Pr,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    grounding: None,
                     file: None,
                     line: None,
                     title: "First finding".to_string(),
@@ -5608,6 +6455,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     scope: reviewgate_core::FindingScope::Pr,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    grounding: None,
                     file: None,
                     line: None,
                     title: "Second finding".to_string(),
@@ -5658,6 +6506,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 scope: reviewgate_core::FindingScope::Pr,
                 severity: Severity::P2,
                 confidence: 0.9,
+                grounding: None,
                 file: None,
                 line: None,
                 title: "Long id".to_string(),
@@ -5871,6 +6720,713 @@ diff --git a/src/lib.rs b/src/lib.rs
         let artifact = parse_angle_artifact_content(&content).expect("artifact parses");
 
         assert_eq!(artifact.findings[0].angle_id, None);
+    }
+
+    #[test]
+    fn evidence_grounding_regressions_suppress_false_blockers_and_keep_real_defects() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+
+        for case in cases.as_array().expect("fixture cases") {
+            let name = case["name"].as_str().expect("fixture name");
+            let dir = unique_test_dir(&format!("grounding-{name}"));
+            for (path, contents) in case["files"].as_object().expect("fixture files") {
+                let path = dir.join(path);
+                fs::create_dir_all(path.parent().expect("fixture parent"))
+                    .expect("create fixture parent");
+                fs::write(path, contents.as_str().expect("fixture contents"))
+                    .expect("write fixture file");
+            }
+            let finding: reviewgate_core::Finding =
+                serde_json::from_value(case["finding"].clone()).expect("finding parses");
+            let score = finding.severity.score_ceiling();
+            let mut artifact = ReviewArtifact {
+                score: Some(score),
+                target_score: DEFAULT_TARGET_SCORE,
+                reviewed_sha: "abc123".to_string(),
+                status: status_for_score(score),
+                verdict: "Fixture verdict.".to_string(),
+                models: vec!["balanced".to_string()],
+                estimated_cost_usd: None,
+                cost_summary: None,
+                metrics: None,
+                review_stages: vec![],
+                angle_results: vec![ReviewAngleResult {
+                    id: "general".to_string(),
+                    name: "General".to_string(),
+                    score,
+                    status: status_for_score(score),
+                    verdict: "Fixture verdict.".to_string(),
+                    model: "balanced".to_string(),
+                    finding_ids: vec![finding.id.clone()],
+                }],
+                angle_errors: vec![],
+                findings: vec![reviewgate_core::Finding {
+                    angle_id: Some("general".to_string()),
+                    ..finding
+                }],
+                notes: vec![],
+            };
+            let context = ReviewContext {
+                reviewed_sha: "abc123".to_string(),
+                pull_request: PullRequestContext::default(),
+                changed_files: case["files"]
+                    .as_object()
+                    .expect("fixture files")
+                    .keys()
+                    .cloned()
+                    .collect(),
+                diff: case["diff"].as_str().expect("fixture diff").to_string(),
+                analyzed_line_count: 1,
+                data_integrity_review_needed: false,
+                context_files: vec![],
+            };
+
+            ground_artifact_findings(&dir, &context, &mut artifact)
+                .unwrap_or_else(|error| panic!("{name}: {error:#}"));
+
+            let expected_blocking = case["expected_blocking"]
+                .as_bool()
+                .expect("expected_blocking");
+            assert_eq!(
+                artifact
+                    .findings
+                    .iter()
+                    .any(|finding| finding.is_blocking(5)),
+                expected_blocking,
+                "{name}"
+            );
+            if !expected_blocking {
+                assert!(
+                    artifact
+                        .notes
+                        .iter()
+                        .any(|note| note.contains("Suppressed ungrounded finding")),
+                    "{name}: suppression is auditable"
+                );
+            }
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn rejects_evidence_that_is_not_an_exact_confined_repository_line() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let case = &cases[1];
+        let dir = unique_test_dir("invalid-grounding-evidence");
+        fs::create_dir_all(dir.join("cli")).expect("create fixture parent");
+        fs::write(
+            dir.join("cli/cli.go"),
+            case["files"]["cli/cli.go"]
+                .as_str()
+                .expect("fixture source"),
+        )
+        .expect("write fixture source");
+        let finding: reviewgate_core::Finding =
+            serde_json::from_value(case["finding"].clone()).expect("finding parses");
+        let diff = DiffEvidenceSet::from_unified_diff(case["diff"].as_str().expect("fixture diff"));
+
+        for (label, mutate) in [
+            (
+                "missing path",
+                ("missing.go", 2, "return parseFlags(fs, args)", "reason"),
+            ),
+            (
+                "parent traversal",
+                ("../cli/cli.go", 2, "return parseFlags(fs, args)", "reason"),
+            ),
+            (
+                "wrong line",
+                ("cli/cli.go", 1, "return parseFlags(fs, args)", "reason"),
+            ),
+            ("partial excerpt", ("cli/cli.go", 2, "parseFlags", "reason")),
+            (
+                "empty reason",
+                ("cli/cli.go", 2, "return parseFlags(fs, args)", ""),
+            ),
+        ] {
+            let mut candidate = finding.clone();
+            let evidence = &mut candidate.grounding.as_mut().expect("grounding").evidence[0];
+            evidence.path = mutate.0.to_string();
+            evidence.line = mutate.1;
+            evidence.excerpt = mutate.2.to_string();
+            evidence.reason = mutate.3.to_string();
+
+            assert_eq!(
+                finding_grounding_rejection(&dir, &diff, &candidate).expect("grounding check"),
+                Some("repository evidence does not match the checked-out head"),
+                "{label}",
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let outside = unique_test_dir("outside-grounding-evidence");
+            fs::write(outside.join("secret"), "secret\n").expect("write outside fixture");
+            std::os::unix::fs::symlink(outside.join("secret"), dir.join("linked.go"))
+                .expect("create external fixture symlink");
+            let evidence = reviewgate_core::FindingEvidence {
+                path: "linked.go".to_string(),
+                side: FindingEvidenceSide::New,
+                line: 1,
+                excerpt: "secret".to_string(),
+                reason: "Must not escape repository.".to_string(),
+            };
+            assert!(
+                !evidence_reference_matches(&dir, &DiffEvidenceSet::default(), &evidence)
+                    .expect("evidence check")
+            );
+
+            fs::create_dir_all(dir.join(".git")).expect("create metadata fixture");
+            fs::write(dir.join(".git/config"), "credential = secret\n")
+                .expect("write metadata fixture");
+            std::os::unix::fs::symlink(dir.join(".git"), dir.join("metadata"))
+                .expect("create intermediate fixture symlink");
+            assert!(confined_repo_file(&dir, "metadata/config").is_none());
+            fs::remove_dir_all(outside).ok();
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unrelated_prose_cannot_suppress_a_repository_grounded_defect() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let case = &cases[1];
+        let dir = unique_test_dir("grounding-prose-poisoning");
+        for (path, contents) in case["files"].as_object().expect("fixture files") {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, contents.as_str().expect("fixture contents")).expect("write fixture");
+        }
+        let mut finding: reviewgate_core::Finding =
+            serde_json::from_value(case["finding"].clone()).expect("finding parses");
+        finding.detail = Some(
+            "The literal text “this is fine” and “upload-artifact actions:write” is unrelated; the unsliced positional argument still reaches parseFlags."
+                .to_string(),
+        );
+        finding
+            .grounding
+            .as_mut()
+            .expect("grounding")
+            .claim
+            .push_str(" An unrelated comment mentions upload-artifact actions:write.");
+        let diff = DiffEvidenceSet::from_unified_diff(case["diff"].as_str().expect("fixture diff"));
+
+        assert_eq!(
+            finding_grounding_rejection(&dir, &diff, &finding).expect("grounding check"),
+            None
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inverse_upload_artifact_permission_claim_remains_blocking() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let case = &cases[2];
+        let dir = unique_test_dir("grounding-upload-permission-inverse");
+        for (path, contents) in case["files"].as_object().expect("fixture files") {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, contents.as_str().expect("fixture contents")).expect("write fixture");
+        }
+        let mut finding: reviewgate_core::Finding =
+            serde_json::from_value(case["finding"].clone()).expect("finding parses");
+        finding.grounding.as_mut().expect("grounding").claim =
+            "The upload-artifact job grants actions:write even though upload-artifact does not require it."
+                .to_string();
+        finding.detail = Some("The unnecessary token grant increases job privileges.".to_string());
+        let diff = DiffEvidenceSet::from_unified_diff(case["diff"].as_str().expect("fixture diff"));
+
+        assert_eq!(
+            finding_grounding_rejection(&dir, &diff, &finding).expect("grounding check"),
+            None
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn present_value_does_not_suppress_missing_validation_claim() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let case = &cases[8];
+        let dir = unique_test_dir("grounding-missing-validation");
+        for (path, contents) in case["files"].as_object().expect("fixture files") {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, contents.as_str().expect("fixture contents")).expect("write fixture");
+        }
+        let mut finding: reviewgate_core::Finding =
+            serde_json::from_value(case["finding"].clone()).expect("finding parses");
+        finding.grounding.as_mut().expect("grounding").claim =
+            "The Notify IndexNow step is missing validation for INDEXNOW_KEY.".to_string();
+        finding.detail =
+            Some("The present value reaches the consumer without validation.".to_string());
+        let diff = DiffEvidenceSet::from_unified_diff(case["diff"].as_str().expect("fixture diff"));
+
+        assert_eq!(
+            finding_grounding_rejection(&dir, &diff, &finding).expect("grounding check"),
+            None
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claimed_value_requires_an_exact_assignment_key() {
+        assert!(evidence_line_defines_value(
+            "INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}",
+            "indexnow_key"
+        ));
+        assert!(!evidence_line_defines_value(
+            "INDEXNOW_KEY_BACKUP: fallback",
+            "indexnow_key"
+        ));
+        assert!(!evidence_line_defines_value(
+            "# missing INDEXNOW_KEY",
+            "indexnow_key"
+        ));
+        assert!(evidence_line_defines_value(
+            "contents: write",
+            "contents:write"
+        ));
+    }
+
+    #[test]
+    fn grounding_recomputes_mixed_angle_results_from_remaining_findings() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let dir = unique_test_dir("mixed-grounding-results");
+        for index in [0, 1] {
+            for (path, contents) in cases[index]["files"].as_object().expect("fixture files") {
+                let path = dir.join(path);
+                fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+                fs::write(path, contents.as_str().expect("fixture contents"))
+                    .expect("write fixture file");
+            }
+        }
+        let mut false_p0: reviewgate_core::Finding =
+            serde_json::from_value(cases[0]["finding"].clone()).expect("false finding");
+        false_p0.angle_id = Some("general".to_string());
+        let mut real_p2: reviewgate_core::Finding =
+            serde_json::from_value(cases[1]["finding"].clone()).expect("real finding");
+        real_p2.id = "real-p2".to_string();
+        real_p2.severity = Severity::P2;
+        real_p2.angle_id = Some("general".to_string());
+        let advisory = reviewgate_core::Finding {
+            id: "advisory".to_string(),
+            angle_id: Some("style".to_string()),
+            scope: reviewgate_core::FindingScope::Pr,
+            severity: Severity::P4,
+            confidence: 0.8,
+            grounding: None,
+            file: None,
+            line: None,
+            title: "Optional cleanup".to_string(),
+            detail: None,
+            agent_instruction: "Consider simplifying the wording.".to_string(),
+        };
+        let diff = format!(
+            "{}\n{}",
+            cases[0]["diff"].as_str().expect("false diff"),
+            cases[1]["diff"].as_str().expect("real diff")
+        );
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
+            changed_files: vec!["cli/cli.go".to_string()],
+            diff,
+            analyzed_line_count: 2,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+        let artifact = ReviewArtifact {
+            score: Some(0),
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "Stale verdict.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![
+                ReviewAngleResult {
+                    id: "general".to_string(),
+                    name: "General".to_string(),
+                    score: 0,
+                    status: ReviewStatus::NeedsChanges,
+                    verdict: "Stale general verdict.".to_string(),
+                    model: "balanced".to_string(),
+                    finding_ids: vec![false_p0.id.clone(), real_p2.id.clone()],
+                },
+                ReviewAngleResult {
+                    id: "style".to_string(),
+                    name: "Style".to_string(),
+                    score: 5,
+                    status: ReviewStatus::Passed,
+                    verdict: "Stale style verdict.".to_string(),
+                    model: "balanced".to_string(),
+                    finding_ids: vec![advisory.id.clone()],
+                },
+            ],
+            angle_errors: vec![],
+            findings: vec![false_p0, real_p2, advisory],
+            notes: vec![],
+        };
+
+        let artifact =
+            finalize_review_artifact(&dir, &context, artifact, "balanced", Severity::P4, true)
+                .expect("finalize live artifact");
+
+        assert_eq!(artifact.score, Some(3));
+        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
+        assert_eq!(
+            artifact
+                .findings
+                .iter()
+                .map(|finding| finding.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["real-p2", "advisory"]
+        );
+        assert_eq!(artifact.angle_results[0].score, 3);
+        assert_eq!(
+            artifact.angle_results[0].verdict,
+            "1 grounded score-blocking finding(s) remain."
+        );
+        assert_eq!(artifact.angle_results[1].score, 5);
+        assert_eq!(
+            artifact.angle_results[1].verdict,
+            "No grounded score-blocking findings."
+        );
+        let metrics = artifact.metrics.as_ref().expect("metrics");
+        assert_eq!(metrics.finding_count, 2);
+        assert_eq!(metrics.blocking_finding_count, 1);
+        assert_eq!(metrics.analyzed_line_count, Some(2));
+        assert!(
+            artifact
+                .notes
+                .iter()
+                .any(|note| note.contains("Suppressed ungrounded finding"))
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn grounding_preserves_review_error_when_an_angle_failed() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let case = &cases[0];
+        let dir = unique_test_dir("grounding-review-error");
+        for (path, contents) in case["files"].as_object().expect("fixture files") {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, contents.as_str().expect("fixture contents")).expect("write fixture");
+        }
+        let finding: reviewgate_core::Finding =
+            serde_json::from_value(case["finding"].clone()).expect("finding parses");
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
+            changed_files: vec!["cli/cli.go".to_string()],
+            diff: case["diff"].as_str().expect("fixture diff").to_string(),
+            analyzed_line_count: 1,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+        let mut artifact = ReviewArtifact {
+            score: None,
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::ReviewError,
+            verdict: "Stale review error.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "security".to_string(),
+                angle_name: "Security".to_string(),
+                kind: ReviewErrorKind::Timeout,
+                retryable: true,
+                message: "The reviewer request timed out.".to_string(),
+                model: "balanced".to_string(),
+            }],
+            findings: vec![finding],
+            notes: vec![],
+        };
+
+        ground_artifact_findings(&dir, &context, &mut artifact).expect("ground findings");
+
+        assert_eq!(artifact.score, None);
+        assert_eq!(artifact.status, ReviewStatus::ReviewError);
+        assert!(artifact.findings.is_empty());
+        assert_eq!(
+            artifact.verdict,
+            "ReviewGate could not complete every enabled review angle."
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mock_artifacts_keep_their_documented_score_without_live_grounding() {
+        let dir = unique_test_dir("mock-grounding-boundary");
+        fs::write(dir.join("changed.txt"), "changed\n").expect("write fixture");
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            pull_request: PullRequestContext::default(),
+            changed_files: vec!["changed.txt".to_string()],
+            diff: "diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -0,0 +1 @@\n+changed\n".to_string(),
+            analyzed_line_count: 1,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+        let fixture: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("simple fixture parses");
+
+        let artifact =
+            finalize_review_artifact(&dir, &context, fixture, "balanced", Severity::P2, false)
+                .expect("finalize mock artifact");
+
+        assert_eq!(artifact.score, Some(3));
+        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
+        assert!(artifact.findings[0].grounding.is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn workflow_permission_checks_respect_inheritance_and_job_overrides() {
+        for (name, source, expected) in [
+            (
+                "workflow map inherited",
+                "permissions:\n  packages: write\njobs:\n  publish:\n    steps:\n      - run: docker buildx imagetools create example\n",
+                true,
+            ),
+            (
+                "workflow write-all inherited",
+                "permissions: write-all\njobs:\n  publish:\n    steps:\n      - run: docker buildx imagetools create example\n",
+                true,
+            ),
+            (
+                "job inline permission",
+                "permissions: read-all\njobs:\n  publish:\n    permissions: { packages: write }\n    steps:\n      - run: docker buildx imagetools create example\n",
+                true,
+            ),
+            (
+                "job override removes inherited package permission",
+                "permissions:\n  packages: write\njobs:\n  publish:\n    permissions:\n      contents: read\n    steps:\n      - run: docker buildx imagetools create example\n",
+                false,
+            ),
+            (
+                "different job has permission",
+                "jobs:\n  prepare:\n    permissions:\n      packages: write\n    steps:\n      - run: echo prepare\n  publish:\n    steps:\n      - run: docker buildx imagetools create example\n",
+                false,
+            ),
+            (
+                "all matching jobs must be authorized",
+                "jobs:\n  signed:\n    permissions:\n      packages: write\n    steps:\n      - run: docker buildx imagetools create signed\n  unsigned:\n    permissions:\n      contents: read\n    steps:\n      - run: docker buildx imagetools create unsigned\n",
+                false,
+            ),
+            (
+                "permission mentioned only in comment",
+                "jobs:\n  publish:\n    permissions: read-all # packages: write is not granted\n    steps:\n      - run: docker buildx imagetools create example\n",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                workflow_has_effective_write_for_step(source, "packages", "imagetools create"),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_trigger_checks_cover_scalar_list_and_mapping_forms() {
+        for (name, source, trigger, expected) in [
+            ("scalar", "on: push\n", "push", true),
+            (
+                "list",
+                "on: [push, workflow_dispatch]\n",
+                "workflow_dispatch",
+                true,
+            ),
+            (
+                "mapping",
+                "on:\n  pull_request:\n    branches: [main]\n",
+                "pull_request",
+                true,
+            ),
+            (
+                "absent",
+                "on:\n  push:\n    branches: [main]\n",
+                "workflow_dispatch",
+                false,
+            ),
+            (
+                "nested trigger-like job key",
+                "on: push\njobs:\n  workflow_dispatch:\n    steps:\n      - run: echo nested\n",
+                "workflow_dispatch",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                workflow_declares_trigger(source, trigger),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_context_includes_changed_files_related_tests_and_local_workflows() {
+        let dir = unique_test_dir("evidence-context");
+        for (path, contents) in [
+            (
+                "src/cli.go",
+                "package cli\nfunc parse(args []string) error { return nil }\n",
+            ),
+            (
+                "src/cli_test.go",
+                "package cli\nfunc TestParse(t *testing.T) {}\n",
+            ),
+            ("src/other.go", "package cli\nfunc other() {}\n"),
+            (
+                ".github/workflows/caller.yml",
+                "jobs:\n  publish:\n    uses: ./.github/workflows/publish.yml\n",
+            ),
+            (
+                ".github/workflows/publish.yml",
+                "on: workflow_call\njobs:\n  image:\n    permissions:\n      packages: write\n",
+            ),
+        ] {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, contents).expect("write context fixture");
+        }
+
+        let files = collect_context_files(
+            &dir,
+            &[
+                "src/cli.go".to_string(),
+                "src/other.go".to_string(),
+                ".github/workflows/caller.yml".to_string(),
+            ],
+        )
+        .expect("collect evidence context");
+        let paths = files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<BTreeSet<_>>();
+        fs::remove_dir_all(&dir).ok();
+
+        assert!(paths.contains("src/cli.go"));
+        assert!(paths.contains("src/other.go"));
+        assert!(paths.contains("src/cli_test.go"));
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file.path == "src/cli_test.go")
+                .count(),
+            1
+        );
+        assert!(paths.contains(".github/workflows/caller.yml"));
+        assert!(paths.contains(".github/workflows/publish.yml"));
+    }
+
+    #[test]
+    fn context_cap_includes_every_changed_file_and_reports_supplementary_omissions() {
+        let dir = unique_test_dir("evidence-context-cap");
+        let changed_files = (0..50)
+            .map(|index| format!("src/changed-{index:02}.rs"))
+            .collect::<Vec<_>>();
+        for path in &changed_files {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, "pub fn changed() {}\n").expect("write changed fixture");
+        }
+        fs::write(dir.join("README.md"), "default context\n").expect("write default fixture");
+
+        let files = collect_context_files(&dir, &changed_files).expect("collect bounded context");
+        let paths = files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<BTreeSet<_>>();
+        let omissions = files
+            .iter()
+            .find(|file| file.path == "[ReviewGate context omissions]")
+            .expect("omission manifest");
+
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file.path.starts_with("src/changed-"))
+                .count(),
+            changed_files.len()
+        );
+        assert!(paths.contains("src/changed-48.rs"));
+        assert!(paths.contains("src/changed-49.rs"));
+        assert!(!paths.contains("README.md"));
+        assert!(omissions.contents.contains("README.md"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn context_collection_rejects_more_changed_files_than_the_bounded_limit() {
+        let dir = unique_test_dir("evidence-context-file-limit");
+        let changed_files = (0..=MAX_CHANGED_CONTEXT_FILES)
+            .map(|index| format!("src/changed-{index:03}.rs"))
+            .collect::<Vec<_>>();
+
+        let error = collect_context_files(&dir, &changed_files)
+            .expect_err("oversized changed-file set must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("changed-file repository-context limit")
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn context_collection_rejects_incomplete_changed_file_contents() {
+        let dir = unique_test_dir("evidence-context-byte-limit");
+        let relative = "src/oversized.rs";
+        let path = dir.join(relative);
+        fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+        fs::write(&path, vec![b'x'; MAX_CHANGED_CONTEXT_BYTES + 1])
+            .expect("write oversized fixture");
+
+        let error = collect_context_files(&dir, &[relative.to_string()])
+            .expect_err("truncated changed-file context must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("complete current-head contents exceed")
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

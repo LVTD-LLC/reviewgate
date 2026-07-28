@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-28
 
+- Added a read-only evidence gate and version 3 artifact schema for blocking findings: P0-P3 claims now need exact current-head or deleted-line citations and a causal path, P0-P1 need reproduction-grade evidence, related tests are inspected, checked platform-contract contradictions are suppressed, and prompts direct self-retracting or uncertain claims to auditable non-blocking notes. Changed-file context is complete within explicit bounds and fails closed instead of silently omitting or truncating content. Version 1 and 2 schemas remain immutable.
 - Enforced deterministic score invariants before GitHub publication: completed scores and statuses must match structured findings, per-angle scores must match their referenced findings, and stale or contradictory artifacts now publish a sanitized `review_error` for the current PR head instead of impossible score/check combinations.
 - Separated reviewer failures from code-quality outcomes: incomplete reviews now emit typed, retryable `angle_errors`, `status: review_error`, and `score: null`; summaries preserve the latest valid score and check runs fail consistently without inventing a `0/5`. The new artifact shape uses the version 2 public schema while the immutable version 1 schema remains available for v0.1.x consumers.
 - Corrected the documented rereview permission contract to grant `pull-requests: write`, which GitHub requires for the bot-owned command reservation comment on PR conversations.

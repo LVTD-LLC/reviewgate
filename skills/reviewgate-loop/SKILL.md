@@ -66,9 +66,11 @@ jq -r '
 jq -r '
   .findings[]
   | select(.severity != "P4")
-  | "- [\(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  \(.agent_instruction)"
+  | "- [\(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  Claim: \(.grounding.claim)\n  Causal path: \(.grounding.causal_path)\n  \(.agent_instruction)"
 ' .reviewgate/review.json
 ```
+
+Before changing code, confirm every P0-P3 includes exact full-line `grounding.evidence` (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment; P0-P1 must also include a reproduction or exceptional proof. If a blocker lacks that contract, request a fresh review instead of repairing the unsupported claim.
 
 Also inspect angle results:
 

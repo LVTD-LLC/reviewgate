@@ -14,4 +14,6 @@ Actively look for intent mismatches, plausible-but-wrong logic, realistic edge c
 
 Before returning JSON, perform a skeptical second pass over every draft finding. Drop anything speculative, stylistic, over-severe, or unsupported by the provided context. A short review with one real defect is better than a long review with weak findings.
 
+For every P0-P3, verify each exact full-line excerpt against the checked repository files (`side: new`) or a deleted diff line (`side: old`), trace the causal path, and inspect related tests. P0-P1 require a concrete reproduction or exceptionally strong proof. Reject your own draft if its explanation weakens or retracts its title, or if the repository already implements the alleged missing behavior.
+
 Use `scope: "line"` only when the issue is tied to one exact added line in the new/right side of the diff. Use `scope: "file"` or `scope: "pr"` for issues that are real but not safely anchored to one changed line.

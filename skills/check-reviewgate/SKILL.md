@@ -56,9 +56,11 @@ List score-blocking findings. `P0` through `P3` cap the score below `5`; `P4` do
 jq -r '
   .findings[]
   | select(.severity != "P4")
-  | "- [\(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  \(.agent_instruction)"
+  | "- [\(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  Claim: \(.grounding.claim)\n  Causal path: \(.grounding.causal_path)\n  \(.agent_instruction)"
 ' .reviewgate/review.json
 ```
+
+Treat a P0-P3 finding without `grounding`, exact full-line evidence references (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment as an invalid blocker. P0-P1 must also expose `grounding.reproduction` or `grounding.proof`. ReviewGate normally suppresses such output before publication; if it appears, request a fresh current-head review instead of editing code from the unsupported claim.
 
 Also inspect review angles. Each angle score must be explained by its referenced findings. If a completed angle is below `5/5` without a score-affecting referenced finding, treat the artifact as invalid and wait for or request a fresh ReviewGate run.
 
