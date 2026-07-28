@@ -49,6 +49,7 @@ const MAX_GENERATED_FINDING_ID_CHARS: usize = 256;
 const MAX_REVIEW_ANGLE_INSTRUCTIONS_BYTES: usize = 80_000;
 const CONTEXT_FILE_TRUNCATED_MARKER: &str = "\n[truncated]\n";
 const REREVIEW_COMMAND: &str = "@reviewgate review";
+const CURL_HTTP_STATUS_WRITE_OUT: &str = "%{stderr}reviewgate-http-status=%{http_code}\\n";
 
 type CliResult<T> = anyhow::Result<T>;
 
@@ -559,9 +560,11 @@ fn provider_error_is_retryable(diagnostic: &str) -> bool {
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
     let status = tokens.windows(2).find_map(|pair| {
-        (pair[0] == "http")
+        ["http", "status", "error"]
+            .contains(&pair[0])
             .then(|| pair[1].parse::<u16>().ok())
             .flatten()
+            .filter(|status| (100..=599).contains(status))
     });
     match status {
         Some(408 | 429) => true,
@@ -3293,7 +3296,8 @@ fn call_openrouter_with_curl(
         .with_context(|| format!("failed to write {}", body_path.display()))?;
 
     let curl_config = format!(
-        "fail-with-body\nsilent\nshow-error\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\n{}data-binary = \"@{}\"\n",
+        "fail-with-body\nsilent\nshow-error\nwrite-out = \"{}\"\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\n{}data-binary = \"@{}\"\n",
+        CURL_HTTP_STATUS_WRITE_OUT,
         curl_config_quote(&url),
         curl_config_quote(api_key),
         openrouter_attribution_curl_headers(),
@@ -5569,7 +5573,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             "OpenRouter request failed: HTTP 503"
         ));
         let authorization = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
-            "OpenRouter request failed: HTTP 401 Authorization: Bearer canary-secret"
+            "OpenRouter request failed: curl: (22) The requested URL returned error: 401 \
+             reviewgate-http-status=401 Authorization: Bearer canary-secret"
         ));
 
         assert_eq!(timeout.kind(), ReviewErrorKind::Timeout);
@@ -5599,6 +5604,15 @@ diff --git a/src/lib.rs b/src/lib.rs
             ));
             assert!(failure.retryable(), "HTTP {status} is retryable");
         }
+
+        let native_curl_401 = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+            "curl: (22) The requested URL returned error: 401"
+        ));
+        let stable_marker_422 = AngleReviewFailure::from_request_error(&anyhow::anyhow!(
+            "curl: (22) request failed reviewgate-http-status=422"
+        ));
+        assert!(!native_curl_401.retryable());
+        assert!(!stable_marker_422.retryable());
     }
 
     #[test]
