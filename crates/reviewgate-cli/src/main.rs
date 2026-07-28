@@ -2765,50 +2765,14 @@ fn collect_context_files(repo: &Path, changed_files: &[String]) -> CliResult<Vec
     let mut files = Vec::new();
     let mut seen = BTreeSet::new();
     let mut scanned_test_directories = BTreeSet::new();
-    for relative in DEFAULT_CONTEXT_FILES {
-        push_context_file(repo, relative, &mut files, &mut seen)?;
-    }
+    let mut omitted = BTreeSet::new();
+
     for relative in changed_files {
-        push_context_file(repo, relative, &mut files, &mut seen)?;
         if files.len() >= MAX_CONTEXT_FILES {
-            break;
-        }
-        let Some(path) = safe_relative_path(relative) else {
-            continue;
-        };
-        let Some(parent) = path.parent() else {
-            continue;
-        };
-        if !scanned_test_directories.insert(parent.to_path_buf()) {
+            omitted.insert(relative.clone());
             continue;
         }
-        let directory = repo.join(parent);
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-        let mut candidates = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
-        candidates.sort();
-        for candidate in candidates {
-            let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !related_test_filename(name) {
-                continue;
-            }
-            let Ok(relative_candidate) = candidate.strip_prefix(repo) else {
-                continue;
-            };
-            let Some(relative_candidate) = relative_candidate.to_str() else {
-                continue;
-            };
-            push_context_file(repo, relative_candidate, &mut files, &mut seen)?;
-            if files.len() >= MAX_CONTEXT_FILES {
-                break;
-            }
-        }
+        push_context_file(repo, relative, &mut files, &mut seen)?;
     }
 
     let local_workflows = files
@@ -2825,11 +2789,85 @@ fn collect_context_files(repo: &Path, changed_files: &[String]) -> CliResult<Vec
         })
         .collect::<BTreeSet<_>>();
     for workflow in local_workflows {
-        push_context_file(repo, &workflow, &mut files, &mut seen)?;
         if files.len() >= MAX_CONTEXT_FILES {
-            break;
+            omitted.insert(workflow);
+            continue;
+        }
+        push_context_file(repo, &workflow, &mut files, &mut seen)?;
+    }
+
+    for relative in DEFAULT_CONTEXT_FILES {
+        if files.len() >= MAX_CONTEXT_FILES {
+            omitted.insert(relative.to_string());
+            continue;
+        }
+        push_context_file(repo, relative, &mut files, &mut seen)?;
+    }
+
+    if files.len() < MAX_CONTEXT_FILES {
+        for relative in changed_files {
+            let Some(path) = safe_relative_path(relative) else {
+                continue;
+            };
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            if !scanned_test_directories.insert(parent.to_path_buf()) {
+                continue;
+            }
+            let directory = repo.join(parent);
+            let Ok(entries) = fs::read_dir(directory) else {
+                continue;
+            };
+            let mut candidates = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            candidates.sort();
+            for candidate in candidates {
+                let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !related_test_filename(name) {
+                    continue;
+                }
+                let Ok(relative_candidate) = candidate.strip_prefix(repo) else {
+                    continue;
+                };
+                let Some(relative_candidate) = relative_candidate.to_str() else {
+                    continue;
+                };
+                if files.len() >= MAX_CONTEXT_FILES {
+                    omitted.insert(relative_candidate.to_string());
+                    continue;
+                }
+                push_context_file(repo, relative_candidate, &mut files, &mut seen)?;
+            }
         }
     }
+
+    if !omitted.is_empty() {
+        let omitted_count = omitted.len();
+        let mut contents = format!(
+            "ReviewGate reached the {MAX_CONTEXT_FILES}-file repository-context cap. The unified diff and changed-file manifest still include the whole PR, but full current-head contents were not loaded for {omitted_count} path(s):\n"
+        );
+        for path in omitted.iter().take(MAX_CONTEXT_FILES) {
+            contents.push_str("- ");
+            contents.push_str(path);
+            contents.push('\n');
+        }
+        if omitted_count > MAX_CONTEXT_FILES {
+            contents.push_str(&format!(
+                "- ... and {} more path(s)\n",
+                omitted_count - MAX_CONTEXT_FILES
+            ));
+        }
+        files.push(ContextFile {
+            path: "[ReviewGate context omissions]".to_string(),
+            contents,
+        });
+    }
+
     Ok(files)
 }
 
@@ -3646,8 +3684,11 @@ fn contradicts_checked_contract(
                 .split_whitespace()
                 .collect::<String>()
                 .to_ascii_lowercase();
-            excerpt.contains("parseflags(fs,args[")
-                || excerpt.contains("parsepaginationflags(fs,args[")
+            evidence.side == FindingEvidenceSide::New
+                && finding.file.as_deref() == Some(evidence.path.as_str())
+                && finding.line == Some(evidence.line)
+                && (excerpt.contains("parseflags(fs,args[")
+                    || excerpt.contains("parsepaginationflags(fs,args["))
         })
     {
         return Ok(true);
@@ -7268,6 +7309,43 @@ diff --git a/src/lib.rs b/src/lib.rs
         );
         assert!(paths.contains(".github/workflows/caller.yml"));
         assert!(paths.contains(".github/workflows/publish.yml"));
+    }
+
+    #[test]
+    fn context_cap_prioritizes_changed_files_and_reports_omissions() {
+        let dir = unique_test_dir("evidence-context-cap");
+        let changed_files = (0..50)
+            .map(|index| format!("src/changed-{index:02}.rs"))
+            .collect::<Vec<_>>();
+        for path in &changed_files {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, "pub fn changed() {}\n").expect("write changed fixture");
+        }
+        fs::write(dir.join("README.md"), "default context\n").expect("write default fixture");
+
+        let files = collect_context_files(&dir, &changed_files).expect("collect bounded context");
+        let paths = files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<BTreeSet<_>>();
+        let omissions = files
+            .iter()
+            .find(|file| file.path == "[ReviewGate context omissions]")
+            .expect("omission manifest");
+
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file.path.starts_with("src/changed-"))
+                .count(),
+            MAX_CONTEXT_FILES
+        );
+        assert!(!paths.contains("README.md"));
+        assert!(omissions.contents.contains("src/changed-48.rs"));
+        assert!(omissions.contents.contains("src/changed-49.rs"));
+        assert!(omissions.contents.contains("README.md"));
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

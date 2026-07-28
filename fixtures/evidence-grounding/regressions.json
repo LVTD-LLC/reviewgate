@@ -471,7 +471,10 @@
         "claim": "The unsafe command's positional operands reach parseFlags.",
         "causal_path": "unsafe command -> full args -> parseFlags",
         "test_assessment": "No test covers positional operands on the unsafe command.",
-        "evidence": [{"path": "cli/cli.go", "side": "new", "line": 6, "excerpt": "return parseFlags(fs, args)", "reason": "The unsafe callsite passes the unsliced argument list"}],
+        "evidence": [
+          {"path": "cli/cli.go", "side": "new", "line": 6, "excerpt": "return parseFlags(fs, args)", "reason": "The unsafe callsite passes the unsliced argument list"},
+          {"path": "cli/cli.go", "side": "new", "line": 2, "excerpt": "return parseFlags(fs, args[2:])", "reason": "A separate command slices its operands correctly"}
+        ],
         "related_tests": [],
         "reproduction": "Run the unsafe command with a positional operand before a flag.",
         "proof": null
