@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-28
 
+- Corrected the documented rereview permission contract to grant `pull-requests: write`, which GitHub requires for the bot-owned command reservation comment on PR conversations.
 - Added first-class maintainer-requested rereviews through the exact `@reviewgate review` command and composite-action `rereview` mode.
 - Replaced branch-name/single-result recheck discovery with paginated exact-PR, exact-workflow, and current-head run selection.
 - Hardened rereview authorization with a live effective repository-permission check, stable machine-readable failure results, and subprocess coverage for duplicate, failure, and success behavior.
