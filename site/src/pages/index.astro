@@ -2,17 +2,22 @@
 import ReviewPanel from "../components/ReviewPanel.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-const installSnippet = `name: ReviewGate
+const workflowSnippet = `name: ReviewGate
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
   checks: write
+
+concurrency:
+  group: reviewgate-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   review:
@@ -25,98 +30,240 @@ jobs:
         )
       }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-      # ReviewGate is early, so @v0 is the recommended moving channel.
-      # Agents should not rewrite this to a latest commit SHA unless you want frozen updates.
       - uses: LVTD-LLC/reviewgate@v0
         with:
           openrouter_api_key: \${{ secrets.OPENROUTER_API_KEY }}`;
 
+const configSnippet = `min_severity: P2
+review_angles:
+  - id: general
+    name: General
+    prompt_file: prompts/general.md
+  - id: security
+    name: Security
+    prompt: Check for high-risk security regressions.
+  - id: agent-loop
+    name: Agent Loop
+    skill: skills/check-reviewgate`;
+
+const installSteps = [
+  {
+    title: "Add the workflow",
+    detail: "Copy the GitHub Actions workflow into your repository and keep the default fork-safe event guard.",
+  },
+  {
+    title: "Add your OpenRouter key",
+    detail: "Create an OPENROUTER_API_KEY Actions secret. ReviewGate reads it only inside CI.",
+  },
+  {
+    title: "Tune the review surface",
+    detail: "Optionally add .reviewgate.yml to set severity floors or custom review angles.",
+  },
+];
+
 const capabilities = [
-  "Visible 0-5 score for every agent-written PR",
-  "One canonical PR summary comment that updates in place",
-  "Machine-readable JSON for external fix loops",
-  "Severity-filtered inline comments for concrete findings",
-  "BYOK model calls through OpenRouter inside your CI",
-  "Configurable severity floors with a fixed 5/5 target",
+  {
+    title: "Score-centered review",
+    detail: "Every completed run produces a visible 0-5 confidence score with a deterministic 5/5 passing target.",
+    points: ["Lowest effective score across enabled angles", "needs_changes status below 5", "Neutral check result for completed reviews that still need work"],
+  },
+  {
+    title: "One canonical summary",
+    detail: "ReviewGate creates one PR summary comment, marks it with the reviewgate-summary marker, then updates that comment on reruns.",
+    points: ["No duplicate summary threads", "Run count and latest analyzed commit", "Compact score table when multiple angles run"],
+  },
+  {
+    title: "Agent-loop artifact",
+    detail: "The JSON output is a first-class contract for humans, scripts, and external coding agents.",
+    points: [".reviewgate/review.json", "Structured finding IDs and severities", "Machine-readable status and score ceilings"],
+  },
+  {
+    title: "Inline findings with control",
+    detail: "Line-specific issues publish as ReviewGate inline comments when possible, filtered by min_severity.",
+    points: ["P0 through P4 severity floor", "Fallback right-side diff anchors", "Stable ReviewGate markers for dedupe"],
+  },
+];
+
+const configuration = [
+  ["Action inputs", "openrouter_api_key, config, model, min_severity"],
+  ["Config file", "Optional .reviewgate.yml at the repository root"],
+  ["Severity floor", "min_severity: P0, P1, P2, P3, or P4"],
+  ["Review angles", "Built-in general and adversarial, or custom angle lists"],
+  ["Instruction sources", "prompt, prompt_file, or skill for each configured angle"],
+  ["Model access", "OpenRouter BYOK, with deepseek/deepseek-v4-flash as the default model"],
+];
+
+const artifacts = [
+  ["Summary comment", "Human-readable score, verdict, finding counts, and run footer on the PR."],
+  ["JSON artifact", "Structured review data at .reviewgate/review.json for external fix loops."],
+  ["Markdown artifact", "Rendered summary at .reviewgate/summary.md for Actions summaries and local inspection."],
+  ["Check run", "Review availability check when checks: write permission is granted."],
 ];
 ---
 
 <BaseLayout
-  title="ReviewGate - Score-gated AI PR review"
-  description="ReviewGate is an open-source GitHub Action that gives agent-written pull requests a visible 0-5 score, canonical summary, and machine-readable review artifact."
+  title="ReviewGate - Score every agent PR before merge"
+  description="ReviewGate is an open-source GitHub Action that gives agent-written pull requests a visible 0-5 score, canonical summary, inline findings, and machine-readable review JSON."
 >
   <main>
-    <section class="hero">
+    <section class="hero" aria-labelledby="hero-title">
       <nav class="nav" aria-label="Primary">
         <a class="brand" href="/" aria-label="ReviewGate home">
-          <span class="brand-mark" aria-hidden="true">R</span>
+          <span class="brand-mark" aria-hidden="true">RG</span>
           <span>ReviewGate</span>
         </a>
         <div class="nav-links">
+          <a href="#purpose">Purpose</a>
           <a href="#install">Install</a>
+          <a href="#configure">Configure</a>
           <a href="https://github.com/LVTD-LLC/reviewgate">GitHub</a>
         </div>
       </nav>
 
-      <div class="hero-grid">
+      <div class="hero-layout">
         <div class="hero-copy">
-          <p class="eyebrow">Open-source review gate for agent-written PRs</p>
-          <h1>ReviewGate</h1>
-          <p class="lede">
-            Put a visible 0-5 score, one canonical summary, and structured review JSON on every AI-authored pull request before it reaches merge.
+          <p class="hero-kicker">Open-source GitHub Action for supervised agent work.</p>
+          <h1 id="hero-title">Score every agent PR before merge.</h1>
+          <p class="hero-lede">
+            ReviewGate posts a visible 0-5 score, keeps one canonical PR summary updated, and writes structured JSON so humans or external agents know what to fix next.
           </p>
-          <div class="actions">
-            <a class="button primary" href="#install">Install action</a>
-            <a class="button secondary" href="https://github.com/LVTD-LLC/reviewgate">View source</a>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button button-primary" href="#install">Install the action</a>
+            <a class="button button-secondary" href="https://github.com/LVTD-LLC/reviewgate">View source</a>
           </div>
+          <p class="hero-note">Runs in your CI with your OpenRouter key. Review-only by design.</p>
         </div>
+
         <ReviewPanel />
       </div>
     </section>
 
-    <section class="band trust-band" aria-label="Product guarantees">
-      <div>
-        <strong>GitHub Actions-first</strong>
-        <span>No hosted account required.</span>
-      </div>
-      <div>
-        <strong>OpenRouter BYOK</strong>
-        <span>Your model key stays in CI secrets.</span>
-      </div>
-      <div>
-        <strong>Agent-loop ready</strong>
-        <span>JSON artifacts make fixes scriptable.</span>
+    <section class="purpose-band" id="purpose" aria-labelledby="purpose-title">
+      <div class="purpose-inner">
+        <div>
+          <h2 id="purpose-title">A merge-readiness signal for agent PRs.</h2>
+          <p>
+            ReviewGate is not another broad PR reviewer. It is a small, public credibility layer for teams letting coding agents open pull requests: score the diff, show the risk, and expose the artifact that a repair loop can consume.
+          </p>
+        </div>
+        <dl class="purpose-list">
+          <div>
+            <dt>GitHub Actions-first</dt>
+            <dd>No hosted app, account, dashboard, billing, or persistent storage.</dd>
+          </div>
+          <div>
+            <dt>BYOK model boundary</dt>
+            <dd>OpenRouter calls happen in CI with your repository secret.</dd>
+          </div>
+          <div>
+            <dt>Review-only</dt>
+            <dd>The action reports findings and artifacts; it does not mutate PR code.</dd>
+          </div>
+        </dl>
       </div>
     </section>
 
-    <section class="section split" id="install">
-      <div>
-        <p class="eyebrow">Install</p>
-        <h2>One workflow file, one secret, clear merge signal.</h2>
+    <section class="section install-section" id="install" aria-labelledby="install-title">
+      <div class="section-intro">
+        <h2 id="install-title">Install in three repo-owned steps.</h2>
         <p>
-          ReviewGate runs in the repository owner&apos;s CI environment, reviews the PR diff with bounded context, and keeps the merge signal visible without taking over the repair loop.
+          The default workflow is intentionally explicit: least-privilege permissions, a fork-safe guard, checkout with history, and one action invocation.
         </p>
       </div>
-      <pre class="code-card"><code>{installSnippet}</code></pre>
+
+      <div class="install-layout">
+        <ol class="install-steps">
+          {installSteps.map((step) => (
+            <li>
+              <span aria-hidden="true"></span>
+              <div>
+                <h3>{step.title}</h3>
+                <p>{step.detail}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <pre class="code-block" aria-label="ReviewGate GitHub Actions workflow"><code>{workflowSnippet}</code></pre>
+      </div>
     </section>
 
-    <section class="section">
-      <div class="section-header">
-        <p class="eyebrow">What ships in v0</p>
-        <h2>Built for maintainers supervising coding agents.</h2>
+    <section class="section features-section" id="features" aria-labelledby="features-title">
+      <div class="section-intro wide">
+        <h2 id="features-title">What ReviewGate publishes on every completed review.</h2>
+        <p>
+          The score is the visible gate. The summary keeps maintainers oriented. The JSON artifact gives humans and external agents a stable contract for the next fix.
+        </p>
       </div>
-      <div class="capability-grid">
+
+      <div class="feature-list">
         {capabilities.map((capability) => (
-          <article>
-            <span aria-hidden="true"></span>
-            <p>{capability}</p>
+          <article class="feature-item">
+            <div>
+              <h3>{capability.title}</h3>
+              <p>{capability.detail}</p>
+            </div>
+            <ul>
+              {capability.points.map((point) => (
+                <li>{point}</li>
+              ))}
+            </ul>
           </article>
         ))}
       </div>
+    </section>
+
+    <section class="section config-section" id="configure" aria-labelledby="configure-title">
+      <div class="config-layout">
+        <div>
+          <h2 id="configure-title">Supported configuration stays small on purpose.</h2>
+          <p>
+            v0 keeps the control surface boring: choose the model, set which severities get published inline, and define the review angles that matter for your repository.
+          </p>
+          <dl class="config-list">
+            {configuration.map(([name, value]) => (
+              <div>
+                <dt>{name}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+
+        <pre class="code-block config-code" aria-label="ReviewGate configuration example"><code>{configSnippet}</code></pre>
+      </div>
+    </section>
+
+    <section class="section artifact-section" aria-labelledby="artifact-title">
+      <div class="artifact-copy">
+        <h2 id="artifact-title">Readable for maintainers. Structured for automation.</h2>
+        <p>
+          A human can scan the PR comment. A script or external coding agent can read the JSON and loop on score-affecting findings until the review reaches 5/5.
+        </p>
+      </div>
+      <div class="artifact-table" role="list">
+        {artifacts.map(([name, detail]) => (
+          <div role="listitem">
+            <strong>{name}</strong>
+            <span>{detail}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <section class="final-cta" aria-labelledby="cta-title">
+      <div>
+        <h2 id="cta-title">Add a score gate to the next agent PR.</h2>
+        <p>
+          ReviewGate is free, open source, and designed to be inspected before it reviews anything for you.
+        </p>
+      </div>
+      <a class="button button-primary" href="https://github.com/LVTD-LLC/reviewgate">Open on GitHub</a>
     </section>
   </main>
 </BaseLayout>

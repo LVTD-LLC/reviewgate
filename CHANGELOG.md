@@ -10,6 +10,14 @@ Changes are grouped by calendar date, newest first.
 - Preserved `recheck --workflow` compatibility for exact numeric IDs, workflow file names/paths, and display names by resolving non-numeric selectors to an unambiguous workflow ID.
 - Documented the single-workflow installation, least-privilege event-specific jobs, duplicate-delivery handling, fork boundary, and bounded failure behavior.
 
+## 2026-07-22
+
+- Initialized the Astro marketing site's SEO sprint with measured keyword and SERP research, a technical audit, brand context, internal-link inventory, backlink targets, and a phase-by-phase roadmap.
+
+## 2026-07-08
+
+- Redesigned the Astro marketing site around ReviewGate's score-centered purpose, GitHub Actions installation flow, supported features, artifacts, and configuration surface.
+
 ## 2026-07-06
 
 - Expanded the root README with full local setup, architecture, configuration, command, testing, deployment, security, and troubleshooting documentation.

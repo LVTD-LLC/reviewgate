@@ -1,56 +1,69 @@
 ---
+const angles = [
+  ["general", "5/5"],
+  ["adversarial", "4/5"],
+];
+
 const findings = [
   {
     severity: "P1",
-    title: "Deployment gate can merge a broken image",
-    detail: "Missing smoke verification after the CapRover release.",
+    title: "Release image has no smoke verification",
+    file: "deployment/Dockerfile",
   },
   {
     severity: "P2",
-    title: "Summary comment duplicates across reruns",
-    detail: "Canonical marker is not reused when the agent pushes fixes.",
-  },
-  {
-    severity: "P3",
-    title: "Agent instructions are not visible to reviewers",
-    detail: "The review prompt skips AGENTS.md and product constraints.",
+    title: "Summary marker must be reused on reruns",
+    file: "crates/reviewgate-github/src/lib.rs",
   },
 ];
 ---
 
-<aside class="review-panel" aria-label="Example ReviewGate scorecard">
-  <div class="panel-toolbar">
-    <span></span>
-    <span></span>
-    <span></span>
+<aside class="review-card" aria-label="Example ReviewGate PR summary">
+  <div class="review-card-header">
+    <span>GitHub PR summary</span>
+    <strong>Updated in place</strong>
   </div>
 
-  <div class="score-row">
+  <div class="score-block">
     <div>
-      <p class="eyebrow">ReviewGate</p>
-      <h2>5/5</h2>
+      <span>Confidence Score</span>
+      <strong>4/5</strong>
     </div>
-    <span class="status-pill">Passed</span>
+    <p>Needs changes before merge</p>
   </div>
 
-  <div class="meter" aria-label="Review score 5 out of 5">
+  <div class="score-meter" aria-label="Review score 4 out of 5">
     <span></span>
   </div>
 
-  <div class="review-summary">
-    <strong>Ready to merge</strong>
-    <p>Canonical PR summary updated in place. No blocking findings remain.</p>
+  <div class="summary-box">
+    <strong>ReviewGate found two score-affecting risks.</strong>
+    <p>Fix the blocking findings, push again, and this same summary comment will update.</p>
   </div>
 
-  <ul class="finding-list">
+  <div class="angle-table" aria-label="Review angle scores">
+    {angles.map(([name, score]) => (
+      <div>
+        <span>{name}</span>
+        <strong>{score}</strong>
+      </div>
+    ))}
+  </div>
+
+  <ul class="inline-findings" aria-label="Example inline findings">
     {findings.map((finding) => (
       <li>
         <span>{finding.severity}</span>
         <div>
           <strong>{finding.title}</strong>
-          <p>{finding.detail}</p>
+          <p>{finding.file}</p>
         </div>
       </li>
     ))}
   </ul>
+
+  <div class="artifact-footer">
+    <span>.reviewgate/review.json</span>
+    <span>{"<!-- reviewgate-summary -->"}</span>
+  </div>
 </aside>
