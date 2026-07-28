@@ -35,7 +35,12 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "score": { "type": ["integer", "null"], "minimum": 0, "maximum": 5 },
+    "score": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 5,
+      "description": "Derived from validated findings for completed reviews; null for review_error."
+    },
     "reviewed_sha": { "type": "string", "minLength": 1 },
     "status": {
       "type": "string",
@@ -157,7 +162,12 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
-        "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Derived from the findings referenced by finding_ids."
+        },
         "status": {
           "type": "string",
           "enum": ["passed", "needs_changes"]

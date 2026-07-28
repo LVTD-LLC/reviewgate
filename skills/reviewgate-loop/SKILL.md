@@ -89,6 +89,8 @@ jq -r '
 ' .reviewgate/review.json
 ```
 
+An error with `angle_id == "artifact_validation"` is non-retryable for the current run: its score, status, angle references, or reviewed SHA failed deterministic validation. Do not use discarded model text as repair guidance; request a fresh review on the current head.
+
 If the artifact is missing or stale, read the latest canonical summary and inline finding comments:
 
 In a checked-out GitHub repository, `gh api` replaces `{owner}` and `{repo}` from the current repo. Outside a checkout, set `GH_REPO=OWNER/REPO` or replace those placeholders explicitly.
