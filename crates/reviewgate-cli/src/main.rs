@@ -15,7 +15,7 @@ use reviewgate_core::{
     ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewStage, ReviewStatus, Severity,
     SummaryOptions, SummaryState, compute_effective_score, compute_metrics, compute_score,
     estimate_model_cost_usd, extract_summary_state, fallback_model_pricing,
-    parse_openrouter_model_pricing, render_summary, render_summary_with_options,
+    parse_openrouter_model_pricing, render_summary, render_summary_with_options, status_for_score,
 };
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
@@ -542,15 +542,7 @@ impl AngleReviewFailure {
     }
 
     fn message(&self) -> &'static str {
-        match self {
-            Self::Timeout => "The reviewer request timed out.",
-            Self::Transport => "The reviewer transport failed.",
-            Self::EmptyResponse => "The reviewer returned an empty response.",
-            Self::MalformedResponse => "The reviewer returned an invalid structured response.",
-            Self::Provider { .. } => {
-                "The reviewer provider rejected or could not complete the request."
-            }
-        }
+        self.kind().public_message()
     }
 }
 
@@ -1559,17 +1551,13 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> CliResult<()> {
         println!("ReviewGate finding comments skipped: missing PR number.");
         return Ok(());
     };
-    let Some(commit_id) = pull_request_head_sha(&event) else {
-        println!("ReviewGate finding comments skipped: missing PR head SHA.");
-        return Ok(());
-    };
-
-    let artifact = read_artifact(&options.input)?;
+    let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
+    let repository = github_repository()?;
+    let commit_id = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
+    let artifact = read_prepared_artifact(&options.input, &commit_id)?;
     let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
         .unwrap_or(Severity::P4);
 
-    let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
-    let repository = github_repository()?;
     let existing_issue_comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let existing_comments = fetch_pull_comments(&repo, &repository, pr_number)?;
     let changed_lines = collect_changed_lines(&repo)?;
@@ -1604,7 +1592,7 @@ fn publish_findings_inner(options: &PublishFindingsOptions) -> CliResult<()> {
     let mut posted = 0u32;
     let mut failed = 0u32;
     for draft in drafts {
-        let payload = build_inline_comment_payload(&draft, commit_id);
+        let payload = build_inline_comment_payload(&draft, &commit_id);
         if gh_api_json(
             &repo,
             "POST",
@@ -1695,10 +1683,11 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
         return Ok(());
     };
     let repository = github_repository()?;
+    let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
     let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
     let previous_state = reviewgate_github::find_summary_comment(&comments)
         .and_then(|comment| recover_summary_state(&comment.body, "summary publish"));
-    let artifact = read_artifact(&options.input)?.with_computed_score()?;
+    let artifact = read_prepared_artifact(&options.input, &head_sha)?;
     let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
         .unwrap_or(Severity::P4);
     let summary = render_summary_with_options(
@@ -1743,24 +1732,36 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> CliResult<(
     }
     let repo = repo.canonicalize().unwrap_or(repo);
     let event = read_github_event()?;
-    let artifact = read_artifact(&input).and_then(|artifact| Ok(artifact.with_computed_score()?));
+    let repository = github_repository()?;
+    let live_pull_request_head = match event.as_ref().and_then(pull_request_number) {
+        Some(pr_number) => Some(fetch_rereview_target(&repo, &repository, pr_number)?.head_sha),
+        None => None,
+    };
+    let artifact = read_artifact(&input);
     let (head_sha, conclusion, title, summary) = match artifact {
         Ok(artifact) => {
-            let head_sha = event
-                .as_ref()
-                .and_then(pull_request_head_sha)
-                .unwrap_or(&artifact.reviewed_sha)
-                .to_string();
+            let head_sha = live_pull_request_head.clone().unwrap_or_else(|| {
+                event
+                    .as_ref()
+                    .and_then(pull_request_head_sha)
+                    .unwrap_or(&artifact.reviewed_sha)
+                    .to_string()
+            });
+            let artifact = prepare_and_persist_artifact(&input, artifact, &head_sha)?;
             let conclusion = check_run_conclusion_for_status(&artifact.status);
             let title = check_run_title(&artifact);
             let summary = check_run_summary(&artifact);
             (head_sha, conclusion, title, summary)
         }
         Err(error) => {
-            let head_sha = event
-                .as_ref()
-                .and_then(pull_request_head_sha)
-                .map(str::to_string)
+            let head_sha = live_pull_request_head
+                .clone()
+                .or_else(|| {
+                    event
+                        .as_ref()
+                        .and_then(pull_request_head_sha)
+                        .map(str::to_string)
+                })
                 .or_else(|| git(&repo, ["rev-parse", "HEAD"]).ok())
                 .context("ReviewGate check run failed: could not determine head SHA")?;
             (
@@ -1780,7 +1781,6 @@ fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> CliResult<(
         summary,
         github_actions_run_url(),
     );
-    let repository = github_repository()?;
     gh_api_json(
         &repo,
         "POST",
@@ -1801,11 +1801,43 @@ fn check_run_title(artifact: &ReviewArtifact) -> String {
     }
 }
 
+fn read_prepared_artifact(path: &Path, current_head_sha: &str) -> CliResult<ReviewArtifact> {
+    let artifact = read_artifact(path)?;
+    prepare_and_persist_artifact(path, artifact, current_head_sha)
+}
+
+fn prepare_and_persist_artifact(
+    path: &Path,
+    artifact: ReviewArtifact,
+    current_head_sha: &str,
+) -> CliResult<ReviewArtifact> {
+    let prepared = artifact.clone().prepared_for_publication(current_head_sha);
+    if prepared != artifact {
+        let json = serde_json::to_string_pretty(&prepared)?;
+        fs::write(path, json)
+            .with_context(|| format!("failed to write prepared artifact {}", path.display()))?;
+    }
+    Ok(prepared)
+}
+
 fn check_run_summary(artifact: &ReviewArtifact) -> String {
     if artifact.status != ReviewStatus::ReviewError {
         return artifact.verdict.clone();
     }
-    let errors = serde_json::to_string_pretty(&artifact.angle_errors)
+    let public_errors = artifact
+        .angle_errors
+        .iter()
+        .map(|error| {
+            serde_json::json!({
+                "angle_id": error.angle_id,
+                "angle_name": error.angle_name,
+                "kind": error.kind.as_str(),
+                "retryable": error.retryable,
+                "message": error.message,
+            })
+        })
+        .collect::<Vec<_>>();
+    let errors = serde_json::to_string_pretty(&public_errors)
         .unwrap_or_else(|_| "[]".to_string())
         .lines()
         .map(|line| format!("    {line}"))
@@ -2940,10 +2972,13 @@ fn parse_angle_artifact_content(content: &str) -> Result<ReviewArtifact, AngleRe
     if content.trim().is_empty() {
         return Err(AngleReviewFailure::empty_response());
     }
-    let artifact =
+    let mut artifact =
         parse_model_artifact(content).map_err(|_| AngleReviewFailure::malformed_response())?;
     if artifact.status == ReviewStatus::ReviewError || !artifact.angle_errors.is_empty() {
         return Err(AngleReviewFailure::malformed_response());
+    }
+    for finding in &mut artifact.findings {
+        finding.angle_id = None;
     }
     artifact
         .validate()
@@ -3188,14 +3223,6 @@ fn stable_id_hash(value: &str) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
-}
-
-fn status_for_score(score: u8) -> ReviewStatus {
-    if score >= DEFAULT_TARGET_SCORE {
-        ReviewStatus::Passed
-    } else {
-        ReviewStatus::NeedsChanges
-    }
 }
 
 fn non_empty_verdict(verdict: &str, angle_name: &str) -> String {
@@ -4575,7 +4602,7 @@ review_angles:
                 kind: ReviewErrorKind::Timeout,
                 retryable: true,
                 message: "The reviewer request timed out.".to_string(),
-                model: "balanced".to_string(),
+                model: "balanced-sentinel-secret".to_string(),
             }],
             findings: vec![],
             notes: vec![],
@@ -4594,6 +4621,164 @@ review_angles:
         assert!(check_summary.contains("Outcome: `review_error` (no numeric score)."));
         assert!(check_summary.contains("\"kind\": \"timeout\""));
         assert!(check_summary.contains("\"retryable\": true"));
+        assert!(!check_summary.contains("sentinel-secret"));
+    }
+
+    #[test]
+    fn invalid_score_state_fails_closed_to_the_same_safe_publication_outcome() {
+        let artifact = ReviewArtifact {
+            score: Some(0),
+            target_score: 5,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "<untrusted contradictory verdict>".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![],
+            findings: vec![],
+            notes: vec!["<untrusted note>".to_string()],
+        };
+
+        let safe = artifact.prepared_for_publication("abc123");
+        let summary = render_summary(&safe).expect("safe summary renders");
+
+        assert_eq!(safe.status, ReviewStatus::ReviewError);
+        assert_eq!(safe.score, None);
+        assert_eq!(check_run_conclusion_for_status(&safe.status), "failure");
+        assert!(summary.contains("Review incomplete"));
+        assert!(check_run_summary(&safe).contains("artifact_validation"));
+        assert!(check_run_summary(&safe).contains("malformed_response"));
+        assert!(!summary.contains("untrusted"));
+        assert!(!check_run_summary(&safe).contains("untrusted"));
+    }
+
+    #[test]
+    fn stale_reviewed_sha_fails_closed_on_the_current_pull_request_head() {
+        let artifact = ReviewArtifact {
+            score: Some(5),
+            target_score: 5,
+            reviewed_sha: "stale-sha".to_string(),
+            status: ReviewStatus::Passed,
+            verdict: "Clean.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+
+        let safe = artifact.prepared_for_publication("current-sha");
+
+        assert_eq!(safe.reviewed_sha, "current-sha");
+        assert_eq!(safe.status, ReviewStatus::ReviewError);
+        assert_eq!(safe.score, None);
+        assert_eq!(check_run_conclusion_for_status(&safe.status), "failure");
+    }
+
+    #[test]
+    fn prepared_publication_artifact_replaces_the_agent_json() {
+        let dir = unique_test_dir("prepared-publication-artifact");
+        let path = dir.join("review.json");
+        let artifact = ReviewArtifact {
+            score: Some(0),
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "stale-sha".to_string(),
+            status: ReviewStatus::NeedsChanges,
+            verdict: "untrusted".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![],
+            findings: vec![],
+            notes: vec![],
+        };
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&artifact).expect("artifact serializes"),
+        )
+        .expect("write artifact");
+
+        let prepared = read_prepared_artifact(&path, "current-sha").expect("artifact prepares");
+        let persisted = read_artifact(&path).expect("prepared artifact persisted");
+        fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(prepared, persisted);
+        assert_eq!(persisted.reviewed_sha, "current-sha");
+        assert_eq!(persisted.status, ReviewStatus::ReviewError);
+        assert_eq!(persisted.score, None);
+    }
+
+    #[test]
+    fn summary_and_check_snapshots_agree_for_every_completed_score() {
+        let cases = [
+            (None, 5, ReviewStatus::Passed, "success"),
+            (Some(Severity::P0), 1, ReviewStatus::NeedsChanges, "neutral"),
+            (Some(Severity::P1), 2, ReviewStatus::NeedsChanges, "neutral"),
+            (Some(Severity::P2), 3, ReviewStatus::NeedsChanges, "neutral"),
+            (Some(Severity::P3), 4, ReviewStatus::NeedsChanges, "neutral"),
+            (Some(Severity::P4), 5, ReviewStatus::Passed, "success"),
+        ];
+
+        for (severity, score, status, conclusion) in cases {
+            let findings = severity
+                .map(|severity| {
+                    vec![reviewgate_core::Finding {
+                        id: format!("finding-{score}"),
+                        angle_id: None,
+                        scope: reviewgate_core::FindingScope::Pr,
+                        severity,
+                        confidence: 1.0,
+                        file: None,
+                        line: None,
+                        title: "Projection fixture".to_string(),
+                        detail: None,
+                        agent_instruction: "Fix the projection fixture.".to_string(),
+                    }]
+                })
+                .unwrap_or_default();
+            let artifact = ReviewArtifact {
+                score: Some(score),
+                target_score: DEFAULT_TARGET_SCORE,
+                reviewed_sha: "abc123".to_string(),
+                status: status.clone(),
+                verdict: "Projection fixture.".to_string(),
+                models: vec!["balanced".to_string()],
+                estimated_cost_usd: None,
+                cost_summary: None,
+                metrics: None,
+                review_stages: vec![],
+                angle_results: vec![],
+                angle_errors: vec![],
+                findings,
+                notes: vec![],
+            };
+
+            let summary = render_summary(&artifact).expect("summary renders");
+
+            assert!(summary.contains(&format!("Confidence Score: {score}/5")));
+            assert_eq!(
+                check_run_title(&artifact),
+                format!(
+                    "ReviewGate: {score}/5 ({}, review completed)",
+                    status.as_str()
+                )
+            );
+            assert_eq!(
+                check_run_conclusion_for_status(&artifact.status),
+                conclusion
+            );
+        }
     }
 
     #[test]
@@ -5659,6 +5844,33 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         assert_eq!(failure.kind(), ReviewErrorKind::MalformedResponse);
         assert!(failure.retryable());
+    }
+
+    #[test]
+    fn model_supplied_angle_ownership_is_replaced_before_validation() {
+        let content = serde_json::json!({
+            "score": 3,
+            "target_score": 5,
+            "reviewed_sha": "abc123",
+            "status": "needs_changes",
+            "verdict": "Material issue.",
+            "models": ["balanced"],
+            "findings": [{
+                "id": "finding-1",
+                "angle_id": "model-invented",
+                "scope": "pr",
+                "severity": "P2",
+                "confidence": 1.0,
+                "title": "Material issue",
+                "agent_instruction": "Fix the issue."
+            }],
+            "notes": []
+        })
+        .to_string();
+
+        let artifact = parse_angle_artifact_content(&content).expect("artifact parses");
+
+        assert_eq!(artifact.findings[0].angle_id, None);
     }
 
     #[test]

@@ -612,12 +612,9 @@ ReviewGate uses a fixed `5/5` passing target.
 | `P3` | `4/5` | Lower-severity but still score-affecting issue. |
 | `P4` | `5/5` | Advisory. Does not block a `5/5` score by itself. |
 
-The finding-derived score is the minimum score ceiling across all findings, or `5` when there are no findings.
+The finding-derived score is the minimum score ceiling across all findings, or `5` when there are no findings. Every successful angle score is derived from the findings it references, and the top-level score is derived from the complete finding set. A completed review with no score-affecting findings therefore cannot report `0/5`.
 
-For a completed review, the effective top-level score is the minimum of:
-
-- the finding-derived score;
-- every enabled review angle score.
+Before publishing findings, the canonical summary, or the GitHub check, ReviewGate validates that the completed score and status match the structured findings, each angle owns and references its complete finding set, and `reviewed_sha` equals the current PR head. A stale or contradictory artifact is replaced with a sanitized, non-retryable `artifact_validation` angle error for the current head, using the existing `malformed_response` error kind; untrusted verdict, note, and finding text from the invalid artifact is not published. The prepared artifact also replaces `.reviewgate/review.json`, so agents and GitHub surfaces consume the same safe state.
 
 If an angle times out, returns empty or malformed output, or fails at the provider or transport boundary, the run is inconclusive. ReviewGate records a typed `angle_errors` entry, sets `status` to `review_error`, and sets `score` to `null`; it never turns reviewer failure into a code-quality zero. The canonical summary preserves and labels the latest valid score instead of replacing it with the inconclusive run.
 
@@ -658,7 +655,7 @@ Required top-level fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `score` | integer `0..5` or null | Effective score after deterministic recomputation, or null for `review_error`. |
+| `score` | integer `0..5` or null | Score derived from validated structured findings, or null for `review_error`. |
 | `reviewed_sha` | string | Commit SHA reviewed by this artifact. In PR events, this is the PR head SHA. |
 | `status` | `"passed"`, `"needs_changes"`, or `"review_error"` | Completed outcomes derive from the fixed `5/5` target; reviewer failures use `review_error`. |
 | `verdict` | string | Concise overall verdict. Concrete defects mentioned here should also appear as findings. |
@@ -674,7 +671,7 @@ Optional top-level fields:
 | `cost_summary` | object or null | Current cost plus per-component cost details. |
 | `metrics` | object or null | Finding counts, severity counts, inline candidate count, analyzed line count, and cost source. |
 | `review_stages` | array | Review stages that ran or were selected for reporting. |
-| `angle_results` | array | Per-angle score, status, verdict, model, and finding IDs. |
+| `angle_results` | array | Per-angle score and status derived from the angle-owned `finding_ids`, plus verdict and model. |
 | `angle_errors` | array | Sanitized typed failures with angle, kind, retryability, message, and model. |
 
 Finding fields:

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -77,6 +79,20 @@ impl ReviewErrorKind {
             ReviewErrorKind::EmptyResponse => "empty_response",
             ReviewErrorKind::ProviderError => "provider_error",
             ReviewErrorKind::TransportError => "transport_error",
+        }
+    }
+
+    pub fn public_message(&self) -> &'static str {
+        match self {
+            ReviewErrorKind::Timeout => "The reviewer request timed out.",
+            ReviewErrorKind::MalformedResponse => {
+                "The reviewer returned an invalid structured response."
+            }
+            ReviewErrorKind::EmptyResponse => "The reviewer returned an empty response.",
+            ReviewErrorKind::ProviderError => {
+                "The reviewer provider rejected or could not complete the request."
+            }
+            ReviewErrorKind::TransportError => "The reviewer transport failed.",
         }
     }
 }
@@ -379,6 +395,11 @@ pub struct ReviewArtifact {
 
 impl ReviewArtifact {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.reviewed_sha.trim().is_empty() {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "reviewed_sha must not be empty".to_string(),
+            ));
+        }
         if let Some(score) = self.score {
             validate_score(score)?;
         }
@@ -397,15 +418,29 @@ impl ReviewArtifact {
                 }
             }
             ReviewStatus::Passed | ReviewStatus::NeedsChanges => {
-                if self.score.is_none() {
+                let Some(score) = self.score else {
                     return Err(ReviewGateError::InvalidReviewOutcome(
                         "completed review must expose a numeric score".to_string(),
                     ));
-                }
+                };
                 if !self.angle_errors.is_empty() {
                     return Err(ReviewGateError::InvalidReviewOutcome(
                         "angle errors require review_error status".to_string(),
                     ));
+                }
+                let expected_score = compute_score(&self.findings);
+                if score != expected_score {
+                    return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                        "score {score} does not match derived score {expected_score}"
+                    )));
+                }
+                let expected_status = status_for_score(expected_score);
+                if self.status != expected_status {
+                    return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                        "status {} does not match derived status {}",
+                        self.status.as_str(),
+                        expected_status.as_str()
+                    )));
                 }
             }
         }
@@ -421,14 +456,118 @@ impl ReviewArtifact {
         for stage in &self.review_stages {
             stage.validate()?;
         }
-        for angle in &self.angle_results {
-            angle.validate()?;
-        }
+        self.validate_angle_outcomes()?;
         for error in &self.angle_errors {
             error.validate()?;
         }
+        self.validate_angle_errors()?;
         for finding in &self.findings {
             finding.validate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_angle_outcomes(&self) -> Result<(), ReviewGateError> {
+        let mut finding_ids = BTreeSet::new();
+        for finding in &self.findings {
+            if !finding_ids.insert(finding.id.as_str()) {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "duplicate finding id {}",
+                    finding.id
+                )));
+            }
+        }
+
+        let mut angle_ids = BTreeSet::new();
+        for angle in &self.angle_results {
+            angle.validate()?;
+            if !angle_ids.insert(angle.id.as_str()) {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "duplicate review angle id {}",
+                    angle.id
+                )));
+            }
+
+            let mut referenced_ids = BTreeSet::new();
+            let mut angle_findings = Vec::new();
+            for finding_id in &angle.finding_ids {
+                if !referenced_ids.insert(finding_id.as_str()) {
+                    return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                        "review angle {} repeats finding id {finding_id}",
+                        angle.id
+                    )));
+                }
+                let finding = self
+                    .findings
+                    .iter()
+                    .find(|finding| finding.id == *finding_id)
+                    .ok_or_else(|| {
+                        ReviewGateError::InvalidReviewOutcome(format!(
+                            "review angle {} references unknown finding id {finding_id}",
+                            angle.id
+                        ))
+                    })?;
+                if finding.angle_id.as_deref() != Some(angle.id.as_str()) {
+                    return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                        "finding {finding_id} is not owned by review angle {}",
+                        angle.id
+                    )));
+                }
+                angle_findings.push(finding.clone());
+            }
+            if let Some(omitted) = self.findings.iter().find(|finding| {
+                finding.angle_id.as_deref() == Some(angle.id.as_str())
+                    && !referenced_ids.contains(finding.id.as_str())
+            }) {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "review angle {} omits finding id {}",
+                    angle.id, omitted.id
+                )));
+            }
+
+            let expected_score = compute_score(&angle_findings);
+            let expected_status = status_for_score(expected_score);
+            if angle.score != expected_score || angle.status != expected_status {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "review angle {} outcome does not match its findings",
+                    angle.id
+                )));
+            }
+        }
+        if let Some(orphaned) = self.findings.iter().find(|finding| {
+            finding
+                .angle_id
+                .as_deref()
+                .is_some_and(|angle_id| !angle_ids.contains(angle_id))
+        }) {
+            return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                "finding {} is owned by an unknown review angle",
+                orphaned.id
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_angle_errors(&self) -> Result<(), ReviewGateError> {
+        let successful_angle_ids = self
+            .angle_results
+            .iter()
+            .map(|angle| angle.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut failed_angle_ids = BTreeSet::new();
+        for error in &self.angle_errors {
+            if !failed_angle_ids.insert(error.angle_id.as_str()) {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "duplicate review angle error id {}",
+                    error.angle_id
+                )));
+            }
+            if successful_angle_ids.contains(error.angle_id.as_str()) {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "review angle {} cannot both succeed and fail",
+                    error.angle_id
+                )));
+            }
         }
         Ok(())
     }
@@ -438,17 +577,57 @@ impl ReviewArtifact {
         if self.angle_errors.is_empty() {
             let score = compute_effective_score(&self.findings, &self.angle_results);
             self.score = Some(score);
-            self.status = if score >= DEFAULT_TARGET_SCORE {
-                ReviewStatus::Passed
-            } else {
-                ReviewStatus::NeedsChanges
-            };
+            self.status = status_for_score(score);
         } else {
             self.score = None;
             self.status = ReviewStatus::ReviewError;
         }
         self.validate()?;
         Ok(self)
+    }
+
+    pub fn prepared_for_publication(mut self, current_head_sha: &str) -> Self {
+        if self.reviewed_sha != current_head_sha || self.validate().is_err() {
+            return Self::artifact_validation_error(current_head_sha);
+        }
+        if self.status == ReviewStatus::ReviewError {
+            self.verdict = "ReviewGate could not complete every enabled review angle.".to_string();
+            self.notes.clear();
+            for error in &mut self.angle_errors {
+                error.message = if error.angle_id == "artifact_validation" {
+                    "The review artifact failed deterministic validation.".to_string()
+                } else {
+                    error.kind.public_message().to_string()
+                };
+            }
+        }
+        self
+    }
+
+    fn artifact_validation_error(current_head_sha: &str) -> Self {
+        Self {
+            score: None,
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: current_head_sha.to_string(),
+            status: ReviewStatus::ReviewError,
+            verdict: "ReviewGate rejected an internally inconsistent review artifact.".to_string(),
+            models: vec!["reviewgate".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "artifact_validation".to_string(),
+                angle_name: "Artifact validation".to_string(),
+                kind: ReviewErrorKind::MalformedResponse,
+                retryable: false,
+                message: "The review artifact failed deterministic validation.".to_string(),
+                model: "reviewgate".to_string(),
+            }],
+            findings: vec![],
+            notes: vec![],
+        }
     }
 }
 
@@ -486,13 +665,21 @@ pub fn compute_score(findings: &[Finding]) -> u8 {
 
 pub fn compute_effective_score(findings: &[Finding], angle_results: &[ReviewAngleResult]) -> u8 {
     let finding_score = compute_score(findings);
-    // Enabled angle results are part of the gate: an incomplete angle uses score 0 so missing
-    // coverage cannot be reported as a clean 5/5 just because another angle found no findings.
+    // Angle results contain only successfully completed reviews. Their scores are validated
+    // against their referenced findings before an artifact can be published.
     angle_results
         .iter()
         .map(|angle| angle.score)
         .min()
         .map_or(finding_score, |angle_score| angle_score.min(finding_score))
+}
+
+pub fn status_for_score(score: u8) -> ReviewStatus {
+    if score >= DEFAULT_TARGET_SCORE {
+        ReviewStatus::Passed
+    } else {
+        ReviewStatus::NeedsChanges
+    }
 }
 
 pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> ReviewMetrics {
@@ -980,11 +1167,7 @@ pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, Revi
     {
         state.last_valid_reviewed_sha = Some(state.last_reviewed_sha.clone());
         state.last_valid_score = Some(score);
-        state.last_valid_status = Some(if score >= DEFAULT_TARGET_SCORE {
-            ReviewStatus::Passed
-        } else {
-            ReviewStatus::NeedsChanges
-        });
+        state.last_valid_status = Some(status_for_score(score));
     }
     state.validate()?;
     Ok(Some(state))
@@ -1327,6 +1510,296 @@ fn format_line_count(line_count: u32) -> String {
 mod tests {
     use super::*;
 
+    fn scoring_artifact(findings: Vec<Finding>) -> ReviewArtifact {
+        ReviewArtifact {
+            score: Some(compute_score(&findings)),
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "abc123".to_string(),
+            status: if compute_score(&findings) == DEFAULT_TARGET_SCORE {
+                ReviewStatus::Passed
+            } else {
+                ReviewStatus::NeedsChanges
+            },
+            verdict: "Deterministic test artifact.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![],
+            findings,
+            notes: vec![],
+        }
+    }
+
+    fn scoring_finding(id: &str, severity: Severity) -> Finding {
+        Finding {
+            id: id.to_string(),
+            angle_id: None,
+            scope: FindingScope::Pr,
+            severity,
+            confidence: 1.0,
+            file: None,
+            line: None,
+            title: "Invariant fixture".to_string(),
+            detail: None,
+            agent_instruction: "Fix the invariant fixture.".to_string(),
+        }
+    }
+
+    #[test]
+    fn completed_outcome_validation_exhaustively_matches_derived_score_and_status() {
+        let finding_sets = [
+            vec![],
+            vec![scoring_finding("p0", Severity::P0)],
+            vec![scoring_finding("p1", Severity::P1)],
+            vec![scoring_finding("p2", Severity::P2)],
+            vec![scoring_finding("p3", Severity::P3)],
+            vec![scoring_finding("p4", Severity::P4)],
+        ];
+
+        for findings in finding_sets {
+            let expected_score = compute_score(&findings);
+            let expected_status = if expected_score == DEFAULT_TARGET_SCORE {
+                ReviewStatus::Passed
+            } else {
+                ReviewStatus::NeedsChanges
+            };
+            for score in 0..=5 {
+                for status in [ReviewStatus::Passed, ReviewStatus::NeedsChanges] {
+                    let mut artifact = scoring_artifact(findings.clone());
+                    artifact.score = Some(score);
+                    artifact.status = status.clone();
+
+                    assert_eq!(
+                        artifact.validate().is_ok(),
+                        score == expected_score && status == expected_status,
+                        "score={score}, status={}, expected_score={expected_score}, expected_status={}",
+                        status.as_str(),
+                        expected_status.as_str(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn angle_outcome_validation_matches_its_referenced_findings() {
+        let mut artifact = scoring_artifact(vec![Finding {
+            angle_id: Some("general".to_string()),
+            ..scoring_finding("general:p2", Severity::P2)
+        }]);
+        artifact.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 5,
+            status: ReviewStatus::Passed,
+            verdict: "No issue.".to_string(),
+            model: "balanced".to_string(),
+            finding_ids: vec!["general:p2".to_string()],
+        }];
+
+        assert!(
+            artifact.validate().is_err(),
+            "an angle score/status cannot contradict its referenced findings"
+        );
+
+        artifact.angle_results[0].score = 3;
+        artifact.angle_results[0].status = ReviewStatus::NeedsChanges;
+        assert!(artifact.validate().is_ok());
+    }
+
+    #[test]
+    fn angle_outcome_rejects_unknown_or_omitted_finding_references() {
+        let mut artifact = scoring_artifact(vec![Finding {
+            angle_id: Some("general".to_string()),
+            ..scoring_finding("general:p2", Severity::P2)
+        }]);
+        artifact.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 5,
+            status: ReviewStatus::Passed,
+            verdict: "No issue.".to_string(),
+            model: "balanced".to_string(),
+            finding_ids: vec![],
+        }];
+        assert!(
+            artifact.validate().is_err(),
+            "angle-owned findings must be included in the angle result"
+        );
+
+        artifact.angle_results[0].finding_ids = vec!["missing".to_string()];
+        assert!(
+            artifact.validate().is_err(),
+            "angle results cannot cite findings that do not exist"
+        );
+
+        artifact.angle_results.clear();
+        assert!(
+            artifact.validate().is_err(),
+            "angle-owned findings require a matching successful angle result"
+        );
+    }
+
+    #[test]
+    fn angle_outcome_rejects_duplicate_and_cross_owned_ids() {
+        let finding = Finding {
+            angle_id: Some("general".to_string()),
+            ..scoring_finding("general:p2", Severity::P2)
+        };
+        let angle = ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 3,
+            status: ReviewStatus::NeedsChanges,
+            verdict: "Material issue.".to_string(),
+            model: "balanced".to_string(),
+            finding_ids: vec![finding.id.clone()],
+        };
+        let mut valid = scoring_artifact(vec![finding]);
+        valid.angle_results = vec![angle];
+        assert!(valid.validate().is_ok());
+
+        let mut duplicate_finding = valid.clone();
+        duplicate_finding
+            .findings
+            .push(duplicate_finding.findings[0].clone());
+        assert!(duplicate_finding.validate().is_err());
+
+        let mut duplicate_angle = valid.clone();
+        duplicate_angle
+            .angle_results
+            .push(duplicate_angle.angle_results[0].clone());
+        assert!(duplicate_angle.validate().is_err());
+
+        let mut repeated_reference = valid.clone();
+        repeated_reference.angle_results[0]
+            .finding_ids
+            .push("general:p2".to_string());
+        assert!(repeated_reference.validate().is_err());
+
+        let mut cross_owned = valid;
+        cross_owned.findings[0].angle_id = Some("security".to_string());
+        assert!(cross_owned.validate().is_err());
+    }
+
+    #[test]
+    fn angle_errors_reject_duplicate_ids_and_success_failure_overlap() {
+        let angle_error = ReviewAngleError {
+            angle_id: "security".to_string(),
+            angle_name: "Security".to_string(),
+            kind: ReviewErrorKind::Timeout,
+            retryable: true,
+            message: "The reviewer request timed out.".to_string(),
+            model: "balanced".to_string(),
+        };
+        let mut duplicate_errors = ReviewArtifact {
+            score: None,
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::ReviewError,
+            verdict: "Review incomplete.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![angle_error.clone(), angle_error.clone()],
+            findings: vec![],
+            notes: vec![],
+        };
+        assert!(duplicate_errors.validate().is_err());
+
+        duplicate_errors.angle_errors = vec![ReviewAngleError {
+            angle_id: "general".to_string(),
+            angle_name: "General".to_string(),
+            ..angle_error
+        }];
+        duplicate_errors.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 5,
+            status: ReviewStatus::Passed,
+            verdict: "No issue.".to_string(),
+            model: "balanced".to_string(),
+            finding_ids: vec![],
+        }];
+        assert!(duplicate_errors.validate().is_err());
+    }
+
+    #[test]
+    fn publication_preparation_preserves_a_fresh_valid_artifact() {
+        let artifact = scoring_artifact(vec![scoring_finding("p2", Severity::P2)]);
+
+        assert_eq!(
+            artifact.clone().prepared_for_publication("abc123"),
+            artifact
+        );
+    }
+
+    #[test]
+    fn publication_preparation_sanitizes_review_error_messages() {
+        let artifact = ReviewArtifact {
+            score: None,
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "abc123".to_string(),
+            status: ReviewStatus::ReviewError,
+            verdict: "provider body: sentinel-secret".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![],
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "general".to_string(),
+                angle_name: "General".to_string(),
+                kind: ReviewErrorKind::ProviderError,
+                retryable: false,
+                message: "provider body: sentinel-secret".to_string(),
+                model: "balanced".to_string(),
+            }],
+            findings: vec![],
+            notes: vec!["provider body: sentinel-secret".to_string()],
+        };
+
+        let prepared = artifact.prepared_for_publication("abc123");
+        let public_json = serde_json::to_string(&prepared).expect("artifact serializes");
+
+        assert_eq!(
+            prepared.verdict,
+            "ReviewGate could not complete every enabled review angle."
+        );
+        assert_eq!(
+            prepared.angle_errors[0].message,
+            "The reviewer provider rejected or could not complete the request."
+        );
+        assert!(prepared.notes.is_empty());
+        assert!(!public_json.contains("sentinel-secret"));
+    }
+
+    #[test]
+    fn invalid_publication_state_uses_the_existing_error_kind_contract() {
+        let mut artifact = scoring_artifact(vec![]);
+        artifact.score = Some(0);
+        artifact.status = ReviewStatus::NeedsChanges;
+
+        let prepared = artifact.prepared_for_publication("current-sha");
+
+        assert_eq!(prepared.reviewed_sha, "current-sha");
+        assert_eq!(prepared.status, ReviewStatus::ReviewError);
+        assert_eq!(prepared.score, None);
+        assert_eq!(prepared.angle_errors[0].angle_id, "artifact_validation");
+        assert_eq!(
+            prepared.angle_errors[0].kind,
+            ReviewErrorKind::MalformedResponse
+        );
+        assert!(!prepared.angle_errors[0].retryable);
+    }
+
     #[test]
     fn computes_score_from_highest_severity() {
         let findings = vec![Finding {
@@ -1450,7 +1923,7 @@ mod tests {
             review_stages: vec![],
             angle_results: vec![],
             angle_errors: vec![],
-            findings: vec![],
+            findings: vec![scoring_finding("rg_001", Severity::P3)],
             notes: vec![],
         };
 
@@ -1703,7 +2176,7 @@ mod tests {
     #[test]
     fn min_severity_filters_inline_candidate_count_without_listing_findings() {
         let artifact = ReviewArtifact {
-            score: Some(4),
+            score: Some(3),
             target_score: 5,
             reviewed_sha: "abc123".to_string(),
             status: ReviewStatus::NeedsChanges,
@@ -2315,10 +2788,10 @@ mod tests {
     #[test]
     fn summary_metrics_are_recomputed_from_render_options() {
         let artifact = ReviewArtifact {
-            score: Some(5),
-            target_score: 3,
+            score: Some(3),
+            target_score: 5,
             reviewed_sha: "abc123".to_string(),
-            status: ReviewStatus::Passed,
+            status: ReviewStatus::NeedsChanges,
             verdict: "Clean.".to_string(),
             models: vec!["deepseek/deepseek-v4-flash".to_string()],
             estimated_cost_usd: None,

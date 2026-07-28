@@ -60,7 +60,7 @@ jq -r '
 ' .reviewgate/review.json
 ```
 
-Also inspect review angles. An angle below `5/5` can keep the top-level score below `5` even when no individual finding appears to explain it.
+Also inspect review angles. Each angle score must be explained by its referenced findings. If a completed angle is below `5/5` without a score-affecting referenced finding, treat the artifact as invalid and wait for or request a fresh ReviewGate run.
 
 ```bash
 jq -r '
@@ -105,13 +105,15 @@ Use these categories:
 
 | Category | Meaning |
 | --- | --- |
-| Score-blocking | `P0` through `P3` finding, failing angle result, or top-level `score < 5` / `status == "needs_changes"` |
-| Review error | `status == "review_error"` and `score == null`; retry the listed `angle_errors` instead of changing PR code |
+| Score-blocking | `P0` through `P3` finding, consistently derived angle result, or top-level `score < 5` / `status == "needs_changes"` |
+| Review error | `status == "review_error"` and `score == null`; retry only listed `angle_errors` with `retryable == true` instead of changing PR code |
 | Advisory | `P4` finding or non-blocking ReviewGate comment |
 | Stale | Finding/comment targets an older `reviewed_sha` or code that has already changed |
 | Needs human judgment | ReviewGate asks for a product, security, or API decision the agent cannot safely infer |
 
 Do not ignore ReviewGate findings because other CI checks are green. ReviewGate deliberately reports low scores without failing the workflow.
+
+If an error has `angle_id == "artifact_validation"` or `retryable == false`, do not retry that failed artifact or use its discarded model text as repair guidance. Request a fresh review on the current PR head; inspect configuration or provider access first when the non-retryable error is not an artifact-validation failure.
 
 ## Output Format
 
