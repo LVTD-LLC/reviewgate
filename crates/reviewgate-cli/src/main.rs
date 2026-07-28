@@ -4404,11 +4404,18 @@ review_angles:
     #[test]
     fn readme_documents_the_least_privilege_single_workflow_rereview_install() {
         let readme = include_str!("../../../README.md");
+        let rereview_job = readme
+            .split("  rereview:")
+            .nth(1)
+            .expect("rereview job example")
+            .split("Name the workflow file")
+            .next()
+            .expect("rereview job example end");
 
         assert!(readme.contains("issue_comment:"));
         assert!(readme.contains("github.event.comment.body == '@reviewgate review'"));
-        assert!(readme.contains("actions: write"));
-        assert!(readme.contains("pull-requests: read"));
+        assert!(rereview_job.contains("actions: write"));
+        assert!(rereview_job.contains("pull-requests: write"));
         assert!(readme.contains("group: reviewgate-rereview-${{ github.event.comment.id }}"));
         assert!(readme.contains("cancel-in-progress: false"));
         assert!(readme.contains("mode: rereview"));

@@ -142,7 +142,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: write
-      pull-requests: read
+      pull-requests: write
       issues: write
     concurrency:
       group: reviewgate-rereview-${{ github.event.comment.id }}
@@ -169,7 +169,7 @@ The fork-safety guard is intentional. GitHub does not expose repository secrets 
 
 If `checks: write` is omitted, the review can still write JSON and summary comments, but the check-run publishing step cannot succeed. If `issues: write` is omitted, canonical summary publishing fails visibly because the summary is product-critical.
 
-The rereview job has a separate least-privilege boundary: `actions: write` to enumerate and rerun the selected workflow run, `pull-requests: read` to verify the open PR and current head SHA, and `issues: write` for idempotency and bounded feedback.
+The rereview job has a separate least-privilege boundary: `actions: write` to enumerate and rerun the selected workflow run, `pull-requests: write` to verify the open PR/current head and reserve the command with a bot-owned PR comment, and `issues: write` for the acknowledgement reaction and bounded feedback. GitHub may reject PR conversation writes when the job grants only `pull-requests: read`, even though PR comments use the issues-comments API.
 
 ### Action Inputs
 
