@@ -136,7 +136,7 @@
         },
         "reproduction": { "type": ["string", "null"] },
         "suggested_fix": { "type": "string", "minLength": 1 },
-        "thread_id": { "type": ["integer", "null"], "minimum": 1 },
+        "thread_id": { "type": ["string", "null"], "minLength": 1 },
         "prior_dispositions": {
           "type": "array",
           "items": {

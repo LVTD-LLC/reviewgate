@@ -163,6 +163,17 @@
             "superseded"
           ]
         },
+        "submitted_disposition": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "fixed",
+            "rejected_with_evidence",
+            "already_implemented",
+            "intentional_contract",
+            "needs_human"
+          ]
+        },
         "evidence_summary": { "type": "string", "minLength": 1 },
         "actor": { "type": "string", "minLength": 1 },
         "reviewed_sha": { "type": "string", "minLength": 1 },

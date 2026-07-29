@@ -3,13 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BlockingReason, CostSummary, Finding, FindingClassification, FindingDisposition,
-    FindingDispositionRecord, FindingEvidence, ReviewAngleError, ReviewArtifact, ReviewGateError,
-    ReviewScope, ReviewStatus, Severity, semantic_fingerprint,
+    AgentDisposition, BlockingReason, CostSummary, Finding, FindingClassification,
+    FindingDisposition, FindingDispositionRecord, FindingEvidence, MAX_DISPOSITION_HISTORY,
+    ReviewAngleError, ReviewArtifact, ReviewGateError, ReviewScope, ReviewStatus, Severity,
+    SummaryState, finding_code_fingerprint, semantic_fingerprint,
 };
 
 pub const AGENT_RESULT_SCHEMA_VERSION: &str = "reviewgate-agent-result/v1";
+pub const AGENT_DISPOSITIONS_SCHEMA_VERSION: &str = "reviewgate-agent-dispositions/v1";
 pub const MAX_AGENT_RESULT_BYTES: usize = 1024 * 1024;
+pub const MAX_AGENT_DISPOSITION_EVIDENCE_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct AgentReviewResult {
@@ -45,15 +48,113 @@ pub struct AgentResultFinding {
     pub evidence: Vec<FindingEvidence>,
     pub reproduction: Option<String>,
     pub suggested_fix: String,
-    pub thread_id: Option<u64>,
+    pub thread_id: Option<String>,
     pub prior_dispositions: Vec<FindingDispositionRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentDispositionSubmission {
+    pub semantic_fingerprint: String,
+    pub disposition: AgentDisposition,
+    pub evidence: String,
+    pub actor: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentDispositionState {
+    pub schema_version: String,
+    pub scope: ReviewScope,
+    pub reviewed_sha: String,
+    pub submission: AgentDispositionSubmission,
+}
+
+impl AgentDispositionState {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.schema_version != AGENT_DISPOSITIONS_SCHEMA_VERSION {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "agent dispositions have an unsupported schema_version".to_string(),
+            ));
+        }
+        if self.reviewed_sha.trim().is_empty() {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "agent dispositions reviewed_sha must not be empty".to_string(),
+            ));
+        }
+        if !matches!(
+            &self.scope,
+            ReviewScope::PullRequest {
+                repository,
+                pull_request_number,
+            } if !repository.trim().is_empty() && *pull_request_number > 0
+        ) {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "agent dispositions require pull request scope".to_string(),
+            ));
+        }
+        let submission = &self.submission;
+        if submission.semantic_fingerprint.trim().is_empty()
+            || submission.evidence.trim().is_empty()
+            || submission.evidence.len() > MAX_AGENT_DISPOSITION_EVIDENCE_BYTES
+            || submission.actor.trim().is_empty()
+        {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "agent dispositions require a finding fingerprint, bounded evidence, and an actor"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn apply_to_summary(&self, state: &mut SummaryState) -> Result<(), ReviewGateError> {
+        self.validate()?;
+        if self.scope != state.scope || self.reviewed_sha != state.last_reviewed_sha {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "agent dispositions do not match the canonical review state".to_string(),
+            ));
+        }
+        let submission = &self.submission;
+        let tracked = state
+            .tracked_findings
+            .iter_mut()
+            .find(|tracked| tracked.semantic_fingerprint == submission.semantic_fingerprint)
+            .ok_or_else(|| {
+                ReviewGateError::InvalidReviewOutcome(format!(
+                    "agent disposition references unknown finding {}",
+                    submission.semantic_fingerprint
+                ))
+            })?;
+        let disposition = submission.disposition.tracked_disposition();
+        let duplicate = tracked.disposition_history.iter().any(|record| {
+            record.submitted_disposition == Some(submission.disposition)
+                && record.evidence_summary == submission.evidence
+                && record.actor == submission.actor
+                && record.reviewed_sha == self.reviewed_sha
+        });
+        if !duplicate {
+            tracked.disposition = disposition;
+            tracked.disposition_history.push(FindingDispositionRecord {
+                disposition,
+                submitted_disposition: Some(submission.disposition),
+                evidence_summary: submission.evidence.clone(),
+                actor: submission.actor.clone(),
+                reviewed_sha: self.reviewed_sha.clone(),
+                code_fingerprint: finding_code_fingerprint(&tracked.finding),
+            });
+            if tracked.disposition_history.len() > MAX_DISPOSITION_HISTORY {
+                tracked
+                    .disposition_history
+                    .drain(0..tracked.disposition_history.len() - MAX_DISPOSITION_HISTORY);
+            }
+        }
+        state.validate()
+    }
 }
 
 impl AgentReviewResult {
     pub fn from_artifact(
         artifact: &ReviewArtifact,
         scope: ReviewScope,
-        thread_ids: BTreeMap<String, u64>,
+        thread_ids: BTreeMap<String, String>,
     ) -> Result<Self, ReviewGateError> {
         artifact.validate()?;
         let findings = if artifact.tracked_findings.is_empty() {
@@ -159,7 +260,7 @@ fn project_finding(
     finding: &Finding,
     disposition: FindingDisposition,
     history: &[FindingDispositionRecord],
-    thread_ids: &BTreeMap<String, u64>,
+    thread_ids: &BTreeMap<String, String>,
 ) -> AgentResultFinding {
     let grounding = finding.grounding.as_ref();
     AgentResultFinding {
@@ -179,7 +280,7 @@ fn project_finding(
             .unwrap_or_default(),
         reproduction: grounding.and_then(|grounding| grounding.reproduction.clone()),
         suggested_fix: finding.agent_instruction.clone(),
-        thread_id: thread_ids.get(&finding.id).copied(),
+        thread_id: thread_ids.get(&finding.id).cloned(),
         prior_dispositions: history.to_vec(),
     }
 }
@@ -189,8 +290,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        AgentReviewResult, FindingDisposition, ReviewArtifact, ReviewScope, TrackedFinding,
-        reconcile_findings, semantic_fingerprint,
+        AGENT_DISPOSITIONS_SCHEMA_VERSION, AgentDisposition, AgentDispositionState,
+        AgentDispositionSubmission, AgentReviewResult, FindingDisposition, ReviewArtifact,
+        ReviewScope, SummaryState, reconcile_findings, semantic_fingerprint,
     };
 
     #[test]
@@ -216,14 +318,14 @@ mod tests {
                 repository: "LVTD-LLC/reviewgate".to_string(),
                 pull_request_number: 48,
             },
-            BTreeMap::from([(finding_id, 1234)]),
+            BTreeMap::from([(finding_id, "PRRT_thread".to_string())]),
         )
         .expect("result projects");
 
         assert_eq!(result.schema_version, "reviewgate-agent-result/v1");
         assert_eq!(result.reviewed_sha, artifact.reviewed_sha);
         assert_eq!(result.findings.len(), 1);
-        assert_eq!(result.findings[0].thread_id, Some(1234));
+        assert_eq!(result.findings[0].thread_id.as_deref(), Some("PRRT_thread"));
         assert_eq!(
             result.findings[0].semantic_fingerprint,
             semantic_fingerprint(&artifact.findings[0])
@@ -267,13 +369,68 @@ mod tests {
                 .expect("needs changes result");
         assert_eq!(needs_changes.score, completed.score);
 
-        let review_error = completed
-            .prepared_for_publication("different-current-head")
-            .with_tracked_findings(Vec::<TrackedFinding>::new());
+        let mut review_error = completed.prepared_for_publication("different-current-head");
+        review_error.tracked_findings.clear();
         let error_result =
             AgentReviewResult::from_artifact(&review_error, ReviewScope::Local, BTreeMap::new())
                 .expect("review error result");
         assert_eq!(error_result.score, None);
         assert!(!error_result.angle_errors.is_empty());
+    }
+
+    #[test]
+    fn applies_every_agent_disposition_to_canonical_history_idempotently() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        let artifact = artifact.with_computed_score().expect("score");
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        let mut updates = Vec::new();
+
+        for disposition in [
+            AgentDisposition::Accepted,
+            AgentDisposition::Fixed,
+            AgentDisposition::RejectedWithEvidence,
+            AgentDisposition::AlreadyImplemented,
+            AgentDisposition::IntentionalContract,
+            AgentDisposition::NeedsHuman,
+        ] {
+            let update = AgentDispositionState {
+                schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+                scope: state.scope.clone(),
+                reviewed_sha: state.last_reviewed_sha.clone(),
+                submission: AgentDispositionSubmission {
+                    semantic_fingerprint: fingerprint.clone(),
+                    disposition,
+                    evidence: format!("{disposition:?} verified"),
+                    actor: "repair-agent".to_string(),
+                },
+            };
+            updates.push(update.clone());
+            update.apply_to_summary(&mut state).expect("applies");
+            let history_len = state.tracked_findings[0].disposition_history.len();
+            update.apply_to_summary(&mut state).expect("idempotent");
+            assert_eq!(
+                state.tracked_findings[0].disposition_history.len(),
+                history_len
+            );
+            assert_eq!(
+                state.tracked_findings[0]
+                    .disposition_history
+                    .last()
+                    .and_then(|record| record.submitted_disposition),
+                Some(disposition)
+            );
+        }
+        let history = state.tracked_findings[0].disposition_history.clone();
+        for update in &updates {
+            update.apply_to_summary(&mut state).expect("replay");
+        }
+        assert_eq!(state.tracked_findings[0].disposition_history, history);
     }
 }

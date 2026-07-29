@@ -9,10 +9,10 @@ mod convergence;
 
 pub use agent_result::*;
 pub use convergence::{
-    ConvergenceDelta, ConvergenceResult, FindingDisposition, FindingDispositionRecord,
-    FindingDispositionUpdate, LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_DISPOSITION_HISTORY,
-    ReviewScope, TrackedFinding, finding_code_fingerprint, reconcile_findings,
-    reconcile_findings_with_updates, semantic_fingerprint,
+    AgentDisposition, ConvergenceDelta, ConvergenceResult, FindingDisposition,
+    FindingDispositionRecord, FindingDispositionUpdate, LATE_BLOCKER_CONFIDENCE_THRESHOLD,
+    MAX_DISPOSITION_HISTORY, ReviewScope, TrackedFinding, finding_code_fingerprint,
+    reconcile_findings, reconcile_findings_with_updates, semantic_fingerprint,
 };
 
 pub const SUMMARY_MARKER: &str = "<!-- reviewgate-summary -->";
@@ -562,11 +562,6 @@ pub struct ReviewArtifact {
 }
 
 impl ReviewArtifact {
-    pub fn with_tracked_findings(mut self, tracked_findings: Vec<TrackedFinding>) -> Self {
-        self.tracked_findings = tracked_findings;
-        self
-    }
-
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.reviewed_sha.trim().is_empty() {
             return Err(ReviewGateError::InvalidReviewOutcome(

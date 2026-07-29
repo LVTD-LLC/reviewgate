@@ -6,6 +6,23 @@ branding:
   icon: shield
   color: blue
 
+outputs:
+  schema_version:
+    description: Version of the agent result contract.
+    value: ${{ steps.agent-result.outputs.schema_version }}
+  status:
+    description: Review outcome: passed, needs_changes, or review_error.
+    value: ${{ steps.agent-result.outputs.status }}
+  score:
+    description: Review score from 0 to 5, empty when review status is review_error.
+    value: ${{ steps.agent-result.outputs.score }}
+  reviewed_sha:
+    description: Exact pull request head reviewed by ReviewGate.
+    value: ${{ steps.agent-result.outputs.reviewed_sha }}
+  result_path:
+    description: Path to the versioned JSON agent result.
+    value: ${{ steps.agent-result.outputs.result_path }}
+
 inputs:
   mode:
     description: Run a pull request review or handle a maintainer rereview command.
@@ -149,3 +166,26 @@ runs:
           -p reviewgate-cli -- publish-check-run \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
+
+    - name: Publish ReviewGate agent result
+      id: agent-result
+      if: ${{ inputs.mode == 'review' && always() }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
+          -p reviewgate-cli -- publish-agent-result \
+          --repo "$GITHUB_WORKSPACE" \
+          --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
+          --output "$GITHUB_WORKSPACE/.reviewgate/result.json"
+
+    - name: Upload ReviewGate agent result
+      if: ${{ inputs.mode == 'review' && always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: reviewgate-agent-result-${{ steps.agent-result.outputs.reviewed_sha }}
+        path: ${{ github.workspace }}/.reviewgate/result.json
+        if-no-files-found: error
+        retention-days: 14
