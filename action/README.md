@@ -59,7 +59,7 @@ Use `prompt` for short inline text, `prompt_file` for repo-relative prompt files
 - `model`: Exact OpenRouter model id. Defaults to ReviewGate's built-in model.
 - `min_severity`: Lowest severity published as ReviewGate PR comments. Defaults to `P4`.
 
-Scores below `5` are reported as `needs_changes` in the JSON artifact and PR summary. They publish a neutral ReviewGate check-run conclusion but do not fail the workflow. Reviewer timeout, empty/malformed output, provider, and transport failures are reported separately as `review_error` with `score: null` and a failing check; they are never represented as code-quality zeroes. Other execution or required publishing failures exit non-zero.
+Scores below `5` are reported as `needs_changes` in the JSON artifact and PR summary. Validated blockers publish a failing ReviewGate check-run conclusion but do not fail the workflow job. Reviewer timeout, empty/malformed output, provider, and transport failures are reported separately as `review_error` with `score: null` and a failing, inconclusive check; they are never represented as code-quality zeroes. Other execution or required publishing failures exit non-zero.
 
 ## Runtime
 

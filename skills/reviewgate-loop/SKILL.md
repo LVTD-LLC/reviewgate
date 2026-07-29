@@ -28,7 +28,7 @@ Repeat until the stop condition is met:
 5. Trigger or wait for ReviewGate to rerun.
 6. Re-read the updated ReviewGate result.
 
-Do not stop because ordinary CI is green. ReviewGate low-score results use `needs_changes` and may publish a neutral check-run conclusion.
+Do not stop because ordinary CI is green. ReviewGate low-score results use `needs_changes` and publish a failing check-run conclusion.
 
 ## Workflow
 
@@ -60,17 +60,27 @@ jq -r '
 ' .reviewgate/review.json
 ```
 
-`P0` through `P3` findings are score-blocking because their score ceiling is below `5`. `P4` findings are advisory for score, but may still be worth fixing if ReviewGate published inline comments or the user asked for zero remaining ReviewGate comments.
+A finding is score-blocking only when ReviewGate assigns a non-null `blocking_reason` after checking its classification, P0-P3 severity, high confidence, and evidence-gate result. Other findings are advisory, but may still be worth fixing if ReviewGate published inline comments or the user asked for zero remaining ReviewGate comments.
 
 ```bash
 jq -r '
   .findings[]
-  | select(.severity != "P4")
+  | select(.blocking_reason != null)
   | "- [\(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  Claim: \(.grounding.claim)\n  Causal path: \(.grounding.causal_path)\n  \(.agent_instruction)"
 ' .reviewgate/review.json
 ```
 
-Before changing code, confirm every P0-P3 includes exact full-line `grounding.evidence` (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment; P0-P1 must also include a reproduction or exceptional proof. If a blocker lacks that contract, request a fresh review instead of repairing the unsupported claim.
+Keep advisory findings visible without mixing them into the blocking repair queue:
+
+```bash
+jq -r '
+  .findings[]
+  | select(.blocking_reason == null)
+  | "- [\(.classification) / \(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  Evidence: \(.evidence_gate_result)\n  \(.agent_instruction)"
+' .reviewgate/review.json
+```
+
+Before changing code, confirm every finding with non-null `blocking_reason` has `evidence_gate_result == "passed"`, high confidence, exact full-line `grounding.evidence` (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment; P0-P1 must also include a reproduction or exceptional proof. If a blocker lacks that contract, request a fresh review instead of repairing the unsupported claim.
 
 Also inspect angle results:
 
@@ -119,7 +129,7 @@ For each score-blocking finding:
 
 If a finding is stale, false positive, or requires a product/security decision, record that explicitly. Do not silently resolve it as fixed.
 
-After score-blocking findings, decide whether to address `P4` findings. A pure `5/5` score can still include `P4` advisory comments; only chase them when the user asked for no remaining comments, the fix is low-risk, or the advisory is clearly useful.
+After score-blocking findings, decide whether to address advisory findings. A pure `5/5` score can still include advisory comments at any severity; only chase them when the user asked for no remaining comments, the fix is low-risk, or the advisory is clearly useful.
 
 ### 4. Verify, Commit, and Push
 
@@ -199,8 +209,8 @@ Stop successfully only when:
 - Top-level `score == 5`.
 - Top-level `status == "passed"`.
 - ReviewGate has updated for the latest PR head SHA.
-- No score-blocking `P0` through `P3` findings remain.
-- Any remaining `P4` comments are either fixed or explicitly classified as accepted advisory items.
+- No findings with non-null `blocking_reason` remain.
+- Any remaining advisory comments are either fixed or explicitly classified as accepted advisory items.
 
 Stop without success when:
 

@@ -9,7 +9,8 @@ use std::process::Stdio;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
-    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, FindingEvidenceSide, ModelPreset,
+    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, EvidenceGateResult,
+    FindingClassification, FindingEvidenceSide, HIGH_CONFIDENCE_THRESHOLD, ModelPreset,
     ModelPricing, OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
     OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleError,
     ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewStage, ReviewStatus, Severity,
@@ -687,10 +688,12 @@ fn finalize_review_artifact(
         &mut artifact.review_stages,
         select_review_stages(context, &artifact.models[0]),
     );
-    if enforce_grounding {
+    let mut artifact = if enforce_grounding {
         ground_artifact_findings(repo, context, &mut artifact)?;
-    }
-    let mut artifact = artifact.with_computed_score()?;
+        artifact
+    } else {
+        artifact.with_computed_score()?
+    };
     let mut metrics = compute_metrics(&artifact, min_severity);
     metrics.analyzed_line_count = Some(context.analyzed_line_count);
     artifact.metrics = Some(metrics);
@@ -1876,7 +1879,7 @@ fn check_run_summary(artifact: &ReviewArtifact) -> String {
 fn check_run_conclusion_for_status(status: &ReviewStatus) -> &'static str {
     match status {
         ReviewStatus::Passed => "success",
-        ReviewStatus::NeedsChanges => "neutral",
+        ReviewStatus::NeedsChanges => "failure",
         ReviewStatus::ReviewError => "failure",
     }
 }
@@ -3090,9 +3093,9 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: &ReviewAngle) -
     prompt.push_str(
         "Every concrete defect mentioned in the verdict or notes must also appear as a separate finding with an actionable agent_instruction. Do not mention specific problems only in prose. If a diff changes scoring, review publishing, GitHub token permissions, comment ownership checks, marker encoding, secret handling, or workflow triggers, review each changed behavior independently and emit separate findings for distinct regressions.\n\n",
     );
-    prompt.push_str(
-        "P0-P3 findings are score-blocking and must include grounding with: one concise checked claim; a causal_path from the changed line to the user-visible failure; repository evidence whose path, side, one-based line, and exact full-line excerpt match either the checked-out head (`side: new`) or a deleted line in the reviewed diff (`side: old`); and related_tests for every existing test that exercises the alleged path (related tests must use `side: new`). At least one evidence entry must cite a changed line in the diff. P0-P1 additionally require a concrete reproduction or an exceptionally strong proof. If those requirements are not met, do not emit a blocking finding: put the uncertainty in notes or emit a P4 advisory. Never let a finding title assert a defect that its detail later retracts, redirects, calls acceptable, or describes as optional.\n\n",
-    );
+    prompt.push_str(&format!(
+        "Classify every finding as defect, security, reliability_risk, contract_ambiguity, or suggestion. Severity and confidence are independent: do not inflate severity to express uncertainty. Contract ambiguities and suggestions are advisory. Only defect, security, and reliability_risk findings at P0-P3 with confidence >= {HIGH_CONFIDENCE_THRESHOLD} can block, and only after ReviewGate validates their evidence. Set evidence_gate_result to passed for a proposed evidence-backed blocker and not_required for an advisory; ReviewGate recalibrates this field and blocking_reason deterministically before publication.\n\nP0-P3 findings proposed as blockers must include grounding with: one concise checked claim; a causal_path from the changed line to the user-visible failure; repository evidence whose path, side, one-based line, and exact full-line excerpt match either the checked-out head (`side: new`) or a deleted line in the reviewed diff (`side: old`); and related_tests for every existing test that exercises the alleged path (related tests must use `side: new`). At least one evidence entry must cite a changed line in the diff. P0-P1 additionally require a concrete reproduction or an exceptionally strong proof. If those requirements are not met, put the uncertainty in notes or emit a suggestion/contract_ambiguity advisory with blocking_reason null. Never let a finding title assert a defect that its detail later retracts, redirects, calls acceptable, or describes as optional.\n\n"
+    ));
     prompt.push_str(
         "GitHub workflow claims require a contract trace across the actual `on` triggers, workflow-level permissions, job-level permission overrides, local reusable-workflow callers, and the step that consumes the permission. Job-level permissions determine that job's effective grant, while a reusable workflow cannot elevate above its caller. `actions/upload-artifact` uses the Actions runtime artifact service and does not require `actions: write` on GITHUB_TOKEN. Check step-level env before claiming a value is missing. An explicit `git fetch --depth=1 origin <sha>` is not invalid merely because the initial checkout is shallow. Python 3 can resolve namespace packages for `python -m` without `__init__.py`. For CLI parsing claims, trace the argument slice at every call site and inspect exact-path tests before alleging that positional operands reach a flag parser.\n\nReviewGate workflow guidance: if the diff adds or updates a GitHub Actions workflow using `LVTD-LLC/reviewgate`, evaluate it against ReviewGate's documented installation contract. `uses: LVTD-LLC/reviewgate@v0` is the documented default install; do not emit a finding solely because it uses the moving v0 tag unless repository instructions require SHA-pinned third-party actions, the PR weakens an existing pin, or the diff provides concrete evidence that this repository must pin every action. For a full-featured ReviewGate workflow, `contents: read`, `pull-requests: write`, `issues: write`, and `checks: write` are the documented least-privilege permissions: `issues: write` publishes the canonical summary PR comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run. Do not flag that permission set as excessive for a fork-safe ReviewGate workflow. Flag permissions above that set, use of `pull_request_target` for untrusted code, or missing same-repository/Dependabot guards when repository secrets are used. Concurrency findings for workflow group expressions need a concrete collision or cancellation risk within the workflow's declared triggers; do not flag normal `cancel-in-progress` behavior or hypothetical collisions with unrelated workflows when the group is workflow-scoped. Optional hardening preferences such as action SHA pinning, job timeouts, extra secret preflight checks, or alternative concurrency fallback keys should not become findings unless repository policy requires them or the diff creates a material failure mode.\n\n",
     );
@@ -3224,8 +3227,8 @@ fn parse_angle_artifact_content(content: &str) -> Result<ReviewArtifact, AngleRe
     for finding in &mut artifact.findings {
         finding.angle_id = None;
     }
-    artifact
-        .validate()
+    let artifact = artifact
+        .with_computed_score()
         .map_err(|_| AngleReviewFailure::malformed_response())?;
     Ok(artifact)
 }
@@ -3388,9 +3391,23 @@ fn ground_artifact_findings(
 ) -> CliResult<()> {
     let diff_evidence = DiffEvidenceSet::from_unified_diff(&context.diff);
     let mut grounded_findings = Vec::new();
-    for finding in artifact.findings.drain(..) {
-        if !finding.is_blocking(DEFAULT_TARGET_SCORE) {
+    for mut finding in artifact.findings.drain(..) {
+        if finding.severity == Severity::P4
+            || matches!(
+                finding.classification,
+                FindingClassification::ContractAmbiguity | FindingClassification::Suggestion
+            )
+        {
+            finding.evidence_gate_result = EvidenceGateResult::NotRequired;
+            finding.calibrate_policy();
             grounded_findings.push(finding);
+            continue;
+        }
+        if !finding.requires_evidence_gate() {
+            artifact.notes.push(format!(
+                "Suppressed uncertain finding {}: confidence is below the high-confidence blocking threshold.",
+                finding.id
+            ));
             continue;
         }
         match finding_grounding_rejection(repo, &diff_evidence, &finding)? {
@@ -3398,7 +3415,11 @@ fn ground_artifact_findings(
                 "Suppressed ungrounded finding {}: {reason}.",
                 finding.id
             )),
-            None => grounded_findings.push(finding),
+            None => {
+                finding.evidence_gate_result = EvidenceGateResult::Passed;
+                finding.calibrate_policy();
+                grounded_findings.push(finding);
+            }
         }
     }
     artifact.findings = grounded_findings;
@@ -3419,13 +3440,13 @@ fn ground_artifact_findings(
         angle.score = compute_score(&angle_findings);
         angle.status = status_for_score(angle.score);
         angle.verdict = if angle.status == ReviewStatus::Passed {
-            "No grounded score-blocking findings.".to_string()
+            "No validated blockers.".to_string()
         } else {
             let count = angle_findings
                 .iter()
                 .filter(|finding| finding.is_blocking(DEFAULT_TARGET_SCORE))
                 .count();
-            format!("{count} grounded score-blocking finding(s) remain.")
+            format!("{count} validated blocker(s) remain.")
         };
     }
     if artifact.angle_errors.is_empty() {
@@ -5347,7 +5368,7 @@ review_angles:
 
         assert!(check_run_step.contains("publish-check-run"));
         assert!(check_run_step.contains("inputs.mode == 'review' && always()"));
-        assert!(check_run_step.contains("continue-on-error: true"));
+        assert!(!check_run_step.contains("continue-on-error: true"));
         assert!(!check_run_step.contains(concat!("--gate", "-mode")));
 
         let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
@@ -5406,14 +5427,14 @@ review_angles:
     }
 
     #[test]
-    fn completed_check_run_conclusion_reflects_review_status_without_failing_low_scores() {
+    fn completed_check_run_conclusion_fails_only_for_validated_blockers_or_review_errors() {
         assert_eq!(
             check_run_conclusion_for_status(&ReviewStatus::Passed),
             "success"
         );
         assert_eq!(
             check_run_conclusion_for_status(&ReviewStatus::NeedsChanges),
-            "neutral"
+            "failure"
         );
         assert_eq!(
             check_run_conclusion_for_status(&ReviewStatus::ReviewError),
@@ -5562,10 +5583,10 @@ review_angles:
     fn summary_and_check_snapshots_agree_for_every_completed_score() {
         let cases = [
             (None, 5, ReviewStatus::Passed, "success"),
-            (Some(Severity::P0), 1, ReviewStatus::NeedsChanges, "neutral"),
-            (Some(Severity::P1), 2, ReviewStatus::NeedsChanges, "neutral"),
-            (Some(Severity::P2), 3, ReviewStatus::NeedsChanges, "neutral"),
-            (Some(Severity::P3), 4, ReviewStatus::NeedsChanges, "neutral"),
+            (Some(Severity::P0), 1, ReviewStatus::NeedsChanges, "failure"),
+            (Some(Severity::P1), 2, ReviewStatus::NeedsChanges, "failure"),
+            (Some(Severity::P2), 3, ReviewStatus::NeedsChanges, "failure"),
+            (Some(Severity::P3), 4, ReviewStatus::NeedsChanges, "failure"),
             (Some(Severity::P4), 5, ReviewStatus::Passed, "success"),
         ];
 
@@ -5578,6 +5599,21 @@ review_angles:
                         scope: reviewgate_core::FindingScope::Pr,
                         severity,
                         confidence: 1.0,
+                        classification: if severity == Severity::P4 {
+                            reviewgate_core::FindingClassification::Suggestion
+                        } else {
+                            reviewgate_core::FindingClassification::Defect
+                        },
+                        evidence_gate_result: if severity == Severity::P4 {
+                            reviewgate_core::EvidenceGateResult::NotRequired
+                        } else {
+                            reviewgate_core::EvidenceGateResult::Passed
+                        },
+                        blocking_reason: if severity == Severity::P4 {
+                            None
+                        } else {
+                            Some(reviewgate_core::BlockingReason::ValidatedDefect)
+                        },
                         grounding: None,
                         file: None,
                         line: None,
@@ -6185,7 +6221,9 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("Every concrete defect mentioned in the verdict or notes"));
         assert!(prompt.contains("comment ownership checks"));
         assert!(prompt.contains("marker encoding"));
-        assert!(prompt.contains("P0-P3 findings are score-blocking"));
+        assert!(prompt.contains("Only defect, security, and reliability_risk"));
+        assert!(prompt.contains(&format!("confidence >= {HIGH_CONFIDENCE_THRESHOLD}")));
+        assert!(prompt.contains("contract_ambiguity"));
         assert!(prompt.contains("related_tests"));
         assert!(prompt.contains("P0-P1 additionally require a concrete reproduction"));
         assert!(prompt.contains("actions/upload-artifact"));
@@ -6294,6 +6332,9 @@ diff --git a/src/lib.rs b/src/lib.rs
                 scope: reviewgate_core::FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                classification: reviewgate_core::FindingClassification::Defect,
+                evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -6442,6 +6483,9 @@ diff --git a/src/lib.rs b/src/lib.rs
                     scope: reviewgate_core::FindingScope::Pr,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    classification: reviewgate_core::FindingClassification::Defect,
+                    evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                    blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
                     grounding: None,
                     file: None,
                     line: None,
@@ -6455,6 +6499,9 @@ diff --git a/src/lib.rs b/src/lib.rs
                     scope: reviewgate_core::FindingScope::Pr,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    classification: reviewgate_core::FindingClassification::Defect,
+                    evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                    blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
                     grounding: None,
                     file: None,
                     line: None,
@@ -6506,6 +6553,9 @@ diff --git a/src/lib.rs b/src/lib.rs
                 scope: reviewgate_core::FindingScope::Pr,
                 severity: Severity::P2,
                 confidence: 0.9,
+                classification: reviewgate_core::FindingClassification::Defect,
+                evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: None,
                 line: None,
@@ -6800,10 +6850,10 @@ diff --git a/src/lib.rs b/src/lib.rs
             );
             if !expected_blocking {
                 assert!(
-                    artifact
-                        .notes
-                        .iter()
-                        .any(|note| note.contains("Suppressed ungrounded finding")),
+                    artifact.notes.iter().any(|note| {
+                        note.contains("Suppressed ungrounded finding")
+                            || note.contains("Suppressed uncertain finding")
+                    }),
                     "{name}: suppression is auditable"
                 );
             }
@@ -7033,6 +7083,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             scope: reviewgate_core::FindingScope::Pr,
             severity: Severity::P4,
             confidence: 0.8,
+            classification: reviewgate_core::FindingClassification::Suggestion,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::NotRequired,
+            blocking_reason: None,
             grounding: None,
             file: None,
             line: None,
@@ -7107,13 +7160,10 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(artifact.angle_results[0].score, 3);
         assert_eq!(
             artifact.angle_results[0].verdict,
-            "1 grounded score-blocking finding(s) remain."
+            "1 validated blocker(s) remain."
         );
         assert_eq!(artifact.angle_results[1].score, 5);
-        assert_eq!(
-            artifact.angle_results[1].verdict,
-            "No grounded score-blocking findings."
-        );
+        assert_eq!(artifact.angle_results[1].verdict, "No validated blockers.");
         let metrics = artifact.metrics.as_ref().expect("metrics");
         assert_eq!(metrics.finding_count, 2);
         assert_eq!(metrics.blocking_finding_count, 1);

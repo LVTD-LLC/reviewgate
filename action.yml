@@ -140,7 +140,6 @@ runs:
     - name: Publish ReviewGate check run
       if: ${{ inputs.mode == 'review' && always() }}
       shell: bash
-      continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
       run: |

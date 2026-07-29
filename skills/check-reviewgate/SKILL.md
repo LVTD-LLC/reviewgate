@@ -33,7 +33,7 @@ gh pr view "$PR_NUMBER" --json title,state,headRefName,url,statusCheckRollup
 
 When a `gh api` call returns `403` or `404`, treat it as an authentication, permission, repository visibility, or wrong-repository problem until verified otherwise. Do not silently interpret it as "no ReviewGate comments."
 
-If status checks are pending, wait for terminal results before judging the review. A completed ReviewGate `needs_changes` result can be neutral, so do not treat green CI or neutral check status as proof of a `5/5` review.
+If status checks are pending, wait for terminal results before judging the review. A completed ReviewGate `needs_changes` result publishes a failing check, but inspect the artifact because only validated blockers should cause that outcome.
 
 ### 2. Read the Structured Artifact First
 
@@ -50,17 +50,27 @@ jq -r '
 
 Compare `reviewed_sha` to the PR head SHA. If the artifact is stale, report that and use the PR summary/comment fallback until ReviewGate reruns.
 
-List score-blocking findings. `P0` through `P3` cap the score below `5`; `P4` does not.
+List score-blocking findings. A finding blocks only when `blocking_reason` is non-null after ReviewGate applies its classification, severity, confidence, and evidence policy.
 
 ```bash
 jq -r '
   .findings[]
-  | select(.severity != "P4")
+  | select(.blocking_reason != null)
   | "- [\(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  Claim: \(.grounding.claim)\n  Causal path: \(.grounding.causal_path)\n  \(.agent_instruction)"
 ' .reviewgate/review.json
 ```
 
-Treat a P0-P3 finding without `grounding`, exact full-line evidence references (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment as an invalid blocker. P0-P1 must also expose `grounding.reproduction` or `grounding.proof`. ReviewGate normally suppresses such output before publication; if it appears, request a fresh current-head review instead of editing code from the unsupported claim.
+List advisory findings separately so severity is not mistaken for blocking disposition:
+
+```bash
+jq -r '
+  .findings[]
+  | select(.blocking_reason == null)
+  | "- [\(.classification) / \(.severity)] \(.id) \(.file // "PR"):\(.line // "-") \(.title)\n  Evidence: \(.evidence_gate_result)\n  \(.agent_instruction)"
+' .reviewgate/review.json
+```
+
+Treat a finding with non-null `blocking_reason` but without `evidence_gate_result == "passed"`, high confidence, exact full-line grounding evidence (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment as an invalid blocker. P0-P1 must also expose `grounding.reproduction` or `grounding.proof`. ReviewGate normally suppresses such output before publication; if it appears, request a fresh current-head review instead of editing code from the unsupported claim.
 
 Also inspect review angles. Each angle score must be explained by its referenced findings. If a completed angle is below `5/5` without a score-affecting referenced finding, treat the artifact as invalid and wait for or request a fresh ReviewGate run.
 
@@ -107,9 +117,9 @@ Use these categories:
 
 | Category | Meaning |
 | --- | --- |
-| Score-blocking | `P0` through `P3` finding, consistently derived angle result, or top-level `score < 5` / `status == "needs_changes"` |
+| Score-blocking | Finding with non-null `blocking_reason`, consistently derived angle result, or top-level `score < 5` / `status == "needs_changes"` |
 | Review error | `status == "review_error"` and `score == null`; retry only listed `angle_errors` with `retryable == true` instead of changing PR code |
-| Advisory | `P4` finding or non-blocking ReviewGate comment |
+| Advisory | Finding with null `blocking_reason` or another non-blocking ReviewGate comment |
 | Stale | Finding/comment targets an older `reviewed_sha` or code that has already changed |
 | Needs human judgment | ReviewGate asks for a product, security, or API decision the agent cannot safely infer |
 

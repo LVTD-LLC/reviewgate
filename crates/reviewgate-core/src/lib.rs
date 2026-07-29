@@ -8,6 +8,7 @@ pub const SUMMARY_STATE_PREFIX: &str = "<!-- reviewgate-state ";
 pub const SUMMARY_STATE_SUFFIX: &str = " -->";
 pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
 pub const DEFAULT_TARGET_SCORE: u8 = 5;
+pub const HIGH_CONFIDENCE_THRESHOLD: f64 = 0.85;
 pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -188,6 +189,77 @@ impl FindingScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingClassification {
+    #[default]
+    Defect,
+    Security,
+    ReliabilityRisk,
+    ContractAmbiguity,
+    Suggestion,
+}
+
+impl FindingClassification {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FindingClassification::Defect => "defect",
+            FindingClassification::Security => "security",
+            FindingClassification::ReliabilityRisk => "reliability_risk",
+            FindingClassification::ContractAmbiguity => "contract_ambiguity",
+            FindingClassification::Suggestion => "suggestion",
+        }
+    }
+
+    fn blocking_reason(&self) -> Option<BlockingReason> {
+        match self {
+            FindingClassification::Defect => Some(BlockingReason::ValidatedDefect),
+            FindingClassification::Security => Some(BlockingReason::ValidatedSecurity),
+            FindingClassification::ReliabilityRisk => {
+                Some(BlockingReason::ValidatedReliabilityRisk)
+            }
+            FindingClassification::ContractAmbiguity | FindingClassification::Suggestion => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceGateResult {
+    #[default]
+    Passed,
+    Failed,
+    NotRequired,
+}
+
+impl EvidenceGateResult {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EvidenceGateResult::Passed => "passed",
+            EvidenceGateResult::Failed => "failed",
+            EvidenceGateResult::NotRequired => "not_required",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockingReason {
+    ValidatedDefect,
+    ValidatedSecurity,
+    ValidatedReliabilityRisk,
+}
+
+impl BlockingReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockingReason::ValidatedDefect => "validated_defect",
+            BlockingReason::ValidatedSecurity => "validated_security",
+            BlockingReason::ValidatedReliabilityRisk => "validated_reliability_risk",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Finding {
     pub id: String,
@@ -197,6 +269,12 @@ pub struct Finding {
     pub scope: FindingScope,
     pub severity: Severity,
     pub confidence: f64,
+    #[serde(default)]
+    pub classification: FindingClassification,
+    #[serde(default)]
+    pub evidence_gate_result: EvidenceGateResult,
+    #[serde(default)]
+    pub blocking_reason: Option<BlockingReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grounding: Option<FindingGrounding>,
     pub file: Option<String>,
@@ -241,11 +319,38 @@ pub enum FindingEvidenceSide {
 
 impl Finding {
     pub fn is_blocking(&self, target_score: u8) -> bool {
-        self.severity.score_ceiling() < target_score
+        self.expected_blocking_reason().is_some() && self.severity.score_ceiling() < target_score
+    }
+
+    pub fn requires_evidence_gate(&self) -> bool {
+        self.severity.score_ceiling() < DEFAULT_TARGET_SCORE
+            && self.confidence >= HIGH_CONFIDENCE_THRESHOLD
+            && self.classification.blocking_reason().is_some()
+    }
+
+    pub fn calibrate_policy(&mut self) {
+        self.blocking_reason = self.expected_blocking_reason();
+    }
+
+    fn expected_blocking_reason(&self) -> Option<BlockingReason> {
+        if self.requires_evidence_gate() && self.evidence_gate_result == EvidenceGateResult::Passed
+        {
+            self.classification.blocking_reason()
+        } else {
+            None
+        }
     }
 
     pub fn validate(&self) -> Result<(), ReviewGateError> {
-        validate_confidence(self.confidence)
+        validate_confidence(self.confidence)?;
+        let expected = self.expected_blocking_reason();
+        if self.blocking_reason != expected {
+            return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                "finding {} blocking_reason {:?} does not match deterministic policy {:?}",
+                self.id, self.blocking_reason, expected
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -609,7 +714,20 @@ impl ReviewArtifact {
 
     pub fn with_computed_score(mut self) -> Result<Self, ReviewGateError> {
         self.target_score = DEFAULT_TARGET_SCORE;
+        for finding in &mut self.findings {
+            finding.calibrate_policy();
+        }
         if self.angle_errors.is_empty() {
+            for angle in &mut self.angle_results {
+                let angle_findings = self
+                    .findings
+                    .iter()
+                    .filter(|finding| angle.finding_ids.contains(&finding.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                angle.score = compute_score(&angle_findings);
+                angle.status = status_for_score(angle.score);
+            }
             let score = compute_effective_score(&self.findings, &self.angle_results);
             self.score = Some(score);
             self.status = status_for_score(score);
@@ -693,6 +811,7 @@ fn validate_confidence(confidence: f64) -> Result<(), ReviewGateError> {
 pub fn compute_score(findings: &[Finding]) -> u8 {
     findings
         .iter()
+        .filter(|finding| finding.is_blocking(DEFAULT_TARGET_SCORE))
         .map(|finding| finding.severity.score_ceiling())
         .min()
         .unwrap_or(5)
@@ -1545,7 +1664,10 @@ fn format_line_count(line_count: u32) -> String {
 mod tests {
     use super::*;
 
-    fn scoring_artifact(findings: Vec<Finding>) -> ReviewArtifact {
+    fn scoring_artifact(mut findings: Vec<Finding>) -> ReviewArtifact {
+        for finding in &mut findings {
+            finding.calibrate_policy();
+        }
         ReviewArtifact {
             score: Some(compute_score(&findings)),
             target_score: DEFAULT_TARGET_SCORE,
@@ -1569,19 +1691,181 @@ mod tests {
     }
 
     fn scoring_finding(id: &str, severity: Severity) -> Finding {
-        Finding {
+        let mut finding = Finding {
             id: id.to_string(),
             angle_id: None,
             scope: FindingScope::Pr,
             severity,
             confidence: 1.0,
+            classification: FindingClassification::Defect,
+            evidence_gate_result: EvidenceGateResult::Passed,
+            blocking_reason: None,
             grounding: None,
             file: None,
             line: None,
             title: "Invariant fixture".to_string(),
             detail: None,
             agent_instruction: "Fix the invariant fixture.".to_string(),
+        };
+        finding.calibrate_policy();
+        finding
+    }
+
+    #[test]
+    fn finding_policy_matrix_exhaustively_separates_severity_confidence_and_blocking() {
+        let classifications = [
+            FindingClassification::Defect,
+            FindingClassification::Security,
+            FindingClassification::ReliabilityRisk,
+            FindingClassification::ContractAmbiguity,
+            FindingClassification::Suggestion,
+        ];
+        let severities = [
+            Severity::P0,
+            Severity::P1,
+            Severity::P2,
+            Severity::P3,
+            Severity::P4,
+        ];
+        let confidences = [
+            0.0,
+            HIGH_CONFIDENCE_THRESHOLD - 0.000_001,
+            HIGH_CONFIDENCE_THRESHOLD,
+            1.0,
+        ];
+        let evidence_results = [
+            EvidenceGateResult::Passed,
+            EvidenceGateResult::Failed,
+            EvidenceGateResult::NotRequired,
+        ];
+
+        for classification in classifications {
+            for severity in severities {
+                for confidence in confidences {
+                    for evidence_gate_result in evidence_results {
+                        let mut finding = scoring_finding("matrix", severity);
+                        finding.classification = classification;
+                        finding.confidence = confidence;
+                        finding.evidence_gate_result = evidence_gate_result;
+                        finding.calibrate_policy();
+
+                        let expected_blocking = matches!(
+                            classification,
+                            FindingClassification::Defect
+                                | FindingClassification::Security
+                                | FindingClassification::ReliabilityRisk
+                        ) && severity != Severity::P4
+                            && confidence >= HIGH_CONFIDENCE_THRESHOLD
+                            && evidence_gate_result == EvidenceGateResult::Passed;
+
+                        assert_eq!(
+                            finding.is_blocking(DEFAULT_TARGET_SCORE),
+                            expected_blocking,
+                            "classification={classification:?}, severity={severity:?}, confidence={confidence}, evidence={evidence_gate_result:?}"
+                        );
+                        assert_eq!(
+                            finding.blocking_reason.is_some(),
+                            expected_blocking,
+                            "blocking reason must audit the deterministic decision"
+                        );
+                    }
+                }
+            }
         }
+    }
+
+    #[test]
+    fn finding_policy_regressions_calibrate_pr_365_and_real_mutations() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/finding-policy/regressions.json"
+        ))
+        .expect("policy fixtures parse");
+        let mut pr_365_count = 0;
+        let mut mutation_count = 0;
+        let mut checksum_suggestion_seen = false;
+
+        for case in cases.as_array().expect("policy cases") {
+            let classification: FindingClassification =
+                serde_json::from_value(case["classification"].clone())
+                    .expect("classification parses");
+            let evidence_gate_result: EvidenceGateResult =
+                serde_json::from_value(case["evidence_gate_result"].clone())
+                    .expect("evidence result parses");
+            let severity =
+                Severity::parse(case["severity"].as_str().expect("severity")).expect("severity");
+            let mut finding = scoring_finding(case["name"].as_str().expect("name"), severity);
+            finding.classification = classification;
+            finding.confidence = case["confidence"].as_f64().expect("confidence");
+            finding.evidence_gate_result = evidence_gate_result;
+            finding.title = case["title"].as_str().expect("title").to_string();
+            finding.calibrate_policy();
+
+            let expected_blocking = case["expected_blocking"]
+                .as_bool()
+                .expect("expected blocking");
+            assert_eq!(
+                finding.is_blocking(DEFAULT_TARGET_SCORE),
+                expected_blocking,
+                "{}",
+                finding.id
+            );
+
+            match case["source"].as_str().expect("source") {
+                "rowset-pr-365" => {
+                    pr_365_count += 1;
+                    assert!(!finding.is_blocking(DEFAULT_TARGET_SCORE));
+                    if finding.title.contains("SHA-256 checksum tool") {
+                        checksum_suggestion_seen = true;
+                        assert_eq!(finding.classification, FindingClassification::Suggestion);
+                        assert_eq!(finding.blocking_reason, None);
+                    }
+                }
+                "mutation" => {
+                    mutation_count += 1;
+                    assert!(finding.is_blocking(DEFAULT_TARGET_SCORE));
+                }
+                source => panic!("unexpected fixture source {source}"),
+            }
+        }
+
+        assert_eq!(pr_365_count, 7);
+        assert_eq!(mutation_count, 3);
+        assert!(checksum_suggestion_seen);
+    }
+
+    #[test]
+    fn only_validated_high_confidence_findings_change_score_and_status() {
+        let mut suggestion = scoring_finding("suggestion", Severity::P0);
+        suggestion.classification = FindingClassification::Suggestion;
+        suggestion.evidence_gate_result = EvidenceGateResult::NotRequired;
+
+        let advisory = scoring_artifact(vec![suggestion])
+            .with_computed_score()
+            .expect("advisory artifact");
+        assert_eq!(advisory.score, Some(5));
+        assert_eq!(advisory.status, ReviewStatus::Passed);
+
+        let blocker = scoring_artifact(vec![scoring_finding("defect", Severity::P2)])
+            .with_computed_score()
+            .expect("blocking artifact");
+        assert_eq!(blocker.score, Some(3));
+        assert_eq!(blocker.status, ReviewStatus::NeedsChanges);
+        assert_eq!(
+            blocker.findings[0].blocking_reason,
+            Some(BlockingReason::ValidatedDefect)
+        );
+    }
+
+    #[test]
+    fn validation_rejects_a_blocking_reason_that_contradicts_policy() {
+        let mut artifact = scoring_artifact(vec![scoring_finding("contradiction", Severity::P1)]);
+        artifact.findings[0].blocking_reason = Some(BlockingReason::ValidatedSecurity);
+
+        assert!(matches!(
+            artifact.validate(),
+            Err(ReviewGateError::InvalidReviewOutcome(message))
+                if message.contains("blocking_reason")
+        ));
     }
 
     #[test]
@@ -1844,6 +2128,9 @@ mod tests {
             scope: FindingScope::Line,
             severity: Severity::P2,
             confidence: 0.9,
+            classification: FindingClassification::Defect,
+            evidence_gate_result: EvidenceGateResult::Passed,
+            blocking_reason: Some(BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
@@ -1863,6 +2150,9 @@ mod tests {
             scope: FindingScope::Line,
             severity: Severity::P0,
             confidence: 0.98,
+            classification: FindingClassification::Security,
+            evidence_gate_result: EvidenceGateResult::Passed,
+            blocking_reason: Some(BlockingReason::ValidatedSecurity),
             grounding: None,
             file: Some("src/auth.rs".to_string()),
             line: Some(7),
@@ -1882,6 +2172,9 @@ mod tests {
             scope: FindingScope::File,
             severity: Severity::P2,
             confidence: 0.95,
+            classification: FindingClassification::Defect,
+            evidence_gate_result: EvidenceGateResult::Passed,
+            blocking_reason: Some(BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
@@ -1924,6 +2217,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 0.9,
+                classification: FindingClassification::Suggestion,
+                evidence_gate_result: EvidenceGateResult::NotRequired,
+                blocking_reason: None,
                 grounding: None,
                 file: None,
                 line: None,
@@ -1937,6 +2233,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.9,
+                classification: FindingClassification::Security,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedSecurity),
                 grounding: None,
                 file: None,
                 line: None,
@@ -2009,6 +2308,9 @@ mod tests {
               "scope": "line",
               "severity": "P2",
               "confidence": 0.9,
+              "classification": "defect",
+              "evidence_gate_result": "passed",
+              "blocking_reason": "validated_defect",
               "file": "src/lib.rs",
               "line": 42,
               "title": "Missing error handling",
@@ -2090,6 +2392,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                classification: FindingClassification::Defect,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: Some("./src//a|b.rs".to_string()),
                 line: Some(42),
@@ -2237,6 +2542,9 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    classification: FindingClassification::ReliabilityRisk,
+                    evidence_gate_result: EvidenceGateResult::Passed,
+                    blocking_reason: Some(BlockingReason::ValidatedReliabilityRisk),
                     grounding: None,
                     file: None,
                     line: None,
@@ -2250,6 +2558,9 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.9,
+                    classification: FindingClassification::Suggestion,
+                    evidence_gate_result: EvidenceGateResult::NotRequired,
+                    blocking_reason: None,
                     grounding: None,
                     file: None,
                     line: None,
@@ -2298,6 +2609,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.9,
+                classification: FindingClassification::Defect,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -2399,6 +2713,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                classification: FindingClassification::Defect,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -2437,6 +2754,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                classification: FindingClassification::Defect,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -2617,6 +2937,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P3,
                 confidence: 0.95,
+                classification: FindingClassification::Security,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedSecurity),
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -2657,6 +2980,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P4,
                 confidence: 1.2,
+                classification: FindingClassification::Suggestion,
+                evidence_gate_result: EvidenceGateResult::NotRequired,
+                blocking_reason: None,
                 grounding: None,
                 file: None,
                 line: None,
@@ -2801,6 +3127,9 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P2,
                     confidence: 0.9,
+                    classification: FindingClassification::Defect,
+                    evidence_gate_result: EvidenceGateResult::Passed,
+                    blocking_reason: Some(BlockingReason::ValidatedDefect),
                     grounding: None,
                     file: Some("src/lib.rs".to_string()),
                     line: Some(42),
@@ -2814,6 +3143,9 @@ mod tests {
                     scope: FindingScope::Line,
                     severity: Severity::P4,
                     confidence: 0.8,
+                    classification: FindingClassification::Suggestion,
+                    evidence_gate_result: EvidenceGateResult::NotRequired,
+                    blocking_reason: None,
                     grounding: None,
                     file: None,
                     line: None,
@@ -2869,6 +3201,9 @@ mod tests {
                 scope: FindingScope::Line,
                 severity: Severity::P2,
                 confidence: 0.9,
+                classification: FindingClassification::Defect,
+                evidence_gate_result: EvidenceGateResult::Passed,
+                blocking_reason: Some(BlockingReason::ValidatedDefect),
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
