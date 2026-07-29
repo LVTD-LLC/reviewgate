@@ -26,7 +26,7 @@
     "gsc": {
       "status": "connected",
       "credential_discovery": "Infisical /services/google-search-console",
-      "call": "Search Console domain property sc-domain:lvtd.dev queried successfully; ReviewGate has zero 90-day rows and no submitted sitemap"
+      "call": "Search Console domain property sc-domain:lvtd.dev queried successfully; ReviewGate has zero 90-day rows; sitemap-index.xml submitted 2026-07-29 with zero errors and warnings"
     },
     "ahrefs": {
       "status": "missing",
@@ -46,7 +46,7 @@
     "posthog": {
       "status": "connected",
       "credential_discovery": "POSTHOG_API_KEY runtime environment and workspace TOOLS.md",
-      "call": "ReviewGate project 534132 provisioned with anonymized IPs, no session replay, and repository build secret configured"
+      "call": "ReviewGate project 534132 provisioned with anonymized IPs, no session replay, and repository build secret configured; production pageview and install-intent ingestion verified 2026-07-29"
     },
     "search_discovery": {
       "status": "connected",

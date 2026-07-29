@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-29
 
+- Verified the SEO foundation deployment in production, submitted the sitemap through the covering Search Console domain property with no errors or warnings, and confirmed PostHog receives the pageview and install-intent event contracts.
 - Added crawlable sitemap and robots files, homepage product/organization schema, and privacy-limited PostHog measurement for pageviews plus explicit install/source intent. Updated the production smoke test to match the current homepage contract.
 - Kept prior findings valid when their original review angle fails or is no longer successful on the current head by making their angle ownership neutral before outcome validation. Advanced the action runtime pin to `v0.4.2`.
 - Preserved newly discovered successful-angle findings and disposition updates when publishing an inconclusive review, so canonical history and the next head cannot lose blockers that are present in the machine artifact. Advanced the action runtime pin to `v0.4.1` for the corrective release.

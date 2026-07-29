@@ -14,7 +14,7 @@
 
 | # | Phase | Pattern | Status | PR |
 |---|---|---|---|---|
-| 0 | Technical foundations | Setup | in_progress | [#55](https://github.com/LVTD-LLC/reviewgate/pull/55); post-deploy verification pending |
+| 0 | Technical foundations | Setup | completed | [#55](https://github.com/LVTD-LLC/reviewgate/pull/55) |
 | 1 | Retarget the homepage for “AI code review tool” | Homepage boost | pending | – |
 | 2 | Build the internal-link spine and reusable Astro SEO layouts | Internal links | pending | – |
 | 3 | CodeRabbit alternatives | A — alternatives | pending | – |
@@ -50,11 +50,11 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 
 | Source | Status | Credential/config evidence | API/tool evidence | Used for | Saved config | Reason |
 |---|---|---|---|---|---|---|
-| GSC | connected | Infisical `/services/google-search-console` | `sc-domain:lvtd.dev` queried; 0 ReviewGate rows and no submitted sitemap | property/indexing baseline | `sc-domain:lvtd.dev` | The domain property covers the ReviewGate subdomain. |
+| GSC | connected | Infisical `/services/google-search-console` | `sc-domain:lvtd.dev` queried; sitemap submitted with 0 errors and 0 warnings | property/indexing baseline | `sc-domain:lvtd.dev` | The domain property covers the ReviewGate subdomain. |
 | Ahrefs | missing | Loaded tools, environment, TOOLS.md, repo, recursive Infisical name scan | Not attempted | none | `ahrefs_project_id: null` | No credential or MCP connection found. |
 | DataForSEO | connected | Infisical `/services/dataforseo` | Keyword, rank, backlink, and live SERP requests succeeded | demand, KD, CPC, SERPs, authority | US / English | Primary measured market-data source. |
 | Plausible | attempted_failed | Runtime key + TOOLS.md API host | ReviewGate v2 query returned 401 | conversion weighting | site ID recorded | Key lacks access or site does not exist. |
-| PostHog | connected | Runtime personal API key + TOOLS.md | ReviewGate project 534132 provisioned with anonymized IPs and no session replay | pageviews and install/source intent | project ID + hosts | Production build key is stored as a GitHub Actions secret. |
+| PostHog | connected | Runtime personal API key + TOOLS.md | ReviewGate project 534132 provisioned; production pageview and install-intent ingestion verified | pageviews and install/source intent | project ID + hosts | Production build key is stored as a GitHub Actions secret. |
 | Exa / web search | connected | Runtime Exa key + live search tool | Eight relevant category sources plus current SERPs | competitor and source discovery | no ID needed | Category and outreach surfaces confirmed. |
 | Jina / Firecrawl / WebFetch | connected | Runtime Jina and Firecrawl keys | Jina returned 200 for five relevant product/source pages | page extraction | no ID needed | Current competitor and product pages were inspectable. |
 
@@ -96,9 +96,9 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 ### Owned search and analytics baseline
 
 - DataForSEO found **0 ranked keywords** for `reviewgate.lvtd.dev` and no backlink-summary row. Treat authority as effectively new/unknown.
-- The connected GSC service account can query the `sc-domain:lvtd.dev` property. It returned no ReviewGate query/page rows for the latest 90-day window and no submitted ReviewGate sitemap.
+- The connected GSC service account can query the `sc-domain:lvtd.dev` property. It returned no ReviewGate query/page rows for the latest 90-day window; the ReviewGate sitemap was submitted on July 29, 2026 with zero errors or warnings.
 - Plausible conversion data is unavailable because the site/key query returned 401.
-- PostHog project 534132 now exists for ReviewGate. It will start collecting anonymous pageviews plus explicit install/source intent after Phase 0 deploys.
+- PostHog project 534132 collects anonymous pageviews plus explicit install/source intent. Production ingestion was verified after the Phase 0 deployment.
 - There are therefore no striking-distance or conversion-weighted opportunities yet. Phase ordering uses measured market demand, SERP shape, product fit, and implementation dependencies.
 
 ### Primary commercial opportunity
@@ -184,7 +184,7 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:lvtd.dev` prop
 
 **Verification:** Astro check/build; generated sitemap index and robots return valid files; one H1 per page; unique title/description/canonical; JSON-LD parses; dependency audit is clean; production smoke check after deploy; GSC sitemap submission recorded; PostHog receives production pageview and intent events.
 
-**Post-deployment pending:** verify production, submit `sitemap-index.xml` through `sc-domain:lvtd.dev`, and confirm PostHog receives the expected anonymous events before changing the tracker status to `completed`.
+**Post-deployment verification (July 29, 2026):** `/`, `/docs/`, `/blog/`, `robots.txt`, and both sitemap files return 200; the sitemap contains all three routes; homepage metadata, one-H1 contract, JSON-LD, and analytics bootstrap are present; GSC accepted `sitemap-index.xml` with zero errors or warnings; PostHog received the production pageview and install-intent event contracts.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 
@@ -262,4 +262,4 @@ Approach current AI-code-review roundups only after the homepage, evaluation pro
 
 ## Next action
 
-Review this roadmap, then run the sprint again to execute **Phase 0 — Technical foundations**. The next two phases after that are the homepage retarget and internal-link spine.
+Run the sprint again to execute **Phase 1 — Retarget the homepage for “AI code review tool.”** The internal-link spine follows in Phase 2.
