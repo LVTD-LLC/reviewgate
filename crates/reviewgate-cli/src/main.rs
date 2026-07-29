@@ -679,52 +679,26 @@ fn submit_agent_disposition(
     state.validate()?;
     let body = encode_agent_disposition_comment(&state)?;
     let comment_id = create_issue_comment_with_id(&repo, &repository, pr_number, &body)?;
-    if let Err(error) = create_agent_disposition_attestation(
-        &repo,
-        &repository,
-        &state.reviewed_sha,
-        pr_number,
-        comment_id,
-        &state.submission.actor,
-        &body,
-    ) {
-        let removed = delete_issue_comment(&repo, &repository, comment_id).is_ok();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status": "rejected",
-                "reason": "attestation_failed",
-                "repository": repository,
-                "pull_request_number": pr_number,
-                "reviewed_sha": state.reviewed_sha,
-                "semantic_fingerprint": finding,
-                "comment_id": comment_id,
-                "comment_removed": removed,
-            }))?
-        );
-        return Err(error.context(
-            "agent disposition comment was created but could not be attested with a writer-only commit status",
-        ));
-    }
     let post_write_target = match fetch_rereview_target(&repo, &repository, pr_number) {
         Ok(target) => target,
         Err(error) => {
+            let removed = delete_issue_comment(&repo, &repository, comment_id).is_ok();
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "recorded_unconfirmed",
+                    "status": "rejected",
                     "reason": "head_check_failed",
                     "repository": repository,
                     "pull_request_number": pr_number,
                     "reviewed_sha": state.reviewed_sha,
                     "semantic_fingerprint": finding,
-                    "disposition": disposition,
                     "comment_id": comment_id,
+                    "comment_removed": removed,
                 }))?
             );
             return Err(error.context(
-                    "agent disposition was created, but its post-write head check failed; inspect the receipt before retrying",
-                ));
+                "agent disposition was not attested because its post-write head check failed",
+            ));
         }
     };
     if post_write_target.head_sha != state.reviewed_sha {
@@ -755,6 +729,33 @@ fn submit_agent_disposition(
             state.reviewed_sha,
             post_write_target.head_sha
         );
+    }
+    if let Err(error) = create_agent_disposition_attestation(
+        &repo,
+        &repository,
+        &state.reviewed_sha,
+        pr_number,
+        comment_id,
+        &state.submission.actor,
+        &body,
+    ) {
+        let removed = delete_issue_comment(&repo, &repository, comment_id).is_ok();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "rejected",
+                "reason": "attestation_failed",
+                "repository": repository,
+                "pull_request_number": pr_number,
+                "reviewed_sha": state.reviewed_sha,
+                "semantic_fingerprint": finding,
+                "comment_id": comment_id,
+                "comment_removed": removed,
+            }))?
+        );
+        return Err(error.context(
+            "agent disposition comment was created but could not be attested with a writer-only commit status",
+        ));
     }
     println!(
         "{}",
@@ -951,6 +952,19 @@ fn attested_disposition_comment_ids(
         })
         .map(|comment| comment.id)
         .collect()
+}
+
+fn load_attested_disposition_comment_ids(
+    repo: &Path,
+    repository: &str,
+    reviewed_sha: &str,
+    comments: &[AgentDispositionComment],
+) -> CliResult<BTreeSet<u64>> {
+    if comments.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let statuses = fetch_commit_status_records(repo, repository, reviewed_sha)?;
+    Ok(attested_disposition_comment_ids(comments, &statuses))
 }
 
 fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
@@ -2677,9 +2691,12 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
-        let statuses =
-            fetch_commit_status_records(&repo, &repository, &previous.last_reviewed_sha)?;
-        let attested_ids = attested_disposition_comment_ids(&disposition_comments, &statuses);
+        let attested_ids = load_attested_disposition_comment_ids(
+            &repo,
+            &repository,
+            &previous.last_reviewed_sha,
+            &disposition_comments,
+        )?;
         let replay =
             apply_agent_disposition_comments(previous, &disposition_comments, &attested_ids)?;
         report_agent_disposition_replay("summary publish", replay);
@@ -3980,8 +3997,12 @@ fn load_previous_summary_state(
     };
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
-    let statuses = fetch_commit_status_records(repo, repository, &state.last_reviewed_sha)?;
-    let attested_ids = attested_disposition_comment_ids(&disposition_comments, &statuses);
+    let attested_ids = load_attested_disposition_comment_ids(
+        repo,
+        repository,
+        &state.last_reviewed_sha,
+        &disposition_comments,
+    )?;
     let replay =
         apply_agent_disposition_comments(&mut state, &disposition_comments, &attested_ids)?;
     report_agent_disposition_replay("review", replay);
@@ -7615,6 +7636,10 @@ review_angles:
         );
         for invalid_attestation in [
             CommitStatusRecord {
+                context: agent_disposition_status_context(4),
+                ..attestation.clone()
+            },
+            CommitStatusRecord {
                 description: "receipt-sha256:tampered".to_string(),
                 ..attestation.clone()
             },
@@ -7707,6 +7732,20 @@ review_angles:
                 creator_login: "repair-agent".to_string(),
                 state: "success".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn empty_disposition_set_does_not_require_commit_status_access() {
+        assert!(
+            load_attested_disposition_comment_ids(
+                Path::new("/does-not-exist"),
+                "LVTD-LLC/reviewgate",
+                &"a".repeat(40),
+                &[],
+            )
+            .expect("empty disposition set")
+            .is_empty()
         );
     }
 
