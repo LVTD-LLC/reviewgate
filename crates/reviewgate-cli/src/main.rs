@@ -1331,6 +1331,7 @@ fn apply_convergence_policy(
             &context.convergence_delta,
             disposition_updates,
         )?;
+        artifact.findings = result.findings;
         artifact.notes.extend(result.notes);
         artifact.tracked_findings = result.tracked_findings.clone();
         return Ok(result.tracked_findings);
@@ -8005,14 +8006,38 @@ let resync_state = state.clone();
         )
         .expect("inconclusive state builds");
 
-        let mut successful_omission = inconclusive.clone();
+        let mut inconclusive_omission = inconclusive.clone();
+        inconclusive_omission.findings.clear();
+        inconclusive_omission.tracked_findings.clear();
+        let inconclusive_retry_context = ReviewContext {
+            previous_state: Some(state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
+                &inconclusive_omission.reviewed_sha,
+            ),
+            ..first_context.clone()
+        };
+        let carried =
+            apply_convergence_policy(&mut inconclusive_omission, &inconclusive_retry_context, &[])
+                .expect("inconclusive same-head omission keeps the prior finding");
+        assert_eq!(carried.len(), 1);
+        assert_eq!(inconclusive_omission.findings.len(), 1);
+        let retry_state = SummaryState::for_artifact_with_convergence(
+            &inconclusive_omission,
+            inconclusive_retry_context.previous_state.as_ref(),
+            20,
+            ReviewScope::Local,
+            carried,
+        )
+        .expect("inconclusive retry state builds");
+
+        let mut successful_omission = inconclusive_omission;
         successful_omission.score = Some(DEFAULT_TARGET_SCORE);
         successful_omission.status = ReviewStatus::Passed;
         successful_omission.angle_errors.clear();
         successful_omission.findings.clear();
         successful_omission.tracked_findings.clear();
         let retry_context = ReviewContext {
-            previous_state: Some(state),
+            previous_state: Some(retry_state),
             convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
                 &successful_omission.reviewed_sha,
             ),
