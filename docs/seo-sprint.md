@@ -14,7 +14,7 @@
 
 | # | Phase | Pattern | Status | PR |
 |---|---|---|---|---|
-| 0 | Technical foundations | Setup | in_progress | branch `seo/phase-0-foundations` (PR TBD) |
+| 0 | Technical foundations | Setup | completed | [#55](https://github.com/LVTD-LLC/reviewgate/pull/55) |
 | 1 | Retarget the homepage for “AI code review tool” | Homepage boost | pending | – |
 | 2 | Build the internal-link spine and reusable Astro SEO layouts | Internal links | pending | – |
 | 3 | CodeRabbit alternatives | A — alternatives | pending | – |
