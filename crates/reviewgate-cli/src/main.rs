@@ -1334,6 +1334,7 @@ fn apply_convergence_policy(
         artifact.findings = result.findings;
         artifact.notes.extend(result.notes);
         artifact.tracked_findings = result.tracked_findings.clone();
+        recompute_artifact_outcome(artifact)?;
         return Ok(result.tracked_findings);
     }
     artifact.disposition_updates = disposition_updates.to_vec();
@@ -7969,8 +7970,18 @@ let resync_state = state.clone();
             serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
                 .expect("fixture parses");
         inconclusive.findings.truncate(1);
+        inconclusive.findings[0].angle_id = Some("general".to_string());
         inconclusive.score = None;
         inconclusive.status = ReviewStatus::ReviewError;
+        inconclusive.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 3,
+            status: ReviewStatus::NeedsChanges,
+            verdict: "1 validated blocker(s) remain.".to_string(),
+            model: "test".to_string(),
+            finding_ids: vec![inconclusive.findings[0].id.clone()],
+        }];
         inconclusive.angle_errors = vec![ReviewAngleError {
             angle_id: "adversarial".to_string(),
             angle_name: "Adversarial".to_string(),
@@ -8005,6 +8016,43 @@ let resync_state = state.clone();
             tracked,
         )
         .expect("inconclusive state builds");
+
+        let mut suppressed_state = state.clone();
+        let suppressed = &mut suppressed_state.tracked_findings[0];
+        suppressed.disposition = FindingDisposition::RejectedWithEvidence;
+        suppressed
+            .disposition_history
+            .push(reviewgate_core::FindingDispositionRecord {
+                disposition: FindingDisposition::RejectedWithEvidence,
+                submitted_disposition: Some(AgentDisposition::RejectedWithEvidence),
+                submission_id: Some(1),
+                evidence_summary: "Verified false positive.".to_string(),
+                actor: "agent:test".to_string(),
+                reviewed_sha: inconclusive.reviewed_sha.clone(),
+                code_fingerprint: finding_code_fingerprint(&suppressed.finding),
+            });
+        let mut suppressed_recurrence = inconclusive.clone();
+        suppressed_recurrence.tracked_findings.clear();
+        let suppressed_context = ReviewContext {
+            previous_state: Some(suppressed_state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
+                &suppressed_recurrence.reviewed_sha,
+            ),
+            ..first_context.clone()
+        };
+        apply_convergence_policy(&mut suppressed_recurrence, &suppressed_context, &[])
+            .expect("binding disposition suppresses the recurrence");
+        assert!(suppressed_recurrence.findings.is_empty());
+        assert!(
+            suppressed_recurrence.angle_results[0]
+                .finding_ids
+                .is_empty()
+        );
+        assert_eq!(suppressed_recurrence.angle_results[0].score, 5);
+        assert_eq!(
+            suppressed_recurrence.angle_results[0].status,
+            ReviewStatus::Passed
+        );
 
         let mut inconclusive_omission = inconclusive.clone();
         inconclusive_omission.findings.clear();
