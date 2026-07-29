@@ -1,6 +1,7 @@
 const posthogKey = import.meta.env.PUBLIC_POSTHOG_KEY;
 
 if (posthogKey && navigator.doNotTrack !== "1") {
+  const allowedOrigins = new Set([window.location.origin, "https://github.com"]);
   const storageKey = "reviewgate_anonymous_id";
   let distinctId: string = crypto.randomUUID();
 
@@ -30,11 +31,32 @@ if (posthogKey && navigator.doNotTrack !== "1") {
     });
   };
 
+  const safeDestination = (value: string) => {
+    try {
+      const url = new URL(value, window.location.origin);
+      return allowedOrigins.has(url.origin) ? `${url.origin}${url.pathname}` : "";
+    } catch {
+      return "";
+    }
+  };
+
+  const referrerOrigin = () => {
+    if (!document.referrer) {
+      return "";
+    }
+
+    try {
+      return new URL(document.referrer).origin;
+    } catch {
+      return "";
+    }
+  };
+
   capture("$pageview", {
-    $current_url: window.location.href,
+    $current_url: `${window.location.origin}${window.location.pathname}`,
     $host: window.location.host,
     $pathname: window.location.pathname,
-    $referrer: document.referrer,
+    $referrer: referrerOrigin(),
   });
 
   document.addEventListener("click", (event) => {
@@ -50,7 +72,7 @@ if (posthogKey && navigator.doNotTrack !== "1") {
     }
 
     capture(eventName, {
-      destination: link.href,
+      destination: safeDestination(link.href),
       location: link.dataset.analyticsLocation ?? "unknown",
       page_path: window.location.pathname,
     });

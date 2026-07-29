@@ -8,6 +8,7 @@ interface Props {
 }
 
 const { title, description, jsonLd } = Astro.props;
+const serializedJsonLd = jsonLd ? JSON.stringify(jsonLd).replace(/</g, "\\u003c") : null;
 ---
 
 <!doctype html>
@@ -24,7 +25,7 @@ const { title, description, jsonLd } = Astro.props;
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="canonical" href={Astro.url.href} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    {jsonLd && <script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />}
+    {serializedJsonLd && <script type="application/ld+json" is:inline set:html={serializedJsonLd} />}
     <title>{title}</title>
   </head>
   <body>
