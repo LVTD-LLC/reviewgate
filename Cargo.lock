@@ -228,6 +228,7 @@ dependencies = [
  "reviewgate-core",
  "reviewgate-github",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -31,6 +31,7 @@ use reviewgate_github::{
     inline_comment_finding_ids, plan_inline_comment_drafts, plan_summary_comment_publish,
     rereview_status_marker, select_rereview_workflow_run, stale_finding_comment_ids,
 };
+use sha2::{Digest, Sha256};
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
     "AGENTS.md",
@@ -62,6 +63,8 @@ const CONTEXT_FILE_TRUNCATED_MARKER: &str = "\n[truncated]\n";
 const REREVIEW_COMMAND: &str = "@reviewgate review";
 const AGENT_DISPOSITIONS_MARKER_PREFIX: &str = "<!-- reviewgate-agent-dispositions ";
 const AGENT_DISPOSITIONS_MARKER_SUFFIX: &str = " -->";
+const AGENT_DISPOSITION_STATUS_PREFIX: &str = "reviewgate/disposition/";
+const AGENT_DISPOSITION_DIGEST_PREFIX: &str = "receipt-sha256:";
 const AGENT_RESULT_ARTIFACT_PREFIX: &str = "reviewgate-agent-result";
 const CURL_HTTP_STATUS_WRITE_OUT: &str = "%{stderr}reviewgate-http-status=%{http_code}\\n";
 
@@ -679,22 +682,23 @@ fn submit_agent_disposition(
     let post_write_target = match fetch_rereview_target(&repo, &repository, pr_number) {
         Ok(target) => target,
         Err(error) => {
+            let removed = delete_issue_comment(&repo, &repository, comment_id).is_ok();
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "recorded_unconfirmed",
+                    "status": "rejected",
                     "reason": "head_check_failed",
                     "repository": repository,
                     "pull_request_number": pr_number,
                     "reviewed_sha": state.reviewed_sha,
                     "semantic_fingerprint": finding,
-                    "disposition": disposition,
                     "comment_id": comment_id,
+                    "comment_removed": removed,
                 }))?
             );
             return Err(error.context(
-                    "agent disposition was created, but its post-write head check failed; inspect the receipt before retrying",
-                ));
+                "agent disposition was not attested because its post-write head check failed",
+            ));
         }
     };
     if post_write_target.head_sha != state.reviewed_sha {
@@ -726,6 +730,33 @@ fn submit_agent_disposition(
             post_write_target.head_sha
         );
     }
+    if let Err(error) = create_agent_disposition_attestation(
+        &repo,
+        &repository,
+        &state.reviewed_sha,
+        pr_number,
+        comment_id,
+        &state.submission.actor,
+        &body,
+    ) {
+        let removed = delete_issue_comment(&repo, &repository, comment_id).is_ok();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "rejected",
+                "reason": "attestation_failed",
+                "repository": repository,
+                "pull_request_number": pr_number,
+                "reviewed_sha": state.reviewed_sha,
+                "semantic_fingerprint": finding,
+                "comment_id": comment_id,
+                "comment_removed": removed,
+            }))?
+        );
+        return Err(error.context(
+            "agent disposition comment was created but could not be attested with a writer-only commit status",
+        ));
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -745,15 +776,21 @@ fn submit_agent_disposition(
 struct AgentDispositionComment {
     id: u64,
     author_login: String,
-    author_association: String,
     body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitStatusRecord {
+    context: String,
+    description: String,
+    creator_login: String,
+    state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IssueCommentRecord {
     id: u64,
     author_login: Option<String>,
-    author_association: Option<String>,
     body: String,
 }
 
@@ -804,7 +841,6 @@ fn agent_disposition_comments(records: &[IssueCommentRecord]) -> Vec<AgentDispos
         comments.push(AgentDispositionComment {
             id: record.id,
             author_login: record.author_login.clone().unwrap_or_default(),
-            author_association: record.author_association.clone().unwrap_or_default(),
             body: record.body.clone(),
         });
     }
@@ -815,14 +851,14 @@ fn agent_disposition_comments(records: &[IssueCommentRecord]) -> Vec<AgentDispos
 fn apply_agent_disposition_comments(
     state: &mut SummaryState,
     comments: &[AgentDispositionComment],
-    authorized_actors: &BTreeSet<String>,
+    attested_comment_ids: &BTreeSet<u64>,
 ) -> CliResult<AgentDispositionReplay> {
     let mut replay = AgentDispositionReplay {
         found: comments.len(),
         ..AgentDispositionReplay::default()
     };
     for comment in comments {
-        if !authorized_actors.contains(&comment.author_login) {
+        if !attested_comment_ids.contains(&comment.id) {
             replay.unauthorized += 1;
             continue;
         }
@@ -889,22 +925,46 @@ fn report_agent_disposition_replay(stage: &str, replay: AgentDispositionReplay) 
     );
 }
 
-fn authorized_disposition_actors(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
-    // GitHub supplies author_association on the immutable comment author. The
-    // submitting CLI also verifies write permission before creating the
-    // comment. Rechecking a human through the workflow's installation token
-    // can return a token-scoped false negative and silently discard the receipt.
-    disposition_actor_candidates(comments)
+fn agent_disposition_digest(body: &str) -> String {
+    let digest = Sha256::digest(body.as_bytes());
+    format!("{AGENT_DISPOSITION_DIGEST_PREFIX}{digest:x}")
 }
 
-fn disposition_actor_candidates(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
+fn agent_disposition_status_context(comment_id: u64) -> String {
+    format!("{AGENT_DISPOSITION_STATUS_PREFIX}{comment_id}")
+}
+
+fn attested_disposition_comment_ids(
+    comments: &[AgentDispositionComment],
+    statuses: &[CommitStatusRecord],
+) -> BTreeSet<u64> {
     comments
         .iter()
-        .filter(|comment| is_maintainer_association(&comment.author_association))
-        .map(|comment| comment.author_login.trim())
-        .filter(|login| !login.is_empty())
-        .map(str::to_string)
+        .filter(|comment| {
+            let expected_context = agent_disposition_status_context(comment.id);
+            let expected_digest = agent_disposition_digest(&comment.body);
+            statuses.iter().any(|status| {
+                status.context == expected_context
+                    && status.description == expected_digest
+                    && status.creator_login == comment.author_login
+                    && status.state == "success"
+            })
+        })
+        .map(|comment| comment.id)
         .collect()
+}
+
+fn load_attested_disposition_comment_ids(
+    repo: &Path,
+    repository: &str,
+    reviewed_sha: &str,
+    comments: &[AgentDispositionComment],
+) -> CliResult<BTreeSet<u64>> {
+    if comments.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let statuses = fetch_commit_status_records(repo, repository, reviewed_sha)?;
+    Ok(attested_disposition_comment_ids(comments, &statuses))
 }
 
 fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
@@ -2631,9 +2691,14 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
-        let authorized_actors = authorized_disposition_actors(&disposition_comments);
+        let attested_ids = load_attested_disposition_comment_ids(
+            &repo,
+            &repository,
+            &previous.last_reviewed_sha,
+            &disposition_comments,
+        )?;
         let replay =
-            apply_agent_disposition_comments(previous, &disposition_comments, &authorized_actors)?;
+            apply_agent_disposition_comments(previous, &disposition_comments, &attested_ids)?;
         report_agent_disposition_replay("summary publish", replay);
     }
     let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
@@ -3099,18 +3164,63 @@ fn parse_issue_comment_records(raw: &str) -> CliResult<Vec<IssueCommentRecord>> 
             .pointer("/user/login")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
-        let author_association = entry
-            .get("author_association")
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned);
         comments.push(IssueCommentRecord {
             id,
             author_login,
-            author_association,
             body,
         });
     }
     Ok(comments)
+}
+
+fn fetch_commit_status_records(
+    repo: &Path,
+    repository: &str,
+    reviewed_sha: &str,
+) -> CliResult<Vec<CommitStatusRecord>> {
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("repos/{repository}/commits/{reviewed_sha}/statuses?per_page=100"),
+        ],
+    )?;
+    parse_commit_status_records(&raw)
+}
+
+fn parse_commit_status_records(raw: &str) -> CliResult<Vec<CommitStatusRecord>> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse commit statuses JSON")?;
+    let mut statuses = Vec::new();
+    for entry in flatten_gh_paginated_items(&value) {
+        let Some(context) = entry.get("context").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !context.starts_with(AGENT_DISPOSITION_STATUS_PREFIX) {
+            continue;
+        }
+        statuses.push(CommitStatusRecord {
+            context: context.to_string(),
+            description: entry
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            creator_login: entry
+                .pointer("/creator/login")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            state: entry
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(statuses)
 }
 
 fn fetch_pull_comments(
@@ -3222,6 +3332,41 @@ fn create_issue_comment_with_id(
         .get("id")
         .and_then(serde_json::Value::as_u64)
         .context("created issue comment did not include id")
+}
+
+fn create_agent_disposition_attestation(
+    repo: &Path,
+    repository: &str,
+    reviewed_sha: &str,
+    pr_number: u64,
+    comment_id: u64,
+    actor: &str,
+    body: &str,
+) -> CliResult<()> {
+    let payload = serde_json::json!({
+        "state": "success",
+        "context": agent_disposition_status_context(comment_id),
+        "description": agent_disposition_digest(body),
+        "target_url": format!(
+            "https://github.com/{repository}/pull/{pr_number}#issuecomment-{comment_id}"
+        ),
+    });
+    let raw = gh_api_json(
+        repo,
+        "POST",
+        &format!("repos/{repository}/statuses/{reviewed_sha}"),
+        &payload,
+    )?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).context("failed to parse created commit status JSON")?;
+    let creator = value
+        .pointer("/creator/login")
+        .and_then(serde_json::Value::as_str)
+        .context("created commit status did not include creator login")?;
+    if creator != actor {
+        bail!("created commit status actor did not match the disposition author");
+    }
+    Ok(())
 }
 
 fn add_rereview_reaction_best_effort(repo: &Path, repository: &str, comment_id: u64) {
@@ -3852,9 +3997,14 @@ fn load_previous_summary_state(
     };
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
-    let authorized_actors = authorized_disposition_actors(&disposition_comments);
+    let attested_ids = load_attested_disposition_comment_ids(
+        repo,
+        repository,
+        &state.last_reviewed_sha,
+        &disposition_comments,
+    )?;
     let replay =
-        apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_actors)?;
+        apply_agent_disposition_comments(&mut state, &disposition_comments, &attested_ids)?;
     report_agent_disposition_replay("review", replay);
     Ok(Some(state))
 }
@@ -7391,7 +7541,7 @@ review_angles:
     }
 
     #[test]
-    fn disposition_comments_are_versioned_author_bound_and_trust_maintainer_association() {
+    fn disposition_comments_are_versioned_author_bound_and_require_writer_attestation() {
         let artifact: ReviewArtifact =
             serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
                 .expect("fixture");
@@ -7425,10 +7575,8 @@ review_angles:
         let untrusted = AgentDispositionComment {
             id: 1,
             author_login: "repair-agent".to_string(),
-            author_association: "CONTRIBUTOR".to_string(),
             body: body.clone(),
         };
-        assert!(disposition_actor_candidates(std::slice::from_ref(&untrusted)).is_empty());
         let replay = apply_agent_disposition_comments(&mut state, &[untrusted], &BTreeSet::new())
             .expect("ignored");
         assert_eq!(
@@ -7447,13 +7595,12 @@ review_angles:
         let forged_author = AgentDispositionComment {
             id: 2,
             author_login: "different-agent".to_string(),
-            author_association: "COLLABORATOR".to_string(),
             body: body.clone(),
         };
         let replay = apply_agent_disposition_comments(
             &mut state,
             std::slice::from_ref(&forged_author),
-            &BTreeSet::from(["different-agent".to_string()]),
+            &BTreeSet::from([2]),
         )
         .expect("actor mismatch ignored");
         assert_eq!(
@@ -7472,24 +7619,53 @@ review_angles:
         let trusted = AgentDispositionComment {
             id: 3,
             author_login: "repair-agent".to_string(),
-            author_association: "COLLABORATOR".to_string(),
             body,
         };
+        let attestation = CommitStatusRecord {
+            context: agent_disposition_status_context(trusted.id),
+            description: agent_disposition_digest(&trusted.body),
+            creator_login: trusted.author_login.clone(),
+            state: "success".to_string(),
+        };
         assert_eq!(
-            disposition_actor_candidates(std::slice::from_ref(&trusted)),
-            BTreeSet::from(["repair-agent".to_string()])
+            attested_disposition_comment_ids(
+                std::slice::from_ref(&trusted),
+                std::slice::from_ref(&attestation)
+            ),
+            BTreeSet::from([3])
         );
-        let association_authorized = authorized_disposition_actors(std::slice::from_ref(&trusted));
-        assert_eq!(
-            association_authorized,
-            BTreeSet::from(["repair-agent".to_string()])
-        );
+        for invalid_attestation in [
+            CommitStatusRecord {
+                context: agent_disposition_status_context(4),
+                ..attestation.clone()
+            },
+            CommitStatusRecord {
+                description: "receipt-sha256:tampered".to_string(),
+                ..attestation.clone()
+            },
+            CommitStatusRecord {
+                creator_login: "different-agent".to_string(),
+                ..attestation.clone()
+            },
+            CommitStatusRecord {
+                state: "failure".to_string(),
+                ..attestation.clone()
+            },
+        ] {
+            assert!(
+                attested_disposition_comment_ids(
+                    std::slice::from_ref(&trusted),
+                    &[invalid_attestation]
+                )
+                .is_empty()
+            );
+        }
         let replay = apply_agent_disposition_comments(
             &mut state,
             std::slice::from_ref(&trusted),
-            &association_authorized,
+            &BTreeSet::from([3]),
         )
-        .expect("maintainer-associated disposition applied");
+        .expect("writer-attested disposition applied");
         assert_eq!(
             replay,
             AgentDispositionReplay {
@@ -7505,7 +7681,6 @@ review_angles:
         let malformed = AgentDispositionComment {
             id: 4,
             author_login: "repair-agent".to_string(),
-            author_association: "COLLABORATOR".to_string(),
             body: format!(
                 "{AGENT_DISPOSITIONS_MARKER_PREFIX}not-base64{AGENT_DISPOSITIONS_MARKER_SUFFIX}"
             ),
@@ -7513,7 +7688,7 @@ review_angles:
         let replay = apply_agent_disposition_comments(
             &mut state,
             &[malformed, trusted],
-            &BTreeSet::from(["repair-agent".to_string()]),
+            &BTreeSet::from([3, 4]),
         )
         .expect("invalid comment isolated and maintainer disposition applied");
         assert_eq!(
@@ -7528,6 +7703,49 @@ review_angles:
         assert_eq!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
+        );
+    }
+
+    #[test]
+    fn commit_status_parser_keeps_only_disposition_attestations() {
+        let raw = serde_json::json!([[
+            {
+                "context": "reviewgate/disposition/42",
+                "description": "receipt-sha256:abc",
+                "creator": {"login": "repair-agent"},
+                "state": "success"
+            },
+            {
+                "context": "continuous-integration/test",
+                "description": "passed",
+                "creator": {"login": "github-actions[bot]"},
+                "state": "success"
+            }
+        ]])
+        .to_string();
+
+        assert_eq!(
+            parse_commit_status_records(&raw).expect("statuses parse"),
+            vec![CommitStatusRecord {
+                context: "reviewgate/disposition/42".to_string(),
+                description: "receipt-sha256:abc".to_string(),
+                creator_login: "repair-agent".to_string(),
+                state: "success".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_disposition_set_does_not_require_commit_status_access() {
+        assert!(
+            load_attested_disposition_comment_ids(
+                Path::new("/does-not-exist"),
+                "LVTD-LLC/reviewgate",
+                &"a".repeat(40),
+                &[],
+            )
+            .expect("empty disposition set")
+            .is_empty()
         );
     }
 
@@ -7571,7 +7789,6 @@ review_angles:
                 IssueCommentRecord {
                     id: (index + 10) as u64,
                     author_login: Some("repair-agent".to_string()),
-                    author_association: Some("COLLABORATOR".to_string()),
                     body: encode_agent_disposition_comment(&update).expect("encoded"),
                 }
             })
@@ -7590,7 +7807,6 @@ review_angles:
         records.push(IssueCommentRecord {
             id: 20,
             author_login: Some("repair-agent".to_string()),
-            author_association: Some("COLLABORATOR".to_string()),
             body: encode_agent_disposition_comment(&stale).expect("stale encoded"),
         });
         let forged = AgentDispositionState {
@@ -7607,7 +7823,6 @@ review_angles:
         records.push(IssueCommentRecord {
             id: 21,
             author_login: Some("repair-agent".to_string()),
-            author_association: Some("COLLABORATOR".to_string()),
             body: encode_agent_disposition_comment(&forged).expect("forged encoded"),
         });
         let unknown_finding = AgentDispositionState {
@@ -7624,18 +7839,23 @@ review_angles:
         records.push(IssueCommentRecord {
             id: 22,
             author_login: Some("repair-agent".to_string()),
-            author_association: Some("COLLABORATOR".to_string()),
             body: encode_agent_disposition_comment(&unknown_finding)
                 .expect("unknown finding encoded"),
         });
 
         let comments = agent_disposition_comments(&records);
-        let replay = apply_agent_disposition_comments(
-            &mut state,
-            &comments,
-            &BTreeSet::from(["repair-agent".to_string()]),
-        )
-        .expect("transport replay");
+        let statuses = comments
+            .iter()
+            .map(|comment| CommitStatusRecord {
+                context: agent_disposition_status_context(comment.id),
+                description: agent_disposition_digest(&comment.body),
+                creator_login: comment.author_login.clone(),
+                state: "success".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let attested_ids = attested_disposition_comment_ids(&comments, &statuses);
+        let replay = apply_agent_disposition_comments(&mut state, &comments, &attested_ids)
+            .expect("transport replay");
         assert_eq!(
             replay,
             AgentDispositionReplay {
@@ -7775,6 +7995,8 @@ review_angles:
 
         assert!(readme.contains("issue_comment:"));
         assert!(readme.contains("github.event.comment.body == '@reviewgate review'"));
+        assert!(readme.contains("statuses: read"));
+        assert!(readme.contains("payload-digest commit status"));
         assert!(rereview_job.contains("actions: write"));
         assert!(rereview_job.contains("pull-requests: write"));
         assert!(readme.contains("group: reviewgate-rereview-${{ github.event.comment.id }}"));
