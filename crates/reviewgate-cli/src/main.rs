@@ -757,6 +757,18 @@ struct IssueCommentRecord {
     body: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct AgentDispositionReplay {
+    found: usize,
+    unauthorized: usize,
+    malformed: usize,
+    stale: usize,
+    actor_mismatch: usize,
+    invalid: usize,
+    applied: usize,
+    duplicate: usize,
+}
+
 fn encode_agent_disposition_comment(state: &AgentDispositionState) -> CliResult<String> {
     state.validate()?;
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(state)?);
@@ -804,15 +816,21 @@ fn apply_agent_disposition_comments(
     state: &mut SummaryState,
     comments: &[AgentDispositionComment],
     authorized_actors: &BTreeSet<String>,
-) -> CliResult<()> {
+) -> CliResult<AgentDispositionReplay> {
+    let mut replay = AgentDispositionReplay {
+        found: comments.len(),
+        ..AgentDispositionReplay::default()
+    };
     for comment in comments {
         if !authorized_actors.contains(&comment.author_login) {
+            replay.unauthorized += 1;
             continue;
         }
         let update = match extract_agent_disposition_state(&comment.body) {
             Ok(Some(update)) => update,
             Ok(None) => continue,
             Err(error) => {
+                replay.malformed += 1;
                 eprintln!(
                     "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
                     comment.id
@@ -821,9 +839,11 @@ fn apply_agent_disposition_comments(
             }
         };
         if update.scope != state.scope || update.reviewed_sha != state.last_reviewed_sha {
+            replay.stale += 1;
             continue;
         }
         if update.submission.actor != comment.author_login {
+            replay.actor_mismatch += 1;
             eprintln!(
                 "ReviewGate warning: ignored agent disposition comment {} whose actor does not match its GitHub author",
                 comment.id
@@ -832,14 +852,41 @@ fn apply_agent_disposition_comments(
         }
         let mut candidate = state.clone();
         match update.apply_to_summary(&mut candidate, comment.id) {
-            Ok(()) => *state = candidate,
-            Err(error) => eprintln!(
-                "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
-                comment.id
-            ),
+            Ok(()) => {
+                if candidate == *state {
+                    replay.duplicate += 1;
+                } else {
+                    *state = candidate;
+                    replay.applied += 1;
+                }
+            }
+            Err(error) => {
+                replay.invalid += 1;
+                eprintln!(
+                    "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
+                    comment.id
+                );
+            }
         }
     }
-    Ok(())
+    Ok(replay)
+}
+
+fn report_agent_disposition_replay(stage: &str, replay: AgentDispositionReplay) {
+    if replay.found == 0 {
+        return;
+    }
+    println!(
+        "ReviewGate agent dispositions ({stage}): {} found; {} applied; {} duplicates; {} unauthorized; {} stale; {} actor mismatch; {} malformed; {} invalid.",
+        replay.found,
+        replay.applied,
+        replay.duplicate,
+        replay.unauthorized,
+        replay.stale,
+        replay.actor_mismatch,
+        replay.malformed,
+        replay.invalid,
+    );
 }
 
 fn authorized_disposition_actors(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
@@ -2585,7 +2632,9 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
         let authorized_actors = authorized_disposition_actors(&disposition_comments);
-        apply_agent_disposition_comments(previous, &disposition_comments, &authorized_actors)?;
+        let replay =
+            apply_agent_disposition_comments(previous, &disposition_comments, &authorized_actors)?;
+        report_agent_disposition_replay("summary publish", replay);
     }
     let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
     let previous_tracked_findings = previous_state
@@ -3804,7 +3853,9 @@ fn load_previous_summary_state(
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
     let authorized_actors = authorized_disposition_actors(&disposition_comments);
-    apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_actors)?;
+    let replay =
+        apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_actors)?;
+    report_agent_disposition_replay("review", replay);
     Ok(Some(state))
 }
 
@@ -7378,8 +7429,16 @@ review_angles:
             body: body.clone(),
         };
         assert!(disposition_actor_candidates(std::slice::from_ref(&untrusted)).is_empty());
-        apply_agent_disposition_comments(&mut state, &[untrusted], &BTreeSet::new())
+        let replay = apply_agent_disposition_comments(&mut state, &[untrusted], &BTreeSet::new())
             .expect("ignored");
+        assert_eq!(
+            replay,
+            AgentDispositionReplay {
+                found: 1,
+                unauthorized: 1,
+                ..AgentDispositionReplay::default()
+            }
+        );
         assert_ne!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
@@ -7391,12 +7450,20 @@ review_angles:
             author_association: "COLLABORATOR".to_string(),
             body: body.clone(),
         };
-        apply_agent_disposition_comments(
+        let replay = apply_agent_disposition_comments(
             &mut state,
             std::slice::from_ref(&forged_author),
             &BTreeSet::from(["different-agent".to_string()]),
         )
         .expect("actor mismatch ignored");
+        assert_eq!(
+            replay,
+            AgentDispositionReplay {
+                found: 1,
+                actor_mismatch: 1,
+                ..AgentDispositionReplay::default()
+            }
+        );
         assert_ne!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
@@ -7417,12 +7484,20 @@ review_angles:
             association_authorized,
             BTreeSet::from(["repair-agent".to_string()])
         );
-        apply_agent_disposition_comments(
+        let replay = apply_agent_disposition_comments(
             &mut state,
             std::slice::from_ref(&trusted),
             &association_authorized,
         )
         .expect("maintainer-associated disposition applied");
+        assert_eq!(
+            replay,
+            AgentDispositionReplay {
+                found: 1,
+                applied: 1,
+                ..AgentDispositionReplay::default()
+            }
+        );
         assert_eq!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
@@ -7435,12 +7510,21 @@ review_angles:
                 "{AGENT_DISPOSITIONS_MARKER_PREFIX}not-base64{AGENT_DISPOSITIONS_MARKER_SUFFIX}"
             ),
         };
-        apply_agent_disposition_comments(
+        let replay = apply_agent_disposition_comments(
             &mut state,
             &[malformed, trusted],
             &BTreeSet::from(["repair-agent".to_string()]),
         )
         .expect("invalid comment isolated and maintainer disposition applied");
+        assert_eq!(
+            replay,
+            AgentDispositionReplay {
+                found: 2,
+                malformed: 1,
+                duplicate: 1,
+                ..AgentDispositionReplay::default()
+            }
+        );
         assert_eq!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
@@ -7514,7 +7598,7 @@ review_angles:
             scope: scope.clone(),
             reviewed_sha: state.last_reviewed_sha.clone(),
             submission: AgentDispositionSubmission {
-                semantic_fingerprint: fingerprint,
+                semantic_fingerprint: fingerprint.clone(),
                 disposition: AgentDisposition::Fixed,
                 evidence: "Forged actor evidence.".to_string(),
                 actor: "different-actor".to_string(),
@@ -7526,14 +7610,43 @@ review_angles:
             author_association: Some("COLLABORATOR".to_string()),
             body: encode_agent_disposition_comment(&forged).expect("forged encoded"),
         });
+        let unknown_finding = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: "security:missing.rs:unknown.finding".to_string(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "Unknown finding evidence.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        records.push(IssueCommentRecord {
+            id: 22,
+            author_login: Some("repair-agent".to_string()),
+            author_association: Some("COLLABORATOR".to_string()),
+            body: encode_agent_disposition_comment(&unknown_finding)
+                .expect("unknown finding encoded"),
+        });
 
         let comments = agent_disposition_comments(&records);
-        apply_agent_disposition_comments(
+        let replay = apply_agent_disposition_comments(
             &mut state,
             &comments,
             &BTreeSet::from(["repair-agent".to_string()]),
         )
         .expect("transport replay");
+        assert_eq!(
+            replay,
+            AgentDispositionReplay {
+                found: 9,
+                stale: 1,
+                actor_mismatch: 1,
+                invalid: 1,
+                applied: 6,
+                ..AgentDispositionReplay::default()
+            }
+        );
         let reconciled = prepare_summary_publication_artifact(
             artifact,
             &state.tracked_findings,
