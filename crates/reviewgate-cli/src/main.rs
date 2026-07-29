@@ -7385,8 +7385,25 @@ review_angles:
             FindingDisposition::Disputed
         );
 
-        let trusted = AgentDispositionComment {
+        let forged_author = AgentDispositionComment {
             id: 2,
+            author_login: "different-agent".to_string(),
+            author_association: "COLLABORATOR".to_string(),
+            body: body.clone(),
+        };
+        apply_agent_disposition_comments(
+            &mut state,
+            std::slice::from_ref(&forged_author),
+            &BTreeSet::from(["different-agent".to_string()]),
+        )
+        .expect("actor mismatch ignored");
+        assert_ne!(
+            state.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+
+        let trusted = AgentDispositionComment {
+            id: 3,
             author_login: "repair-agent".to_string(),
             author_association: "COLLABORATOR".to_string(),
             body,
@@ -7411,7 +7428,7 @@ review_angles:
             FindingDisposition::Disputed
         );
         let malformed = AgentDispositionComment {
-            id: 3,
+            id: 4,
             author_login: "repair-agent".to_string(),
             author_association: "COLLABORATOR".to_string(),
             body: format!(
