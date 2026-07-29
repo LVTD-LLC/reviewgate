@@ -23,7 +23,13 @@ const links = [
     {links.map((link) => (
       <a href={link.href} aria-current={current === link.key ? "page" : undefined}>{link.label}</a>
     ))}
-    <a href={repositoryUrl}>GitHub</a>
+    <a
+      href={repositoryUrl}
+      data-analytics-event="source_link_clicked"
+      data-analytics-location="header_desktop"
+    >
+      GitHub
+    </a>
   </nav>
 
   <details class="mobile-nav signal-mobile-nav">
@@ -32,7 +38,13 @@ const links = [
       {links.map((link) => (
         <a href={link.href} aria-current={current === link.key ? "page" : undefined}>{link.label}</a>
       ))}
-      <a href={repositoryUrl}>GitHub</a>
+      <a
+        href={repositoryUrl}
+        data-analytics-event="source_link_clicked"
+        data-analytics-location="header_mobile"
+      >
+        GitHub
+      </a>
     </nav>
   </details>
 </header>

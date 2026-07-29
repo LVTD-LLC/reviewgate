@@ -4,6 +4,36 @@ import SiteHeader from "../components/SiteHeader.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
 const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
+const siteUrl = "https://reviewgate.lvtd.dev";
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "ReviewGate",
+    applicationCategory: "DeveloperApplication",
+    operatingSystem: "GitHub Actions",
+    description:
+      "Open-source AI review gates for agent-written pull requests, with a visible 0-5 score and machine-readable findings.",
+    url: siteUrl,
+    downloadUrl: repositoryUrl,
+    isAccessibleForFree: true,
+    offers: {
+      "@type": "Offer",
+      price: "0",
+      priceCurrency: "USD",
+    },
+    codeRepository: repositoryUrl,
+    license: "https://www.apache.org/licenses/LICENSE-2.0",
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "LVTD LLC",
+    url: "https://lvtd.dev",
+    sameAs: ["https://github.com/LVTD-LLC"],
+  },
+];
 
 const signalFindings = [
   ["P1", "Release image has no smoke verification", "deployment/Dockerfile"],
@@ -20,7 +50,8 @@ const signalLoop = [
 
 <BaseLayout
   title="ReviewGate - Know when agent code is ready"
-  description="ReviewGate is the open-source GitHub Action that scores agent-written pull requests from 0-5 and produces a shared review contract for humans and coding agents."
+  description="ReviewGate is an open-source GitHub Action that scores agent-written pull requests 0-5 and gives humans and coding agents a shared review contract."
+  jsonLd={jsonLd}
 >
   <main class="concept signal-site">
     <SiteHeader current="product" />
@@ -33,8 +64,22 @@ const signalLoop = [
           ReviewGate turns every agent-written pull request into a visible score, one living review summary, and a machine-readable fix list.
         </p>
         <div class="signal-actions">
-          <a class="signal-primary" href="/docs">Install ReviewGate <span aria-hidden="true">↗</span></a>
-          <a class="signal-secondary" href={repositoryUrl}>View source</a>
+          <a
+            class="signal-primary"
+            href="/docs"
+            data-analytics-event="install_intent_clicked"
+            data-analytics-location="homepage_hero"
+          >
+            Install ReviewGate <span aria-hidden="true">↗</span>
+          </a>
+          <a
+            class="signal-secondary"
+            href={repositoryUrl}
+            data-analytics-event="source_link_clicked"
+            data-analytics-location="homepage_hero"
+          >
+            View source
+          </a>
         </div>
       </div>
 

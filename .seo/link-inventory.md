@@ -12,8 +12,10 @@
 | `/#purpose` | https://reviewgate.lvtd.dev/#purpose | Merge-readiness signal for agent PRs | A, B, C, D, E |
 | `/#install` | https://reviewgate.lvtd.dev/#install | Install ReviewGate as a GitHub Action | A, B, C, D, E |
 | `/#configure` | https://reviewgate.lvtd.dev/#configure | Configure review angles and severity | A, B, C, D, E |
+| `/docs` | https://reviewgate.lvtd.dev/docs/ | ReviewGate installation and documentation status | A, B, C, D, E |
+| `/blog` | https://reviewgate.lvtd.dev/blog/ | ReviewGate engineering field notes | E |
 
-There is currently no `/pricing`, `/about`, `/features/*`, `/tools/*`, or blog route. Do not create links to those paths until the relevant phase ships them.
+There is currently no `/pricing`, `/about`, `/features/*`, `/tools/*`, or published article route. Do not create links to those paths until the relevant phase ships them.
 
 ### Documentation and source (external, supporting links)
 
