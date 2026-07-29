@@ -2832,6 +2832,15 @@ fn prepare_summary_publication_artifact(
     previous_tracked_findings: &[TrackedFinding],
     delta: &reviewgate_core::ConvergenceDelta,
 ) -> CliResult<ReviewArtifact> {
+    if !artifact.tracked_findings.is_empty()
+        && publication_base_is_already_reconciled(
+            previous_tracked_findings,
+            &artifact.tracked_findings,
+        )
+    {
+        artifact.validate()?;
+        return Ok(artifact);
+    }
     let convergence = reconcile_findings_with_updates(
         artifact.findings.clone(),
         previous_tracked_findings,
@@ -2842,6 +2851,23 @@ fn prepare_summary_publication_artifact(
     artifact.tracked_findings = convergence.tracked_findings;
     recompute_artifact_outcome(&mut artifact)?;
     Ok(artifact)
+}
+
+fn publication_base_is_already_reconciled(
+    previous: &[TrackedFinding],
+    current: &[TrackedFinding],
+) -> bool {
+    previous.iter().all(|prior| {
+        current
+            .iter()
+            .find(|tracked| tracked.semantic_fingerprint == prior.semantic_fingerprint)
+            .is_some_and(|tracked| {
+                prior
+                    .disposition_history
+                    .iter()
+                    .all(|record| tracked.disposition_history.contains(record))
+            })
+    })
 }
 
 fn prepare_validated_summary_publication_artifact(
@@ -8316,6 +8342,91 @@ review_angles:
                 .last()
                 .and_then(|record| record.submission_id),
             Some(9001)
+        );
+    }
+
+    #[test]
+    fn summary_publication_is_idempotent_for_mixed_open_and_fixed_findings() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let open_finding = artifact.findings[0].clone();
+        let mut fixed_finding = open_finding.clone();
+        fixed_finding.id = "rg_fixed".to_string();
+        fixed_finding
+            .grounding
+            .as_mut()
+            .expect("grounding")
+            .semantic_key = "webhook.retry_exhaustion.second_path".to_string();
+        artifact.findings = vec![open_finding.clone(), fixed_finding.clone()];
+        artifact.reviewed_sha = "a".repeat(40);
+        artifact = artifact.with_computed_score().expect("prior score");
+        let previous = reconcile_findings(
+            artifact.findings.clone(),
+            &[],
+            &reviewgate_core::ConvergenceDelta::first_review(&artifact.reviewed_sha),
+        )
+        .expect("prior findings reconcile")
+        .tracked_findings;
+
+        let current_sha = "b".repeat(40);
+        let mut resolution = fixed_finding;
+        let evidence_summary = "The changed guard closes the second retry path.".to_string();
+        {
+            let grounding = resolution.grounding.as_mut().expect("grounding");
+            grounding.resolution_disposition = Some(FindingDisposition::Fixed);
+            grounding.resolution_evidence_summary = Some(evidence_summary.clone());
+            grounding.causal_path =
+                "retry exhaustion -> changed guard -> covered second path".to_string();
+        }
+        let update = FindingDispositionUpdate {
+            semantic_fingerprint: semantic_fingerprint(&resolution),
+            disposition: FindingDisposition::Fixed,
+            evidence_summary,
+            actor: "reviewgate:model".to_string(),
+            reviewed_sha: current_sha.clone(),
+            code_fingerprint: finding_code_fingerprint(&resolution),
+            resolution,
+        };
+        let delta = reviewgate_core::ConvergenceDelta::head_changed(
+            artifact.reviewed_sha.clone(),
+            current_sha.clone(),
+            ["app/webhooks/retry.py".to_string()],
+        );
+        let first = reconcile_findings_with_updates(
+            vec![open_finding],
+            &previous,
+            &delta,
+            std::slice::from_ref(&update),
+        )
+        .expect("mixed current review reconciles");
+        artifact.reviewed_sha = current_sha;
+        artifact.findings = first.findings;
+        artifact.tracked_findings = first.tracked_findings;
+        artifact.disposition_updates = vec![update];
+        recompute_artifact_outcome(&mut artifact).expect("current artifact validates");
+
+        let expected = artifact.clone();
+        let published = prepare_summary_publication_artifact(artifact, &previous, &delta)
+            .expect("summary publication must preserve mixed convergence state");
+
+        assert_eq!(published, expected);
+        assert_eq!(published.findings.len(), 1);
+        assert_eq!(
+            published
+                .tracked_findings
+                .iter()
+                .filter(|finding| finding.disposition == FindingDisposition::StillOpen)
+                .count(),
+            1
+        );
+        assert_eq!(
+            published
+                .tracked_findings
+                .iter()
+                .filter(|finding| finding.disposition == FindingDisposition::Fixed)
+                .count(),
+            1
         );
     }
 
