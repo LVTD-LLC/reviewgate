@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,6 @@ pub enum ReviewGateError {
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
     Passed,
-    #[serde(alias = "failed")]
     NeedsChanges,
     ReviewError,
 }
@@ -113,6 +112,7 @@ impl ReviewErrorKind {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewAngleError {
     pub angle_id: String,
     pub angle_name: String,
@@ -324,6 +324,7 @@ pub struct FindingGrounding {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FindingEvidence {
     pub path: String,
     #[serde(default)]
@@ -379,6 +380,7 @@ impl Finding {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CostComponent {
     pub label: String,
     pub model: String,
@@ -442,6 +444,7 @@ impl ReviewMetrics {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CostSummary {
     pub current_run_usd: f64,
     pub components: Vec<CostComponent>,
@@ -631,6 +634,55 @@ impl ReviewArtifact {
         self.validate_angle_errors()?;
         for finding in &self.findings {
             finding.validate()?;
+        }
+        if !self.tracked_findings.is_empty() {
+            let mut tracked_by_fingerprint = BTreeMap::new();
+            for tracked in &self.tracked_findings {
+                tracked.finding.validate()?;
+                if tracked.semantic_fingerprint != semantic_fingerprint(&tracked.finding)
+                    || tracked.disposition_history.is_empty()
+                    || tracked
+                        .disposition_history
+                        .last()
+                        .map(|record| record.disposition)
+                        != Some(tracked.disposition)
+                    || tracked.disposition_history.iter().any(|record| {
+                        record.evidence_summary.trim().is_empty()
+                            || record.actor.trim().is_empty()
+                            || record.reviewed_sha.trim().is_empty()
+                            || record.code_fingerprint.trim().is_empty()
+                            || record.submission_id == Some(0)
+                            || record.submitted_disposition.is_some()
+                                != record.submission_id.is_some()
+                    })
+                    || tracked_by_fingerprint
+                        .insert(tracked.semantic_fingerprint.clone(), &tracked.finding)
+                        .is_some()
+                {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "tracked finding state is invalid".to_string(),
+                    ));
+                }
+            }
+            if self.status != ReviewStatus::ReviewError {
+                let open_findings = self
+                    .findings
+                    .iter()
+                    .map(|finding| (semantic_fingerprint(finding), finding))
+                    .collect::<BTreeMap<_, _>>();
+                let tracked_open_findings = self
+                    .tracked_findings
+                    .iter()
+                    .filter(|tracked| tracked.disposition == FindingDisposition::StillOpen)
+                    .map(|tracked| (tracked.semantic_fingerprint.clone(), &tracked.finding))
+                    .collect::<BTreeMap<_, _>>();
+                if open_findings != tracked_open_findings {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "completed artifact findings disagree with tracked finding state"
+                            .to_string(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1316,6 +1368,8 @@ impl SummaryState {
                     || record.actor.trim().is_empty()
                     || record.reviewed_sha.trim().is_empty()
                     || record.code_fingerprint.trim().is_empty()
+                    || record.submission_id == Some(0)
+                    || record.submitted_disposition.is_some() != record.submission_id.is_some()
                 {
                     return Err(ReviewGateError::InvalidSummaryState(format!(
                         "tracked finding {} has an incomplete disposition record",
@@ -3317,7 +3371,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_failed_status_deserializes_for_recomputation_only() {
+    fn rejects_the_removed_failed_status() {
         let raw = serde_json::json!({
             "score": 3,
             "target_score": 5,
@@ -3329,19 +3383,7 @@ mod tests {
             "notes": []
         });
 
-        let artifact: ReviewArtifact =
-            serde_json::from_value(raw).expect("legacy status should deserialize");
-
-        assert_eq!(artifact.status, ReviewStatus::NeedsChanges);
-
-        let artifact = artifact
-            .with_computed_score()
-            .expect("computed artifact is valid");
-        let serialized = serde_json::to_string(&artifact).expect("artifact serializes");
-
-        assert_eq!(artifact.status, ReviewStatus::Passed);
-        assert!(!serialized.contains(concat!("\"", "fail", "ed", "\"")));
-        assert!(serialized.contains("\"passed\""));
+        assert!(serde_json::from_value::<ReviewArtifact>(raw).is_err());
     }
 
     #[test]

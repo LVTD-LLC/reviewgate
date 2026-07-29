@@ -150,6 +150,10 @@
         "reviewed_sha",
         "code_fingerprint"
       ],
+      "dependentRequired": {
+        "submitted_disposition": ["submission_id"],
+        "submission_id": ["submitted_disposition"]
+      },
       "additionalProperties": false,
       "properties": {
         "disposition": {
@@ -174,6 +178,7 @@
             "needs_human"
           ]
         },
+        "submission_id": { "type": "integer", "minimum": 1 },
         "evidence_summary": { "type": "string", "minLength": 1 },
         "actor": { "type": "string", "minLength": 1 },
         "reviewed_sha": { "type": "string", "minLength": 1 },

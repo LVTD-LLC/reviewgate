@@ -9,7 +9,7 @@ pub const LATE_BLOCKER_CONFIDENCE_THRESHOLD: f64 = 0.95;
 pub const MAX_DISPOSITION_HISTORY: usize = 8;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewScope {
     Local,
     PullRequest {
@@ -53,10 +53,13 @@ impl AgentDisposition {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FindingDispositionRecord {
     pub disposition: FindingDisposition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_disposition: Option<AgentDisposition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_id: Option<u64>,
     pub evidence_summary: String,
     pub actor: String,
     pub reviewed_sha: String,
@@ -206,6 +209,7 @@ fn disposition_record(
     FindingDispositionRecord {
         disposition,
         submitted_disposition: None,
+        submission_id: None,
         evidence_summary: evidence_summary.into(),
         actor: "reviewgate".to_string(),
         reviewed_sha: reviewed_sha.to_string(),
@@ -438,6 +442,7 @@ pub fn reconcile_findings_with_updates(
             previous.disposition_history.push(FindingDispositionRecord {
                 disposition: update.disposition,
                 submitted_disposition: None,
+                submission_id: None,
                 evidence_summary: update.evidence_summary,
                 actor: update.actor,
                 reviewed_sha: update.reviewed_sha,
@@ -674,6 +679,7 @@ mod tests {
             disposition_history: vec![FindingDispositionRecord {
                 disposition,
                 submitted_disposition: None,
+                submission_id: None,
                 evidence_summary: "Maintainer checked the repository contract.".to_string(),
                 actor: "maintainer".to_string(),
                 reviewed_sha: reviewed_sha.to_string(),
@@ -1057,6 +1063,7 @@ mod tests {
                 tracked.disposition_history.push(FindingDispositionRecord {
                     disposition: FindingDisposition::Fixed,
                     submitted_disposition: None,
+                    submission_id: None,
                     evidence_summary: "The repair agent verified the finding against the new head."
                         .to_string(),
                     actor: "repair-agent".to_string(),

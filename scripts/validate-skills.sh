@@ -60,6 +60,17 @@ if (( found == 0 )); then
   fail "no skills/*/SKILL.md files found"
 fi
 
+for skill in skills/check-reviewgate/SKILL.md skills/reviewgate-loop/SKILL.md; do
+  grep -q 'reviewgate check' "$skill" ||
+    fail "$skill: must use the structured reviewgate check contract"
+  if grep -Eq '\.reviewgate/review\.json|reviewgate-summary|reviewgate-finding:' "$skill"; then
+    fail "$skill: must not teach agents to scrape internal artifacts or Markdown markers"
+  fi
+done
+
+grep -q 'reviewgate disposition' skills/reviewgate-loop/SKILL.md ||
+  fail "skills/reviewgate-loop/SKILL.md: must use structured dispositions"
+
 for block in "$tmp_dir"/*.sh; do
   [[ -e "$block" ]] || continue
   bash -n "$block" || fail "$block: bash syntax check failed"

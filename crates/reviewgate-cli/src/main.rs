@@ -84,6 +84,8 @@ enum Command {
         pr: u64,
         #[arg(long)]
         repository: Option<String>,
+        #[arg(long, default_value = "reviewgate.yml")]
+        workflow: String,
     },
     /// Submit a structured disposition for a finding on the current PR head.
     Disposition {
@@ -93,6 +95,8 @@ enum Command {
         pr: u64,
         #[arg(long)]
         repository: Option<String>,
+        #[arg(long, default_value = "reviewgate.yml")]
+        workflow: String,
         #[arg(long)]
         finding: String,
         #[arg(long, value_enum)]
@@ -370,15 +374,25 @@ fn main() -> CliResult<()> {
             repo,
             pr,
             repository,
-        } => check_agent_result(repo, pr, repository),
+            workflow,
+        } => check_agent_result(repo, pr, repository, workflow),
         Command::Disposition {
             repo,
             pr,
             repository,
+            workflow,
             finding,
             status,
             evidence,
-        } => submit_agent_disposition(repo, pr, repository, finding, status.into(), evidence),
+        } => submit_agent_disposition(
+            repo,
+            pr,
+            repository,
+            workflow,
+            finding,
+            status.into(),
+            evidence,
+        ),
         Command::FixtureReview {
             input,
             json_out,
@@ -492,11 +506,16 @@ fn fixture_review(
     Ok(())
 }
 
-fn check_agent_result(repo: PathBuf, pr_number: u64, repository: Option<String>) -> CliResult<()> {
+fn check_agent_result(
+    repo: PathBuf,
+    pr_number: u64,
+    repository: Option<String>,
+    workflow: String,
+) -> CliResult<()> {
     let repo = repo.canonicalize().unwrap_or(repo);
     let repository = resolve_repository(&repo, repository)?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let result = download_agent_result(&repo, &repository, pr_number, &head_sha)?;
+    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow)?;
     ensure_pull_request_head(&repo, &repository, pr_number, &head_sha)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
@@ -507,7 +526,20 @@ fn download_agent_result(
     repository: &str,
     pr_number: u64,
     head_sha: &str,
+    workflow: &str,
 ) -> CliResult<AgentReviewResult> {
+    let workflow_id = resolve_recheck_workflow_id(repo, repository, workflow)?;
+    let target = RereviewTarget {
+        repository: repository.to_string(),
+        pull_request_number: pr_number,
+        head_sha: head_sha.to_string(),
+    };
+    let runs = fetch_workflow_run_candidates(repo, repository, &workflow_id.to_string(), head_sha)?;
+    let trusted_run = select_rereview_workflow_run(&runs, &target).with_context(|| {
+        format!(
+            "no completed {workflow:?} pull_request run exists for PR #{pr_number} at current head {head_sha}"
+        )
+    })?;
     let artifact_name = agent_result_artifact_name(head_sha);
     let raw = gh_dyn(
         repo,
@@ -518,7 +550,7 @@ fn download_agent_result(
             &format!("repos/{repository}/actions/artifacts?name={artifact_name}&per_page=100"),
         ],
     )?;
-    let run_id = select_agent_result_run(&raw, head_sha)?;
+    let run_id = select_agent_result_run(&raw, head_sha, &BTreeSet::from([trusted_run.id]))?;
     let download_dir = unique_temp_path("reviewgate-agent-result", "download");
     fs::create_dir_all(&download_dir)
         .with_context(|| format!("failed to create {}", download_dir.display()))?;
@@ -567,6 +599,7 @@ fn submit_agent_disposition(
     repo: PathBuf,
     pr_number: u64,
     repository: Option<String>,
+    workflow: String,
     finding: String,
     disposition: AgentDisposition,
     evidence: String,
@@ -574,7 +607,7 @@ fn submit_agent_disposition(
     let repo = repo.canonicalize().unwrap_or(repo);
     let repository = resolve_repository(&repo, repository)?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let result = download_agent_result(&repo, &repository, pr_number, &head_sha)?;
+    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow)?;
     if !result
         .findings
         .iter()
@@ -605,9 +638,68 @@ fn submit_agent_disposition(
     };
     state.validate()?;
     let body = encode_agent_disposition_comment(&state)?;
-    create_issue_comment(&repo, &repository, pr_number, &body)?;
+    let comment_id = create_issue_comment_with_id(&repo, &repository, pr_number, &body)?;
+    let post_write_target = match fetch_rereview_target(&repo, &repository, pr_number) {
+        Ok(target) => target,
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "recorded_unconfirmed",
+                    "reason": "head_check_failed",
+                    "repository": repository,
+                    "pull_request_number": pr_number,
+                    "reviewed_sha": state.reviewed_sha,
+                    "semantic_fingerprint": finding,
+                    "disposition": disposition,
+                    "comment_id": comment_id,
+                }))?
+            );
+            return Err(error.context(
+                    "agent disposition was created, but its post-write head check failed; inspect the receipt before retrying",
+                ));
+        }
+    };
+    if post_write_target.head_sha != state.reviewed_sha {
+        let removed = match delete_issue_comment(&repo, &repository, comment_id) {
+            Ok(()) => true,
+            Err(cleanup_error) => {
+                eprintln!(
+                    "ReviewGate warning: failed to remove stale disposition comment {comment_id}: {cleanup_error}"
+                );
+                false
+            }
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "rejected",
+                "reason": "stale_head",
+                "repository": repository,
+                "pull_request_number": pr_number,
+                "reviewed_sha": state.reviewed_sha,
+                "semantic_fingerprint": finding,
+                "comment_id": comment_id,
+                "comment_removed": removed,
+            }))?
+        );
+        bail!(
+            "pull request head changed from {} to {} while recording the agent disposition; retry on the current result",
+            state.reviewed_sha,
+            post_write_target.head_sha
+        );
+    }
     println!(
-        "Recorded {disposition:?} disposition for {finding} on the current ReviewGate result."
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "status": "recorded",
+            "repository": repository,
+            "pull_request_number": pr_number,
+            "reviewed_sha": state.reviewed_sha,
+            "semantic_fingerprint": finding,
+            "disposition": disposition,
+            "comment_id": comment_id,
+        }))?
     );
     Ok(())
 }
@@ -674,26 +766,82 @@ fn agent_disposition_comments(records: &[IssueCommentRecord]) -> Vec<AgentDispos
 fn apply_agent_disposition_comments(
     state: &mut SummaryState,
     comments: &[AgentDispositionComment],
+    authorized_actors: &BTreeSet<String>,
 ) -> CliResult<()> {
     for comment in comments {
-        if !is_maintainer_association(&comment.author_association) {
+        if !authorized_actors.contains(&comment.author_login) {
             continue;
         }
-        let Some(update) = extract_agent_disposition_state(&comment.body)? else {
-            continue;
+        let update = match extract_agent_disposition_state(&comment.body) {
+            Ok(Some(update)) => update,
+            Ok(None) => continue,
+            Err(error) => {
+                eprintln!(
+                    "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
+                    comment.id
+                );
+                continue;
+            }
         };
         if update.scope != state.scope || update.reviewed_sha != state.last_reviewed_sha {
             continue;
         }
         if update.submission.actor != comment.author_login {
-            bail!(
-                "agent disposition comment {} actor does not match its GitHub author",
+            eprintln!(
+                "ReviewGate warning: ignored agent disposition comment {} whose actor does not match its GitHub author",
                 comment.id
             );
+            continue;
         }
-        update.apply_to_summary(state)?;
+        let mut candidate = state.clone();
+        match update.apply_to_summary(&mut candidate, comment.id) {
+            Ok(()) => *state = candidate,
+            Err(error) => eprintln!(
+                "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
+                comment.id
+            ),
+        }
     }
     Ok(())
+}
+
+fn authorized_disposition_actors(
+    repo: &Path,
+    repository: &str,
+    comments: &[AgentDispositionComment],
+) -> BTreeSet<String> {
+    let candidates = disposition_actor_candidates(comments);
+    resolve_authorized_disposition_actors(candidates, |actor| {
+        fetch_actor_write_permission(repo, repository, actor)
+    })
+}
+
+fn resolve_authorized_disposition_actors(
+    candidates: BTreeSet<String>,
+    mut has_write_permission: impl FnMut(&str) -> CliResult<bool>,
+) -> BTreeSet<String> {
+    candidates
+        .into_iter()
+        .filter(|actor| match has_write_permission(actor) {
+            Ok(authorized) => authorized,
+            Err(error) => {
+                eprintln!(
+                    "ReviewGate warning: ignored agent dispositions from {actor} because live permission verification failed: {error}"
+                );
+                false
+            }
+        })
+        .collect()
+}
+
+fn disposition_actor_candidates(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
+    comments
+        .iter()
+        .filter(|comment| is_maintainer_association(&comment.author_association))
+        .map(|comment| comment.author_login.trim())
+        .filter(|login| !login.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
@@ -737,7 +885,11 @@ fn valid_repository_name(repository: &str) -> bool {
     )
 }
 
-fn select_agent_result_run(raw: &str, head_sha: &str) -> CliResult<u64> {
+fn select_agent_result_run(
+    raw: &str,
+    head_sha: &str,
+    trusted_run_ids: &BTreeSet<u64>,
+) -> CliResult<u64> {
     let value: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse Actions artifacts JSON")?;
     let artifact_name = agent_result_artifact_name(head_sha);
@@ -782,6 +934,9 @@ fn select_agent_result_run(raw: &str, head_sha: &str) -> CliResult<u64> {
             else {
                 continue;
             };
+            if !trusted_run_ids.contains(&run_id) {
+                continue;
+            }
             let created_at = artifact
                 .get("created_at")
                 .and_then(serde_json::Value::as_str)
@@ -2335,15 +2490,16 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
-        apply_agent_disposition_comments(previous, &disposition_comments)?;
+        let authorized_actors =
+            authorized_disposition_actors(&repo, &repository, &disposition_comments);
+        apply_agent_disposition_comments(previous, &disposition_comments, &authorized_actors)?;
     }
-    let artifact = read_prepared_artifact(&options.input, &head_sha)?;
-    let tracked_findings = if artifact.status == ReviewStatus::ReviewError {
-        previous_state
-            .as_ref()
-            .map(|state| state.tracked_findings.clone())
-            .unwrap_or_default()
-    } else {
+    let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
+    let previous_tracked_findings = previous_state
+        .as_ref()
+        .map(|state| state.tracked_findings.as_slice())
+        .unwrap_or_default();
+    if artifact.status != ReviewStatus::ReviewError {
         let (diff, changed_files, delta) = if let Some(previous) = previous_state.as_ref() {
             collect_convergence_delta(&repo, previous, &head_sha)?
         } else {
@@ -2369,17 +2525,17 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
                 context_files: vec![],
             },
         )?;
-        reconcile_findings_with_updates(
-            artifact.findings.clone(),
-            previous_state
-                .as_ref()
-                .map(|state| state.tracked_findings.as_slice())
-                .unwrap_or_default(),
-            &delta,
-            &artifact.disposition_updates,
-        )?
-        .tracked_findings
-    };
+        artifact = reconcile_publication_artifact(artifact, previous_tracked_findings, &delta)?;
+    } else {
+        artifact.tracked_findings = previous_tracked_findings.to_vec();
+    }
+    fs::write(&options.input, serde_json::to_string_pretty(&artifact)?).with_context(|| {
+        format!(
+            "failed to persist reconciled artifact {}",
+            options.input.display()
+        )
+    })?;
+    let tracked_findings = artifact.tracked_findings.clone();
     let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
         .unwrap_or(Severity::P4);
     let summary = render_summary_with_options(
@@ -2418,6 +2574,23 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
         println!("Deleted duplicate ReviewGate summary comment {duplicate_id}.");
     }
     Ok(())
+}
+
+fn reconcile_publication_artifact(
+    mut artifact: ReviewArtifact,
+    previous_tracked_findings: &[TrackedFinding],
+    delta: &reviewgate_core::ConvergenceDelta,
+) -> CliResult<ReviewArtifact> {
+    let convergence = reconcile_findings_with_updates(
+        artifact.findings.clone(),
+        previous_tracked_findings,
+        delta,
+        &artifact.disposition_updates,
+    )?;
+    artifact.findings = convergence.findings;
+    artifact.tracked_findings = convergence.tracked_findings;
+    recompute_artifact_outcome(&mut artifact)?;
+    Ok(artifact)
 }
 
 fn validate_serialized_disposition_updates(
@@ -3506,7 +3679,8 @@ fn load_previous_summary_state(
     };
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
-    apply_agent_disposition_comments(&mut state, &disposition_comments)?;
+    let authorized_actors = authorized_disposition_actors(repo, repository, &disposition_comments);
+    apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_actors)?;
     Ok(Some(state))
 }
 
@@ -6717,16 +6891,30 @@ review_angles:
                     "expired": false,
                     "created_at": "2026-07-29T11:00:00Z",
                     "workflow_run": {"id": 90, "head_sha": "current"}
+                },
+                {
+                    "id": 10,
+                    "name": "reviewgate-agent-result-current",
+                    "expired": false,
+                    "created_at": "2026-07-29T13:00:00Z",
+                    "workflow_run": {"id": 100, "head_sha": "current"}
                 }
             ]
         })
         .to_string();
 
         assert_eq!(
-            select_agent_result_run(&raw, "current").expect("exact result"),
+            select_agent_result_run(&raw, "current", &BTreeSet::from([90]))
+                .expect("trusted exact result"),
             90
         );
-        assert!(select_agent_result_run(&raw, "missing").is_err());
+        assert!(
+            select_agent_result_run(&raw, "current", &BTreeSet::from([100]))
+                .expect("other explicitly trusted workflow")
+                == 100
+        );
+        assert!(select_agent_result_run(&raw, "current", &BTreeSet::from([101])).is_err());
+        assert!(select_agent_result_run(&raw, "missing", &BTreeSet::from([90])).is_err());
     }
 
     #[test]
@@ -6757,7 +6945,7 @@ review_angles:
     }
 
     #[test]
-    fn disposition_comments_are_versioned_author_bound_and_collaborator_only() {
+    fn disposition_comments_are_versioned_author_bound_and_require_live_write_permission() {
         let artifact: ReviewArtifact =
             serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
                 .expect("fixture");
@@ -6794,7 +6982,9 @@ review_angles:
             author_association: "CONTRIBUTOR".to_string(),
             body: body.clone(),
         };
-        apply_agent_disposition_comments(&mut state, &[untrusted]).expect("ignored");
+        assert!(disposition_actor_candidates(std::slice::from_ref(&untrusted)).is_empty());
+        apply_agent_disposition_comments(&mut state, &[untrusted], &BTreeSet::new())
+            .expect("ignored");
         assert_ne!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
@@ -6806,10 +6996,229 @@ review_angles:
             author_association: "COLLABORATOR".to_string(),
             body,
         };
-        apply_agent_disposition_comments(&mut state, &[trusted]).expect("applied");
+        assert_eq!(
+            disposition_actor_candidates(std::slice::from_ref(&trusted)),
+            BTreeSet::from(["repair-agent".to_string()])
+        );
+        let permission_checked = resolve_authorized_disposition_actors(
+            BTreeSet::from(["api-failure".to_string(), "repair-agent".to_string()]),
+            |actor| {
+                if actor == "api-failure" {
+                    bail!("simulated permission API failure");
+                }
+                Ok(true)
+            },
+        );
+        assert_eq!(
+            permission_checked,
+            BTreeSet::from(["repair-agent".to_string()])
+        );
+        apply_agent_disposition_comments(
+            &mut state,
+            std::slice::from_ref(&trusted),
+            &BTreeSet::new(),
+        )
+        .expect("live read permission ignored");
+        assert_ne!(
+            state.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+        let malformed = AgentDispositionComment {
+            id: 3,
+            author_login: "repair-agent".to_string(),
+            author_association: "COLLABORATOR".to_string(),
+            body: format!(
+                "{AGENT_DISPOSITIONS_MARKER_PREFIX}not-base64{AGENT_DISPOSITIONS_MARKER_SUFFIX}"
+            ),
+        };
+        apply_agent_disposition_comments(
+            &mut state,
+            &[malformed, trusted],
+            &BTreeSet::from(["repair-agent".to_string()]),
+        )
+        .expect("invalid comment isolated and live write permission applied");
         assert_eq!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
+        );
+    }
+
+    #[test]
+    fn every_disposition_survives_comment_transport_and_summary_publication() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        artifact.findings.truncate(1);
+        artifact = artifact.with_computed_score().expect("score");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = scope.clone();
+        let fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        let dispositions = [
+            AgentDisposition::Accepted,
+            AgentDisposition::Fixed,
+            AgentDisposition::RejectedWithEvidence,
+            AgentDisposition::AlreadyImplemented,
+            AgentDisposition::IntentionalContract,
+            AgentDisposition::NeedsHuman,
+        ];
+        let mut records = dispositions
+            .iter()
+            .enumerate()
+            .map(|(index, disposition)| {
+                let update = AgentDispositionState {
+                    schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+                    scope: scope.clone(),
+                    reviewed_sha: state.last_reviewed_sha.clone(),
+                    submission: AgentDispositionSubmission {
+                        semantic_fingerprint: fingerprint.clone(),
+                        disposition: *disposition,
+                        evidence: format!("{disposition:?} verified on the reviewed head."),
+                        actor: "repair-agent".to_string(),
+                    },
+                };
+                IssueCommentRecord {
+                    id: (index + 10) as u64,
+                    author_login: Some("repair-agent".to_string()),
+                    author_association: Some("COLLABORATOR".to_string()),
+                    body: encode_agent_disposition_comment(&update).expect("encoded"),
+                }
+            })
+            .collect::<Vec<_>>();
+        let stale = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: scope.clone(),
+            reviewed_sha: "stale-head".to_string(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: fingerprint.clone(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "Stale evidence.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        records.push(IssueCommentRecord {
+            id: 20,
+            author_login: Some("repair-agent".to_string()),
+            author_association: Some("COLLABORATOR".to_string()),
+            body: encode_agent_disposition_comment(&stale).expect("stale encoded"),
+        });
+        let forged = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: fingerprint,
+                disposition: AgentDisposition::Fixed,
+                evidence: "Forged actor evidence.".to_string(),
+                actor: "different-actor".to_string(),
+            },
+        };
+        records.push(IssueCommentRecord {
+            id: 21,
+            author_login: Some("repair-agent".to_string()),
+            author_association: Some("COLLABORATOR".to_string()),
+            body: encode_agent_disposition_comment(&forged).expect("forged encoded"),
+        });
+
+        let comments = agent_disposition_comments(&records);
+        apply_agent_disposition_comments(
+            &mut state,
+            &comments,
+            &BTreeSet::from(["repair-agent".to_string()]),
+        )
+        .expect("transport replay");
+        let reconciled = reconcile_publication_artifact(
+            artifact,
+            &state.tracked_findings,
+            &reviewgate_core::ConvergenceDelta::unchanged(&state.last_reviewed_sha),
+        )
+        .expect("publication reconciliation");
+        let summary = render_summary_with_options(
+            &reconciled,
+            SummaryOptions {
+                scope,
+                tracked_findings: Some(reconciled.tracked_findings.clone()),
+                ..SummaryOptions::default()
+            },
+            Some(&state),
+        )
+        .expect("summary publication");
+        let published = extract_summary_state(&summary)
+            .expect("published state parses")
+            .expect("published state exists");
+        let submitted = published.tracked_findings[0]
+            .disposition_history
+            .iter()
+            .filter_map(|record| record.submitted_disposition)
+            .collect::<Vec<_>>();
+
+        assert_eq!(submitted, dispositions);
+        assert_eq!(
+            published.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+        assert_eq!(
+            published.tracked_findings[0]
+                .disposition_history
+                .last()
+                .and_then(|record| record.submission_id),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn late_disposition_reconciles_the_persisted_agent_artifact() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        let artifact = artifact.with_computed_score().expect("score");
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let target_fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        let update = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: state.scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: target_fingerprint.clone(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "The repair is present on the reviewed head.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        update
+            .apply_to_summary(&mut state, 9001)
+            .expect("late disposition");
+
+        let reconciled = reconcile_publication_artifact(
+            artifact,
+            &state.tracked_findings,
+            &reviewgate_core::ConvergenceDelta::unchanged(&state.last_reviewed_sha),
+        )
+        .expect("publication reconciliation");
+
+        assert!(
+            reconciled
+                .findings
+                .iter()
+                .all(|finding| semantic_fingerprint(finding) != target_fingerprint)
+        );
+        assert_eq!(
+            reconciled.tracked_findings[0].disposition,
+            FindingDisposition::Fixed
+        );
+        assert_eq!(
+            reconciled.tracked_findings[0]
+                .disposition_history
+                .last()
+                .and_then(|record| record.submission_id),
+            Some(9001)
         );
     }
 
