@@ -293,7 +293,7 @@
         "resolution_disposition": {
           "type": ["string", "null"],
           "enum": ["fixed", null],
-          "description": "Set to fixed only when current-head evidence proves an equivalent prior still-open finding is resolved; otherwise null."
+          "description": "Set to fixed only when the delta directly replaces or restores prior checked evidence and current-head proof resolves the equivalent still-open finding; otherwise null."
         },
         "resolution_evidence_summary": {
           "type": ["string", "null"],
