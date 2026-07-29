@@ -29,6 +29,26 @@ pub enum FindingDisposition {
     Superseded,
 }
 
+impl FindingDisposition {
+    pub fn is_settled(self) -> bool {
+        matches!(
+            self,
+            Self::Fixed | Self::RejectedWithEvidence | Self::IntentionalContract | Self::Superseded
+        )
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::StillOpen => "still_open",
+            Self::RejectedWithEvidence => "rejected_with_evidence",
+            Self::IntentionalContract => "intentional_contract",
+            Self::Disputed => "disputed",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDisposition {

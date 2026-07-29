@@ -227,6 +227,7 @@ runs:
         "$REVIEWGATE_BIN" "${args[@]}"
 
     - name: Publish ReviewGate summary
+      id: summary
       if: ${{ inputs.mode == 'review' && always() }}
       shell: bash
       env:
@@ -260,6 +261,21 @@ runs:
         "$REVIEWGATE_BIN" publish-check-run \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
+
+    - name: Reconcile ReviewGate finding threads
+      if: ${{ inputs.mode == 'review' && always() && steps.summary.outcome == 'success' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
+      run: |
+        set -euo pipefail
+        if ! "$REVIEWGATE_BIN" reconcile-threads \
+          --repo "$GITHUB_WORKSPACE" \
+          --input "$GITHUB_WORKSPACE/.reviewgate/review.json"; then
+          echo "::error title=ReviewGate thread reconciliation incomplete::The review output was published, but one or more finding-thread updates failed. Rerun ReviewGate; reconciliation is idempotent and resumes from GitHub's observed state." >&2
+          exit 1
+        fi
 
     - name: Publish ReviewGate agent result
       id: agent-result

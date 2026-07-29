@@ -37,6 +37,40 @@ pub struct AgentResultCosts {
     pub summary: Option<CostSummary>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentThreadStatus {
+    #[default]
+    Unknown,
+    NotPublished,
+    Open,
+    Resolved,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentThreadTransition {
+    #[default]
+    Unknown,
+    NotPublished,
+    Retained,
+    Reopened,
+    ResolutionPending,
+    ResolvedFixed,
+    ResolvedRejectedWithEvidence,
+    ResolvedIntentionalContract,
+    ResolvedSuperseded,
+    ResolvedExternally,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentResultThread {
+    pub id: Option<String>,
+    pub status: AgentThreadStatus,
+    pub is_outdated: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentResultFinding {
@@ -55,6 +89,14 @@ pub struct AgentResultFinding {
     pub reproduction: Option<String>,
     pub suggested_fix: String,
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub thread_status: AgentThreadStatus,
+    #[serde(default)]
+    pub thread_transition: AgentThreadTransition,
+    #[serde(default)]
+    pub thread_outdated: bool,
+    #[serde(default)]
+    pub reopening_evidence: Option<String>,
     pub prior_dispositions: Vec<FindingDispositionRecord>,
 }
 
@@ -199,7 +241,7 @@ impl AgentReviewResult {
     pub fn from_artifact(
         artifact: &ReviewArtifact,
         scope: ReviewScope,
-        thread_ids: BTreeMap<String, String>,
+        threads: BTreeMap<String, AgentResultThread>,
     ) -> Result<Self, ReviewGateError> {
         artifact.validate()?;
         let findings = if artifact.tracked_findings.is_empty() {
@@ -207,7 +249,7 @@ impl AgentReviewResult {
                 .findings
                 .iter()
                 .map(|finding| {
-                    project_finding(finding, FindingDisposition::StillOpen, &[], &thread_ids)
+                    project_finding(finding, FindingDisposition::StillOpen, &[], &threads)
                 })
                 .collect()
         } else {
@@ -219,7 +261,7 @@ impl AgentReviewResult {
                         &tracked.finding,
                         tracked.disposition,
                         &tracked.disposition_history,
-                        &thread_ids,
+                        &threads,
                     )
                 })
                 .collect()
@@ -323,6 +365,11 @@ impl AgentReviewResult {
                     .thread_id
                     .as_ref()
                     .is_some_and(|thread_id| thread_id.trim().is_empty())
+                || !valid_thread_state(finding)
+                || finding
+                    .reopening_evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.trim().is_empty())
                 || finding.disposition != FindingDisposition::StillOpen
                     && finding.blocking_reason.is_some()
                 || finding.evidence.iter().any(|evidence| {
@@ -364,23 +411,106 @@ impl AgentReviewResult {
     }
 }
 
+fn thread_transition(
+    status: AgentThreadStatus,
+    disposition: FindingDisposition,
+    was_previously_resolved: bool,
+    has_reopening_evidence: bool,
+) -> AgentThreadTransition {
+    match (status, disposition) {
+        (AgentThreadStatus::Unknown, _) => AgentThreadTransition::Unknown,
+        (AgentThreadStatus::NotPublished, _) => AgentThreadTransition::NotPublished,
+        (AgentThreadStatus::Open, FindingDisposition::StillOpen)
+            if was_previously_resolved && has_reopening_evidence =>
+        {
+            AgentThreadTransition::Reopened
+        }
+        (AgentThreadStatus::Open, FindingDisposition::StillOpen | FindingDisposition::Disputed) => {
+            AgentThreadTransition::Retained
+        }
+        (
+            AgentThreadStatus::Open,
+            FindingDisposition::Fixed
+            | FindingDisposition::RejectedWithEvidence
+            | FindingDisposition::IntentionalContract
+            | FindingDisposition::Superseded,
+        ) => AgentThreadTransition::ResolutionPending,
+        (AgentThreadStatus::Resolved, FindingDisposition::Fixed) => {
+            AgentThreadTransition::ResolvedFixed
+        }
+        (AgentThreadStatus::Resolved, FindingDisposition::RejectedWithEvidence) => {
+            AgentThreadTransition::ResolvedRejectedWithEvidence
+        }
+        (AgentThreadStatus::Resolved, FindingDisposition::IntentionalContract) => {
+            AgentThreadTransition::ResolvedIntentionalContract
+        }
+        (AgentThreadStatus::Resolved, FindingDisposition::Superseded) => {
+            AgentThreadTransition::ResolvedSuperseded
+        }
+        (
+            AgentThreadStatus::Resolved,
+            FindingDisposition::StillOpen | FindingDisposition::Disputed,
+        ) => AgentThreadTransition::ResolvedExternally,
+    }
+}
+
+fn valid_thread_state(finding: &AgentResultFinding) -> bool {
+    let was_previously_resolved = finding
+        .prior_dispositions
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|record| record.disposition.is_settled());
+    let expected_transition = thread_transition(
+        finding.thread_status,
+        finding.disposition,
+        was_previously_resolved,
+        finding.reopening_evidence.is_some(),
+    );
+    let identity_is_valid = match finding.thread_status {
+        AgentThreadStatus::Unknown => !finding.thread_outdated,
+        AgentThreadStatus::NotPublished => finding.thread_id.is_none() && !finding.thread_outdated,
+        AgentThreadStatus::Open | AgentThreadStatus::Resolved => finding.thread_id.is_some(),
+    };
+    identity_is_valid && finding.thread_transition == expected_transition
+}
+
 fn project_finding(
     finding: &Finding,
     disposition: FindingDisposition,
     history: &[FindingDispositionRecord],
-    thread_ids: &BTreeMap<String, String>,
+    threads: &BTreeMap<String, AgentResultThread>,
 ) -> AgentResultFinding {
     let grounding = finding.grounding.as_ref();
+    let fingerprint = semantic_fingerprint(finding);
+    let thread = threads.get(&fingerprint);
+    let thread_status = thread
+        .map(|thread| thread.status)
+        .unwrap_or(AgentThreadStatus::NotPublished);
+    let reopening_evidence = grounding
+        .and_then(|grounding| grounding.reopening_evidence.clone())
+        .filter(|evidence| !evidence.trim().is_empty());
+    let was_previously_resolved = history
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|record| record.disposition.is_settled());
+    let thread_transition = thread_transition(
+        thread_status,
+        disposition,
+        was_previously_resolved,
+        reopening_evidence.is_some(),
+    );
     AgentResultFinding {
         id: finding.id.clone(),
-        semantic_fingerprint: semantic_fingerprint(finding),
+        semantic_fingerprint: fingerprint,
         disposition,
         severity: finding.severity,
         confidence: finding.confidence,
         classification: finding.classification,
-        blocking_reason: (disposition == FindingDisposition::StillOpen)
-            .then_some(finding.blocking_reason)
-            .flatten(),
+        blocking_reason: finding
+            .blocking_reason
+            .filter(|_| disposition == FindingDisposition::StillOpen),
         path: finding.file.clone(),
         line: finding.line,
         claim: grounding.map(|grounding| grounding.claim.clone()),
@@ -390,7 +520,11 @@ fn project_finding(
             .unwrap_or_default(),
         reproduction: grounding.and_then(|grounding| grounding.reproduction.clone()),
         suggested_fix: finding.agent_instruction.clone(),
-        thread_id: thread_ids.get(&finding.id).cloned(),
+        thread_id: thread.and_then(|thread| thread.id.clone()),
+        thread_status,
+        thread_transition,
+        thread_outdated: thread.is_some_and(|thread| thread.is_outdated),
+        reopening_evidence,
         prior_dispositions: history.to_vec(),
     }
 }
@@ -401,9 +535,9 @@ mod tests {
 
     use crate::{
         AGENT_DISPOSITIONS_SCHEMA_VERSION, AgentDisposition, AgentDispositionState,
-        AgentDispositionSubmission, AgentReviewResult, DEFAULT_TARGET_SCORE, FindingDisposition,
-        MAX_AGENT_RESULT_BYTES, ReviewArtifact, ReviewScope, SummaryState, reconcile_findings,
-        semantic_fingerprint,
+        AgentDispositionSubmission, AgentResultThread, AgentReviewResult, AgentThreadStatus,
+        AgentThreadTransition, DEFAULT_TARGET_SCORE, FindingDisposition, MAX_AGENT_RESULT_BYTES,
+        ReviewArtifact, ReviewScope, SummaryState, reconcile_findings, semantic_fingerprint,
     };
 
     #[test]
@@ -431,14 +565,21 @@ mod tests {
             }),
             ..crate::compute_metrics(&artifact, crate::Severity::P4)
         });
-        let finding_id = artifact.findings[0].id.clone();
+        let fingerprint = semantic_fingerprint(&artifact.findings[0]);
         let result = AgentReviewResult::from_artifact(
             &artifact,
             ReviewScope::PullRequest {
                 repository: "LVTD-LLC/reviewgate".to_string(),
                 pull_request_number: 48,
             },
-            BTreeMap::from([(finding_id, "PRRT_thread".to_string())]),
+            BTreeMap::from([(
+                fingerprint,
+                AgentResultThread {
+                    id: Some("PRRT_thread".to_string()),
+                    status: AgentThreadStatus::Open,
+                    is_outdated: true,
+                },
+            )]),
         )
         .expect("result projects");
 
@@ -450,6 +591,13 @@ mod tests {
             artifact.metrics.and_then(|metrics| metrics.timings)
         );
         assert_eq!(result.findings[0].thread_id.as_deref(), Some("PRRT_thread"));
+        assert_eq!(result.findings[0].thread_status, AgentThreadStatus::Open);
+        assert_eq!(
+            result.findings[0].thread_transition,
+            AgentThreadTransition::Retained
+        );
+        assert!(result.findings[0].thread_outdated);
+        assert_eq!(result.findings[0].reopening_evidence, None);
         assert_eq!(
             result.findings[0].semantic_fingerprint,
             semantic_fingerprint(&artifact.findings[0])
@@ -518,13 +666,29 @@ mod tests {
         artifact.findings.clear();
         artifact.tracked_findings = state.tracked_findings;
         artifact = artifact.with_computed_score().expect("passed artifact");
+        let fingerprint = artifact.tracked_findings[0].semantic_fingerprint.clone();
 
-        let result = AgentReviewResult::from_artifact(&artifact, scope, BTreeMap::new())
-            .expect("agent result");
+        let result = AgentReviewResult::from_artifact(
+            &artifact,
+            scope,
+            BTreeMap::from([(
+                fingerprint,
+                AgentResultThread {
+                    id: Some("PRRT_fixed".to_string()),
+                    status: AgentThreadStatus::Resolved,
+                    is_outdated: false,
+                },
+            )]),
+        )
+        .expect("agent result");
 
         assert_eq!(result.status, crate::ReviewStatus::Passed);
         assert_eq!(result.findings[0].disposition, FindingDisposition::Fixed);
         assert_eq!(result.findings[0].blocking_reason, None);
+        assert_eq!(
+            result.findings[0].thread_transition,
+            AgentThreadTransition::ResolvedFixed
+        );
         assert_eq!(
             result.findings[0]
                 .prior_dispositions
@@ -773,5 +937,40 @@ mod tests {
             state.tracked_findings[0].disposition,
             FindingDisposition::StillOpen
         );
+    }
+
+    #[test]
+    fn legacy_v1_findings_deserialize_with_unknown_thread_state() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let artifact = artifact.with_computed_score().expect("fixture score");
+        let result =
+            AgentReviewResult::from_artifact(&artifact, ReviewScope::Local, BTreeMap::new())
+                .expect("result projects");
+        let mut legacy = serde_json::to_value(result).expect("result serializes");
+        let findings = legacy
+            .get_mut("findings")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("findings array");
+        for finding in findings.iter_mut() {
+            let finding = finding.as_object_mut().expect("finding object");
+            finding.remove("thread_status");
+            finding.remove("thread_transition");
+            finding.remove("thread_outdated");
+            finding.remove("reopening_evidence");
+        }
+        findings[0]["thread_id"] = serde_json::json!("PRRT_legacy");
+
+        let legacy: AgentReviewResult =
+            serde_json::from_value(legacy).expect("legacy v1 result deserializes");
+
+        legacy.validate().expect("legacy v1 result validates");
+        assert_eq!(legacy.findings[0].thread_status, AgentThreadStatus::Unknown);
+        assert_eq!(
+            legacy.findings[0].thread_transition,
+            AgentThreadTransition::Unknown
+        );
+        assert_eq!(legacy.findings[0].thread_id.as_deref(), Some("PRRT_legacy"));
     }
 }

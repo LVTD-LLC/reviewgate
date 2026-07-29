@@ -145,6 +145,27 @@
         "reproduction": { "type": ["string", "null"] },
         "suggested_fix": { "type": "string", "minLength": 1 },
         "thread_id": { "type": ["string", "null"], "minLength": 1 },
+        "thread_status": {
+          "type": "string",
+          "enum": ["unknown", "not_published", "open", "resolved"]
+        },
+        "thread_transition": {
+          "type": "string",
+          "enum": [
+            "not_published",
+            "unknown",
+            "retained",
+            "reopened",
+            "resolution_pending",
+            "resolved_fixed",
+            "resolved_rejected_with_evidence",
+            "resolved_intentional_contract",
+            "resolved_superseded",
+            "resolved_externally"
+          ]
+        },
+        "thread_outdated": { "type": "boolean" },
+        "reopening_evidence": { "type": ["string", "null"], "minLength": 1 },
         "prior_dispositions": {
           "type": "array",
           "items": {
