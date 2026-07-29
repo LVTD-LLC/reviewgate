@@ -6,7 +6,7 @@ use crate::{
     AgentDisposition, BlockingReason, CostSummary, DEFAULT_TARGET_SCORE, Finding,
     FindingClassification, FindingDisposition, FindingDispositionRecord, FindingEvidence,
     MAX_DISPOSITION_HISTORY, ReviewAngleError, ReviewArtifact, ReviewErrorKind, ReviewGateError,
-    ReviewScope, ReviewStatus, Severity, SummaryState, finding_code_fingerprint,
+    ReviewScope, ReviewStatus, ReviewTimings, Severity, SummaryState, finding_code_fingerprint,
     semantic_fingerprint,
 };
 
@@ -25,6 +25,8 @@ pub struct AgentReviewResult {
     pub reviewed_sha: String,
     pub angle_errors: Vec<ReviewAngleError>,
     pub costs: AgentResultCosts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<ReviewTimings>,
     pub findings: Vec<AgentResultFinding>,
 }
 
@@ -187,6 +189,7 @@ impl AgentReviewResult {
                 estimated_total_usd: None,
                 summary: None,
             },
+            timings: None,
             findings: vec![],
         };
         result.validate()?;
@@ -232,6 +235,10 @@ impl AgentReviewResult {
                 estimated_total_usd: artifact.estimated_cost_usd,
                 summary: artifact.cost_summary.clone(),
             },
+            timings: artifact
+                .metrics
+                .as_ref()
+                .and_then(|metrics| metrics.timings.clone()),
             findings,
         };
         result.validate()?;
@@ -415,6 +422,15 @@ mod tests {
         )
         .expect("fixture reconciles");
         artifact.tracked_findings = convergence.tracked_findings;
+        artifact.metrics = Some(crate::ReviewMetrics {
+            timings: Some(crate::ReviewTimings {
+                queue_ms: Some(10),
+                startup_ms: 20,
+                model_ms: 30,
+                publish_ms: 40,
+            }),
+            ..crate::compute_metrics(&artifact, crate::Severity::P4)
+        });
         let finding_id = artifact.findings[0].id.clone();
         let result = AgentReviewResult::from_artifact(
             &artifact,
@@ -429,6 +445,10 @@ mod tests {
         assert_eq!(result.schema_version, "reviewgate-agent-result/v1");
         assert_eq!(result.reviewed_sha, artifact.reviewed_sha);
         assert_eq!(result.findings.len(), 1);
+        assert_eq!(
+            result.timings,
+            artifact.metrics.and_then(|metrics| metrics.timings)
+        );
         assert_eq!(result.findings[0].thread_id.as_deref(), Some("PRRT_thread"));
         assert_eq!(
             result.findings[0].semantic_fingerprint,

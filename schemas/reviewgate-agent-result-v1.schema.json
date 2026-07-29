@@ -62,6 +62,14 @@
         }
       }
     },
+    "timings": {
+      "anyOf": [
+        {
+          "$ref": "reviewgate-review-output-v3.schema.json#/properties/metrics/properties/timings"
+        },
+        { "type": "null" }
+      ]
+    },
     "findings": {
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }

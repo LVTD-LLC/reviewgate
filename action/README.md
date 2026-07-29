@@ -10,8 +10,6 @@ GitHub Action metadata lives at the repository root so users can install ReviewG
 
 The `v0` major tag follows current v0 releases so early adopters get the latest supported fixes and review behavior without tracking an arbitrary commit.
 
-Implementation scripts and release download helpers can live in this directory as the wrapper grows.
-
 The composite action stays thin: it collects inputs and pull request event context from GitHub Actions, passes them to the Rust binary, and lets the Rust crates own review logic, scoring, OpenRouter request construction, artifact validation, and summary rendering. The live review path runs configured review angles, defaulting to separate general and adversarial prompts, then aggregates their findings into one artifact and one canonical PR summary.
 
 The action is review-only. It publishes findings and status, but it does not run an autonomous code repair loop inside CI.
@@ -20,13 +18,15 @@ Required installation permissions:
 
 ```yaml
 permissions:
+  actions: read
+  attestations: read
   contents: read
   pull-requests: write
   issues: write
   checks: write
 ```
 
-These are the full-featured least-privilege permissions for the default install. `pull-requests: write` publishes inline PR review comments, `issues: write` creates and updates the canonical PR summary comment, and `checks: write` publishes the dedicated ReviewGate check run.
+These are the full-featured least-privilege permissions for the default install. `actions: read` measures queue time, `attestations: read` verifies the runtime, `pull-requests: write` publishes inline PR review comments, `issues: write` creates and updates the canonical PR summary comment, and `checks: write` publishes the dedicated ReviewGate check run.
 
 Required secret:
 
@@ -58,16 +58,18 @@ Use `prompt` for short inline text, `prompt_file` for repo-relative prompt files
 - `config`: ReviewGate config path. Defaults to `.reviewgate.yml`.
 - `model`: Exact OpenRouter model id. Defaults to ReviewGate's built-in model.
 - `min_severity`: Lowest severity published as ReviewGate PR comments. Defaults to `P4`.
+- `angle_timeout_seconds`: Maximum OpenRouter time for one review angle. Defaults to `180`.
+- `total_timeout_seconds`: Maximum combined OpenRouter time across all review angles. Defaults to `480`.
 
 Scores below `5` are reported as `needs_changes` in the JSON artifact and PR summary. Validated blockers publish a failing ReviewGate check-run conclusion but do not fail the workflow job. Reviewer timeout, empty/malformed output, provider, and transport failures are reported separately as `review_error` with `score: null` and a failing, inconclusive check; they are never represented as code-quality zeroes. Other execution or required publishing failures exit non-zero.
 
 ## Runtime
 
-In `review` mode, the composite action first validates that the `openrouter_api_key` input is present, then posts or updates a short `ReviewGate: running` placeholder on pull requests. It runs the Rust CLI from the action checkout, includes the pull request title and description as separate bounded untrusted scope context, runs the configured review angles, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
+In `review` mode, the composite action first validates that the `openrouter_api_key` input is present, downloads the pinned Linux X64 release binary, and verifies its signed GitHub build provenance. It never compiles ReviewGate in the consumer workflow. It then posts or updates a short `ReviewGate: running` placeholder on pull requests, includes the pull request title and description as separate bounded untrusted scope context, runs the configured review angles within explicit per-angle and total budgets, writes `.reviewgate/review.json` and `.reviewgate/summary.md` into the repository workspace, appends the summary to the GitHub Actions step summary, replaces the placeholder with one canonical PR summary comment, posts eligible findings as inline PR comments when running on a pull request, and publishes a check-run status for review availability when permissions allow.
 
 In `rereview` mode the action does not require `openrouter_api_key`, does not check out PR code, and does not run any model-backed review step. It validates the exact `@reviewgate review` command, uses maintainer association as an early filter, verifies that the actor currently has effective `write`, `maintain`, or `admin` repository permission, and verifies the open PR current head. If that exact head already has a completed canonical review, the request is an idempotent no-op. Otherwise it enumerates the configured workflow's runs with pagination and reruns only the newest completed `pull_request` run for that exact PR and SHA. The resulting review validates repository/PR-bound prior state and analyzes the delta since the previous reviewed SHA.
 
-When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count that the concise footer renders as the number of changed lines analyzed for the report.
+When updating an existing summary comment, the action reads the previous hidden state payload and re-renders the summary so cumulative run count, reviewed SHAs, and bounded cost history survive reruns. New review artifacts also include the changed-line count and a queue/startup/model/publish timing breakdown.
 
 Inline comments are best-effort and deduped by hidden `<!-- reviewgate-finding:... -->` markers. Stale model-provided line anchors are repaired to matching changed lines when possible, and file-level, PR-level, or unanchored findings are attached to fallback right-side diff lines when needed. If no right-side diff anchor exists or GitHub rejects an inline comment, the full finding remains in `.reviewgate/review.json`; ReviewGate does not create standalone finding comments. Older standalone finding comments with `<!-- reviewgate-finding-comment:... -->` markers are cleaned up on later runs.
 
@@ -101,7 +103,9 @@ The rereview job must use:
 ```yaml
 permissions:
   actions: write
-  pull-requests: read
+  attestations: read
+  contents: read
+  pull-requests: write
   issues: write
 
 concurrency:

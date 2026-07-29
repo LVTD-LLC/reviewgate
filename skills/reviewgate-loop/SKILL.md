@@ -37,6 +37,9 @@ The command fails closed when the configured workflow has no valid result for
 the current PR head. Do not substitute a summary comment, inline comment, or
 ReviewGate's internal review artifact.
 
+Use the optional `timings` object to distinguish queue, startup, model, and
+publishing latency when deciding whether a retry is making progress.
+
 ### 2. Select only open blockers
 
 ```bash

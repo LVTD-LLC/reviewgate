@@ -104,6 +104,17 @@
         "cost_source": {
           "type": "string",
           "enum": ["open_router_usage", "fallback_pricing", "unknown"]
+        },
+        "timings": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["queue_ms", "startup_ms", "model_ms", "publish_ms"],
+          "properties": {
+            "queue_ms": { "type": ["integer", "null"], "minimum": 0 },
+            "startup_ms": { "type": "integer", "minimum": 0 },
+            "model_ms": { "type": "integer", "minimum": 0 },
+            "publish_ms": { "type": "integer", "minimum": 0 }
+          }
         }
       }
     },

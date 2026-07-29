@@ -47,6 +47,14 @@ inputs:
     description: Lowest severity published as PR comments. One of P0, P1, P2, P3, P4.
     required: false
     default: P4
+  angle_timeout_seconds:
+    description: Maximum runtime for one model review angle.
+    required: false
+    default: "180"
+  total_timeout_seconds:
+    description: Maximum combined runtime for all model review angles.
+    required: false
+    default: "480"
 
 runs:
   using: composite
@@ -67,16 +75,69 @@ runs:
           exit 1
         fi
 
+    - name: Install verified ReviewGate runtime
+      id: runtime
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_RUNTIME_VERSION: v0.4.0
+      run: |
+        set -euo pipefail
+        started_ms="$(date +%s%3N)"
+        if [ "${RUNNER_OS:-}" != "Linux" ] || [ "${RUNNER_ARCH:-}" != "X64" ]; then
+          echo "::error title=Unsupported ReviewGate runner::ReviewGate supports Linux X64 runners." >&2
+          exit 1
+        fi
+
+        runtime_dir="$RUNNER_TEMP/reviewgate-$REVIEWGATE_RUNTIME_VERSION"
+        archive="$runtime_dir/reviewgate-x86_64-unknown-linux-gnu.tar.gz"
+        mkdir -p "$runtime_dir"
+        gh release download "$REVIEWGATE_RUNTIME_VERSION" \
+          --repo LVTD-LLC/reviewgate \
+          --pattern "$(basename "$archive")" \
+          --dir "$runtime_dir" \
+          --clobber
+        gh attestation verify "$archive" \
+          --repo LVTD-LLC/reviewgate \
+          --signer-workflow LVTD-LLC/reviewgate/.github/workflows/release-runtime.yml \
+          --source-ref "refs/tags/$REVIEWGATE_RUNTIME_VERSION" \
+          --deny-self-hosted-runners
+        tar -xzf "$archive" -C "$runtime_dir"
+        binary="$runtime_dir/reviewgate"
+        chmod +x "$binary"
+        "$binary" --help >/dev/null
+
+        queue_ms=""
+        run_times="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+          --jq '[.created_at, .run_started_at] | @tsv' 2>/dev/null || true)"
+        if [ -n "$run_times" ]; then
+          IFS=$'\t' read -r created_at run_started_at <<< "$run_times"
+          created_ms=""
+          run_started_ms=""
+          if [ -n "$created_at" ] && [ -n "$run_started_at" ]; then
+            created_ms="$(date -d "$created_at" +%s%3N 2>/dev/null || true)"
+            run_started_ms="$(date -d "$run_started_at" +%s%3N 2>/dev/null || true)"
+          fi
+          if [ -n "$created_ms" ] && [ -n "$run_started_ms" ] \
+            && [ "$run_started_ms" -ge "$created_ms" ]; then
+            queue_ms=$((run_started_ms - created_ms))
+          fi
+        fi
+
+        echo "binary=$binary" >> "$GITHUB_OUTPUT"
+        echo "queue_ms=$queue_ms" >> "$GITHUB_OUTPUT"
+        echo "startup_ms=$(( $(date +%s%3N) - started_ms ))" >> "$GITHUB_OUTPUT"
+
     - name: Request ReviewGate rereview
       if: ${{ inputs.mode == 'rereview' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         REVIEWGATE_WORKFLOW: ${{ inputs.review_workflow }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
-        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- request-rereview \
+        "$REVIEWGATE_BIN" request-rereview \
           --repo "$GITHUB_WORKSPACE" \
           --workflow "$REVIEWGATE_WORKFLOW"
 
@@ -86,13 +147,14 @@ runs:
       continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
-        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- publish-start-signal \
+        "$REVIEWGATE_BIN" publish-start-signal \
           --repo "$GITHUB_WORKSPACE"
 
     - name: Run ReviewGate
+      id: review
       if: ${{ inputs.mode == 'review' }}
       shell: bash
       env:
@@ -101,43 +163,76 @@ runs:
         REVIEWGATE_CONFIG: ${{ inputs.config }}
         REVIEWGATE_MODEL: ${{ inputs.model }}
         REVIEWGATE_MIN_SEVERITY: ${{ inputs.min_severity }}
+        REVIEWGATE_ANGLE_TIMEOUT_SECONDS: ${{ inputs.angle_timeout_seconds }}
+        REVIEWGATE_TOTAL_TIMEOUT_SECONDS: ${{ inputs.total_timeout_seconds }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
+        started_ms="$(date +%s%3N)"
         args=(
-          run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml"
-          -p reviewgate-cli -- review-pr
+          review-pr
           --repo "$GITHUB_WORKSPACE"
           --config "$REVIEWGATE_CONFIG"
           --json-out "$GITHUB_WORKSPACE/.reviewgate/review.json"
           --summary-out "$GITHUB_WORKSPACE/.reviewgate/summary.md"
           --min-severity "$REVIEWGATE_MIN_SEVERITY"
+          --angle-timeout-seconds "$REVIEWGATE_ANGLE_TIMEOUT_SECONDS"
+          --total-timeout-seconds "$REVIEWGATE_TOTAL_TIMEOUT_SECONDS"
         )
         if [ -n "$REVIEWGATE_MODEL" ]; then
           args+=(--model "$REVIEWGATE_MODEL")
         fi
-        cargo "${args[@]}"
+        "$REVIEWGATE_BIN" "${args[@]}"
+        echo "model_ms=$(( $(date +%s%3N) - started_ms ))" >> "$GITHUB_OUTPUT"
 
     - name: Publish ReviewGate findings
+      id: findings
       if: ${{ inputs.mode == 'review' }}
       shell: bash
       continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
         REVIEWGATE_MIN_SEVERITY: ${{ inputs.min_severity }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
-        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- publish-findings \
+        started_ms="$(date +%s%3N)"
+        publish_status=0
+        "$REVIEWGATE_BIN" publish-findings \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
-          --min-severity "$REVIEWGATE_MIN_SEVERITY"
+          --min-severity "$REVIEWGATE_MIN_SEVERITY" || publish_status=$?
+        echo "publish_ms=$(( $(date +%s%3N) - started_ms ))" >> "$GITHUB_OUTPUT"
+        exit "$publish_status"
+
+    - name: Record ReviewGate timings
+      if: ${{ inputs.mode == 'review' }}
+      shell: bash
+      continue-on-error: true
+      env:
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
+        REVIEWGATE_QUEUE_MS: ${{ steps.runtime.outputs.queue_ms }}
+      run: |
+        set -euo pipefail
+        args=(
+          record-timings
+          --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
+          --startup-ms "${{ steps.runtime.outputs.startup_ms }}"
+          --model-ms "${{ steps.review.outputs.model_ms }}"
+          --publish-ms "${{ steps.findings.outputs.publish_ms }}"
+        )
+        if [ -n "$REVIEWGATE_QUEUE_MS" ]; then
+          args+=(--queue-ms "$REVIEWGATE_QUEUE_MS")
+        fi
+        "$REVIEWGATE_BIN" "${args[@]}"
 
     - name: Publish ReviewGate summary
-      if: ${{ inputs.mode == 'review' }}
+      if: ${{ inputs.mode == 'review' && always() }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         REVIEWGATE_MIN_SEVERITY: ${{ inputs.min_severity }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
         if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ ! -f "$GITHUB_WORKSPACE/.reviewgate/review.json" ]; then
@@ -145,8 +240,7 @@ runs:
           exit 1
         fi
 
-        if ! cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- publish-summary \
+        if ! "$REVIEWGATE_BIN" publish-summary \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
           --summary-out "$GITHUB_WORKSPACE/.reviewgate/summary.md" \
@@ -160,10 +254,10 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
-        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- publish-check-run \
+        "$REVIEWGATE_BIN" publish-check-run \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
 
@@ -173,10 +267,10 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
-        cargo run --locked --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" \
-          -p reviewgate-cli -- publish-agent-result \
+        "$REVIEWGATE_BIN" publish-agent-result \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json" \
           --output "$GITHUB_WORKSPACE/.reviewgate/result.json"

@@ -18,6 +18,8 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 - `CHANGELOG.md` contains the v0.1.0 changes.
 - Cargo package versions are set to `0.1.0`.
 - The release tag is immutable after publish.
+- The release runtime workflow uploads and attests `reviewgate-x86_64-unknown-linux-gnu.tar.gz`.
+- A clean `ubuntu-latest` consumer run verifies the attestation, performs no source compilation, and records startup at or below 15 seconds.
 - The README install snippet pins the release tag.
 
 ## Safety
@@ -29,7 +31,7 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 
 ## Marketplace Gate
 
-- Create a GitHub release first.
+- Push the exact release tag and let `release-runtime.yml` publish the draft only after the runtime is built, attested, verified, and executed.
 - Install ReviewGate in one small external test repository.
 - Confirm concise summary, inline comment, review-execution failure behavior, and artifact output.
 - Only then evaluate Marketplace publishing.

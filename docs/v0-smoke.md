@@ -8,7 +8,7 @@ Prove a fresh consumer workflow resolves `LVTD-LLC/reviewgate@v0` to the newly m
 
 ## Procedure
 
-1. Move and push the `v0` tag after the release tag is published.
+1. Push the exact release tag, wait for the runtime workflow to publish its verified release, then move and push `v0`.
 2. In a consumer repository, create a small PR with a real diff after the tag move.
 3. Run a workflow that uses:
 
@@ -20,7 +20,8 @@ Prove a fresh consumer workflow resolves `LVTD-LLC/reviewgate@v0` to the newly m
 ```
 
 4. Confirm the workflow logs show the action checkout for the new release SHA, not the previous `v0` target.
-5. Confirm the PR gets one `ReviewGate: running` placeholder that is replaced by one concise `<!-- reviewgate-summary -->` comment.
-6. Confirm the summary shows the score, compact verdict, compact finding counts, footer cost, and no default Metrics, Blocking Findings, Non-Blocking Notes, fallback findings, or Agent Instructions sections.
-7. Confirm eligible findings publish as inline PR comments with `<!-- reviewgate-finding:... -->` markers, unanchored/file/PR findings attach to fallback right-side diff line anchors, old standalone comments with `<!-- reviewgate-finding-comment:... -->` markers are cleaned up, and neither duplicates on a fresh rerun.
-8. Record the consumer repo, PR, workflow run URL, resolved action SHA, and any blockers in the release notes or dogfood log.
+5. Confirm runtime installation downloads the pinned release asset, verifies its build-provenance attestation, performs no source compilation, and completes within 15 seconds excluding queue time.
+6. Confirm the PR gets one `ReviewGate: running` placeholder that is replaced by one concise `<!-- reviewgate-summary -->` comment.
+7. Confirm the summary shows the score, compact verdict, compact finding counts, queue/startup/model/publish durations, footer cost, and no default Metrics, Blocking Findings, Non-Blocking Notes, fallback findings, or Agent Instructions sections.
+8. Confirm eligible findings publish as inline PR comments with `<!-- reviewgate-finding:... -->` markers, unanchored/file/PR findings attach to fallback right-side diff line anchors, old standalone comments with `<!-- reviewgate-finding-comment:... -->` markers are cleaned up, and neither duplicates on a fresh rerun.
+9. Record the consumer repo, PR, workflow run URL, resolved action SHA, runtime startup duration, and any blockers in the release notes or dogfood log.

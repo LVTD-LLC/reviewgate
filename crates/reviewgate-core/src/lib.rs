@@ -420,6 +420,15 @@ impl CostSource {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewTimings {
+    pub queue_ms: Option<u64>,
+    pub startup_ms: u64,
+    pub model_ms: u64,
+    pub publish_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReviewMetrics {
     pub finding_count: u32,
     pub blocking_finding_count: u32,
@@ -432,6 +441,8 @@ pub struct ReviewMetrics {
     pub analyzed_line_count: Option<u32>,
     pub current_run_cost_usd: Option<f64>,
     pub cost_source: CostSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<ReviewTimings>,
 }
 
 impl ReviewMetrics {
@@ -942,6 +953,10 @@ pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> Rev
             .as_ref()
             .and_then(|summary| summary.source)
             .unwrap_or(CostSource::Unknown),
+        timings: artifact
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.timings.clone()),
     };
 
     for finding in &artifact.findings {
@@ -1672,6 +1687,7 @@ fn render_concise_summary_body(
     render_score_block(output, artifact, state);
     render_angle_score_table(output, artifact);
     render_angle_errors(output, artifact);
+    render_action_timings(output, artifact);
     output.push_str(&format!(
         "Findings: {} total, {} blocking, {} inline candidates\n",
         metrics.finding_count, metrics.blocking_finding_count, metrics.inline_eligible_count
@@ -1700,6 +1716,37 @@ fn render_concise_summary_body(
     output.push('\n');
     render_summary_details(output, artifact, options);
     render_summary_footer(output, state, artifact);
+}
+
+fn render_action_timings(output: &mut String, artifact: &ReviewArtifact) {
+    let Some(timings) = artifact
+        .metrics
+        .as_ref()
+        .and_then(|metrics| metrics.timings.as_ref())
+    else {
+        return;
+    };
+
+    output.push_str("| Runtime phase | Duration |\n");
+    output.push_str("| --- | ---: |\n");
+    output.push_str(&format!(
+        "| Queue | {} |\n",
+        timings
+            .queue_ms
+            .map(format_duration_ms)
+            .unwrap_or_else(|| "unavailable".to_string())
+    ));
+    for (label, duration_ms) in [
+        ("Startup", timings.startup_ms),
+        ("Model review", timings.model_ms),
+        ("Publish", timings.publish_ms),
+    ] {
+        output.push_str(&format!(
+            "| {label} | {} |\n",
+            format_duration_ms(duration_ms)
+        ));
+    }
+    output.push('\n');
 }
 
 fn render_score_block(output: &mut String, artifact: &ReviewArtifact, state: &SummaryState) {
@@ -1946,6 +1993,10 @@ fn format_line_count(line_count: u32) -> String {
         formatted.push(character);
     }
     formatted.chars().rev().collect()
+}
+
+fn format_duration_ms(duration_ms: u64) -> String {
+    format!("{}.{:02}s", duration_ms / 1_000, (duration_ms % 1_000) / 10)
 }
 
 #[cfg(test)]
@@ -2761,6 +2812,46 @@ mod tests {
         assert!(!summary.contains("## Cost"));
         assert!(!summary.contains("Current run cost: $0.0123"));
         assert!(!summary.contains("- general (`deepseek/deepseek-v4-flash`): $0.0123"));
+    }
+
+    #[test]
+    fn renders_action_timing_breakdown() {
+        let mut artifact = scoring_artifact(vec![]);
+        artifact.metrics = Some(ReviewMetrics {
+            timings: Some(ReviewTimings {
+                queue_ms: Some(1_250),
+                startup_ms: 420,
+                model_ms: 12_400,
+                publish_ms: 930,
+            }),
+            ..compute_metrics(&artifact, Severity::P4)
+        });
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("| Queue | 1.25s |"));
+        assert!(summary.contains("| Startup | 0.42s |"));
+        assert!(summary.contains("| Model review | 12.40s |"));
+        assert!(summary.contains("| Publish | 0.93s |"));
+    }
+
+    #[test]
+    fn renders_unavailable_queue_timing_truthfully() {
+        let mut artifact = scoring_artifact(vec![]);
+        artifact.metrics = Some(ReviewMetrics {
+            timings: Some(ReviewTimings {
+                queue_ms: None,
+                startup_ms: 420,
+                model_ms: 12_400,
+                publish_ms: 930,
+            }),
+            ..compute_metrics(&artifact, Severity::P4)
+        });
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("| Queue | unavailable |"));
+        assert!(!summary.contains("| Queue | 0.00s |"));
     }
 
     #[test]
@@ -3669,6 +3760,7 @@ mod tests {
                 analyzed_line_count: Some(1_234),
                 current_run_cost_usd: None,
                 cost_source: CostSource::Unknown,
+                timings: None,
             }),
             review_stages: vec![],
             angle_results: vec![],
