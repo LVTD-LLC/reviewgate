@@ -1439,6 +1439,30 @@ fn apply_convergence_policy(
 }
 
 fn recompute_artifact_outcome(artifact: &mut ReviewArtifact) -> CliResult<()> {
+    let successful_angle_ids = artifact
+        .angle_results
+        .iter()
+        .map(|angle| angle.id.clone())
+        .collect::<BTreeSet<_>>();
+    for finding in &mut artifact.findings {
+        if finding
+            .angle_id
+            .as_ref()
+            .is_some_and(|angle_id| !successful_angle_ids.contains(angle_id))
+        {
+            finding.angle_id = None;
+        }
+    }
+    for tracked in &mut artifact.tracked_findings {
+        if tracked
+            .finding
+            .angle_id
+            .as_ref()
+            .is_some_and(|angle_id| !successful_angle_ids.contains(angle_id))
+        {
+            tracked.finding.angle_id = None;
+        }
+    }
     for angle in &mut artifact.angle_results {
         angle.finding_ids = artifact
             .findings
@@ -8407,6 +8431,91 @@ let resync_state = state.clone();
         assert_eq!(successful_omission.findings.len(), 1);
         assert_eq!(successful_omission.status, ReviewStatus::NeedsChanges);
         assert!(successful_omission.score.is_some_and(|score| score < 5));
+    }
+
+    #[test]
+    fn carried_finding_survives_when_its_review_angle_fails() {
+        let mut prior: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        prior.findings.truncate(1);
+        prior.findings[0].angle_id = Some("general".to_string());
+        prior.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 3,
+            status: ReviewStatus::NeedsChanges,
+            verdict: "1 validated blocker(s) remain.".to_string(),
+            model: "test".to_string(),
+            finding_ids: vec![prior.findings[0].id.clone()],
+        }];
+        prior.angle_errors.clear();
+        prior = prior.with_computed_score().expect("prior review computes");
+        let prior_context = ReviewContext {
+            reviewed_sha: prior.reviewed_sha.clone(),
+            scope: ReviewScope::Local,
+            previous_state: None,
+            convergence_delta: reviewgate_core::ConvergenceDelta::first_review(&prior.reviewed_sha),
+            pull_request: PullRequestContext::default(),
+            changed_files: vec!["src/permissions.js".to_string()],
+            diff: String::new(),
+            analyzed_line_count: 1,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+        let tracked = apply_convergence_policy(&mut prior, &prior_context, &[])
+            .expect("prior finding is tracked");
+        let previous_state = SummaryState::for_artifact_with_convergence(
+            &prior,
+            None,
+            20,
+            ReviewScope::Local,
+            tracked,
+        )
+        .expect("prior state builds");
+
+        let mut current = prior.clone();
+        current.reviewed_sha = "b".repeat(40);
+        current.findings.clear();
+        current.tracked_findings.clear();
+        current.angle_results = vec![ReviewAngleResult {
+            id: "adversarial".to_string(),
+            name: "Adversarial".to_string(),
+            score: 5,
+            status: ReviewStatus::Passed,
+            verdict: "No validated blockers.".to_string(),
+            model: "test".to_string(),
+            finding_ids: vec![],
+        }];
+        current.angle_errors = vec![ReviewAngleError {
+            angle_id: "general".to_string(),
+            angle_name: "General".to_string(),
+            kind: ReviewErrorKind::Timeout,
+            retryable: true,
+            message: "The reviewer request timed out.".to_string(),
+            model: "test".to_string(),
+        }];
+        current.score = None;
+        current.status = ReviewStatus::ReviewError;
+        let context = ReviewContext {
+            reviewed_sha: current.reviewed_sha.clone(),
+            previous_state: Some(previous_state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::head_changed(
+                &prior.reviewed_sha,
+                &current.reviewed_sha,
+                ["src/permissions.js".to_string()],
+            ),
+            ..prior_context
+        };
+
+        let carried = apply_convergence_policy(&mut current, &context, &[])
+            .expect("failed source angle does not invalidate the carried finding");
+
+        assert_eq!(carried.len(), 1);
+        assert_eq!(current.findings.len(), 1);
+        assert_eq!(current.findings[0].angle_id, None);
+        assert_eq!(current.tracked_findings[0].finding.angle_id, None);
+        assert_eq!(current.status, ReviewStatus::ReviewError);
     }
 
     #[test]

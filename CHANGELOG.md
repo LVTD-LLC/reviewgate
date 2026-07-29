@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-29
 
+- Kept prior findings valid when their original review angle fails or is no longer successful on the current head by making their angle ownership neutral before outcome validation. Advanced the action runtime pin to `v0.4.2`.
 - Preserved newly discovered successful-angle findings and disposition updates when publishing an inconclusive review, so canonical history and the next head cannot lose blockers that are present in the machine artifact. Advanced the action runtime pin to `v0.4.1` for the corrective release.
 - Fixed runtime release publication when the publish job has no checkout, made optional queue telemetry non-fatal when GitHub omits timestamps, and taught the agent check skill to report every runtime phase.
 - Replaced consumer-side Rust compilation with a version-pinned Linux X64 release binary that is built without publication credentials, attested, verified, and smoke-tested before its draft release becomes public. Added explicit 180-second per-angle and 480-second whole-review budgets, typed timeout outcomes, and queue/startup/model/publish timings in review artifacts, canonical summaries, and the structured agent result.
