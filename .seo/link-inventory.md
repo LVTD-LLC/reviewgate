@@ -9,13 +9,14 @@
 | Slug | URL | Title / anchor-text candidate | Used by patterns |
 |---|---|---|---|
 | `/` | https://reviewgate.lvtd.dev/ | ReviewGate AI code review gate | All |
-| `/#purpose` | https://reviewgate.lvtd.dev/#purpose | Merge-readiness signal for agent PRs | A, B, C, D, E |
-| `/#install` | https://reviewgate.lvtd.dev/#install | Install ReviewGate as a GitHub Action | A, B, C, D, E |
-| `/#configure` | https://reviewgate.lvtd.dev/#configure | Configure review angles and severity | A, B, C, D, E |
-| `/docs` | https://reviewgate.lvtd.dev/docs/ | ReviewGate installation and documentation status | A, B, C, D, E |
+| `/docs` | https://reviewgate.lvtd.dev/docs/ | ReviewGate documentation | A, B, C, D, E |
+| `/docs#install` | https://reviewgate.lvtd.dev/docs/#install | Install ReviewGate as a GitHub Action | A, B, C, D, E |
+| `/docs#configure` | https://reviewgate.lvtd.dev/docs/#configure | Configure review angles and severity | A, B, C, D, E |
+| `/docs#review-loop` | https://reviewgate.lvtd.dev/docs/#review-loop | Run the ReviewGate repair loop | A, B, C, D, E |
 | `/blog` | https://reviewgate.lvtd.dev/blog/ | ReviewGate engineering field notes | E |
+| `/blog/how-to-tell-if-code-is-ai-generated` | https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/ | How to review code when AI authorship is uncertain | E |
 
-There is currently no `/pricing`, `/about`, `/features/*`, `/tools/*`, or published article route. Do not create links to those paths until the relevant phase ships them.
+There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
 ### Documentation and source (external, supporting links)
 
@@ -79,3 +80,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, `/tools/*`, or publis
 - “set the inline severity floor”
 - “tune ReviewGate for your repository”
 - “ReviewGate configuration options”
+
+### AI-generated code field note
+
+- “how to review AI-generated code”
+- “review code when AI authorship is uncertain”
+- “provenance-blind pull request review”
+- “evidence gate for agent-written code”
+- “signs of AI-generated code”

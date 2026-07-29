@@ -38,7 +38,7 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 
 - **Domain:** https://reviewgate.lvtd.dev
 - **Keyword source:** DataForSEO, United States / English, measured 2026-07-22
-- **Connected sources:** GSC domain property, DataForSEO, ReviewGate PostHog project, Exa, Jina Reader, live web search
+- **Connected sources:** dedicated ReviewGate GSC domain property, DataForSEO, ReviewGate PostHog project, Exa, Jina Reader, live web search
 - **Degraded sources:** Plausible query failed authorization
 - **Authority baseline:** DataForSEO returned no domain-rank/backlink record and zero ranked keywords for the new subdomain
 - **Stack:** Astro 7, TypeScript 6, npm, static output
@@ -50,7 +50,7 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 
 | Source | Status | Credential/config evidence | API/tool evidence | Used for | Saved config | Reason |
 |---|---|---|---|---|---|---|
-| GSC | connected | Infisical `/services/google-search-console` | `sc-domain:lvtd.dev` queried; sitemap submitted with 0 errors and 0 warnings | property/indexing baseline | `sc-domain:lvtd.dev` | The domain property covers the ReviewGate subdomain. |
+| GSC | connected | Infisical `/services/google-search-console` | `sc-domain:reviewgate.lvtd.dev` queried; sitemap present with 0 errors and 0 warnings | property/indexing baseline | `sc-domain:reviewgate.lvtd.dev` | Dedicated ReviewGate property with full-user service-account access. |
 | Ahrefs | missing | Loaded tools, environment, TOOLS.md, repo, recursive Infisical name scan | Not attempted | none | `ahrefs_project_id: null` | No credential or MCP connection found. |
 | DataForSEO | connected | Infisical `/services/dataforseo` | Keyword, rank, backlink, and live SERP requests succeeded | demand, KD, CPC, SERPs, authority | US / English | Primary measured market-data source. |
 | Plausible | attempted_failed | Runtime key + TOOLS.md API host | ReviewGate v2 query returned 401 | conversion weighting | site ID recorded | Key lacks access or site does not exist. |
@@ -62,7 +62,10 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 
 | Route pattern | Status | Notes |
 |---|---|---|
-| `/` | live | Single Astro homepage with anchors for purpose, install, and configuration. |
+| `/` | live | Astro product homepage. |
+| `/docs` | live | Installation, permissions, configuration, and review-loop quick start. |
+| `/blog` | live | Editorial index with the first field note. |
+| `/blog/*` | live | Astro article route and shared article layout. |
 | `/alternatives/*` | absent | No collection, route, layout, or entries. |
 | `/for/*` | absent | No collection, route, layout, or entries. |
 | `/compare/*` | absent | No collection, route, layout, or entries. |
@@ -96,7 +99,7 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 ### Owned search and analytics baseline
 
 - DataForSEO found **0 ranked keywords** for `reviewgate.lvtd.dev` and no backlink-summary row. Treat authority as effectively new/unknown.
-- The connected GSC service account can query the `sc-domain:lvtd.dev` property. It returned no ReviewGate query/page rows for the latest 90-day window; the ReviewGate sitemap was submitted on July 29, 2026 with zero errors or warnings.
+- The connected GSC service account has full-user access to `sc-domain:reviewgate.lvtd.dev`. It returned no ReviewGate query/page rows for the latest 90-day window; the property lists the ReviewGate sitemap with zero errors or warnings as of July 29, 2026.
 - Plausible conversion data is unavailable because the site/key query returned 401.
 - PostHog project 534132 collects anonymous pageviews plus explicit install/source intent. Production ingestion was verified after the Phase 0 deployment.
 - There are therefore no striking-distance or conversion-weighted opportunities yet. Phase ordering uses measured market demand, SERP shape, product fit, and implementation dependencies.
@@ -155,7 +158,7 @@ No conversion source is usable for ReviewGate yet. Use CPC only as a weak commer
 
 ### Striking-distance opportunities
 
-None: DataForSEO reports zero ranked keywords, and the `sc-domain:lvtd.dev` property returned zero ReviewGate query/page rows.
+None: DataForSEO reports zero ranked keywords, and the `sc-domain:reviewgate.lvtd.dev` property returned zero ReviewGate query/page rows.
 
 ### Out of scope
 
@@ -176,7 +179,7 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:lvtd.dev` prop
 2. Add `site/public/robots.txt` allowing crawl and referencing `https://reviewgate.lvtd.dev/sitemap-index.xml`.
 3. Shorten the homepage description to 147 characters without dropping the action, score, audience, or review-contract positioning.
 4. Add reusable JSON-LD support to `BaseLayout.astro`; emit `SoftwareApplication` and `Organization` on the homepage.
-5. Use the existing `sc-domain:lvtd.dev` GSC property and submit the sitemap after deployment.
+5. Use the dedicated `sc-domain:reviewgate.lvtd.dev` GSC property and submit the sitemap after deployment.
 6. Provision a privacy-limited PostHog project with anonymized IPs and no session replay; measure anonymous pageviews plus explicit install/source intent events.
 7. Keep production measurement credentials outside the repository by injecting the public project key from GitHub Actions at image build time.
 
@@ -185,6 +188,14 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:lvtd.dev` prop
 **Verification:** Astro check/build; generated sitemap index and robots return valid files; one H1 per page; unique title/description/canonical; JSON-LD parses; dependency audit is clean; production smoke check after deploy; GSC sitemap submission recorded; PostHog receives production pageview and intent events.
 
 **Post-deployment verification (July 29, 2026):** `/`, `/docs/`, `/blog/`, `robots.txt`, and both sitemap files return 200; the sitemap contains all three routes; homepage metadata, one-H1 contract, JSON-LD, and analytics bootstrap are present; GSC accepted `sitemap-index.xml` with zero errors or warnings; PostHog received the production pageview and install-intent event contracts.
+
+## Editorial content
+
+| Date | Type | Title | Target | Status |
+|---|---|---|---|---|
+| 2026-07-29 | How-to / tutorial | How to Tell If Code Is AI-Generated: What Actually Works | `how to tell if code is ai generated` (US volume 260, KD 11) | In PR |
+
+The article adds a provenance-blind five-step evidence gate, links to the live docs and product surfaces, and receives inbound links from `/blog` and `/docs`. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 

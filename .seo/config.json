@@ -16,17 +16,35 @@
   "keyword_data_source": "dataforseo",
   "dataforseo_location": "United States",
   "dataforseo_language": "English",
-  "gsc_property": "sc-domain:lvtd.dev",
+  "gsc_property": "sc-domain:reviewgate.lvtd.dev",
   "ahrefs_project_id": null,
   "plausible_site_id": "reviewgate.lvtd.dev",
   "posthog_project_id": 534132,
   "posthog_host": "https://us.posthog.com",
   "posthog_ingest_host": "https://us.i.posthog.com",
+  "content_store": {
+    "type": "files",
+    "platform": "astro",
+    "base_url": "https://reviewgate.lvtd.dev",
+    "read_method": "git",
+    "write_method": "file",
+    "body_format": "astro",
+    "content_dir": "site/src/pages/blog",
+    "content_layout": "site/src/layouts/ArticleLayout.astro"
+  },
+  "rowset": {
+    "project_key": "e652f6c7-16e5-4ddc-a072-f3c7c2210360",
+    "seo_section_key": "ed118b56-db9c-49d9-94b7-d039c8872dd8",
+    "content_ledger_dataset_key": "8abc4556-5084-468b-a5f1-b260e4810789",
+    "research_briefs_dataset_key": "15f4fb25-6a82-4222-93b3-c888139ae16e",
+    "schema_version": 1,
+    "last_synced_at": "2026-07-29"
+  },
   "tool_evidence": {
     "gsc": {
       "status": "connected",
       "credential_discovery": "Infisical /services/google-search-console",
-      "call": "Search Console domain property sc-domain:lvtd.dev queried successfully; ReviewGate has zero 90-day rows; sitemap-index.xml submitted 2026-07-29 with zero errors and warnings"
+      "call": "Dedicated Search Console property sc-domain:reviewgate.lvtd.dev queried successfully on 2026-07-29; ReviewGate has zero 90-day rows; sitemap-index.xml is present with zero errors and warnings"
     },
     "ahrefs": {
       "status": "missing",

@@ -5,62 +5,67 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
 
-const plannedNotes = [
-  ["NOTE / 001", "Why ReviewGate uses a fixed 5/5 threshold"],
-  ["NOTE / 002", "The canonical PR comment as a coordination surface"],
-  ["NOTE / 003", "Designing review artifacts that coding agents can consume"],
-];
+const firstPost = {
+  href: "/blog/how-to-tell-if-code-is-ai-generated",
+  number: "NOTE / 001",
+  title: "How to tell if code is AI-generated: what actually works",
+  description:
+    "Why style-based detection is weak evidence, and the five-step review gate that works regardless of who wrote the diff.",
+  date: "JUL 29 / 2026",
+};
 ---
 
 <BaseLayout
-  title="Field notes coming soon - ReviewGate"
-  description="ReviewGate engineering field notes are coming soon, covering agent-written pull requests, review contracts, and reliable repair loops."
+  title="Engineering field notes - ReviewGate"
+  description="Practical field notes on reviewing agent-written pull requests, building reliable review gates, and keeping the human merge decision explicit."
 >
   <main class="concept signal-site utility-site">
     <SiteHeader current="blog" />
 
-    <section class="utility-hero" aria-label="Blog status">
+    <section class="utility-hero" aria-label="ReviewGate field notes">
       <div class="utility-copy">
-        <p class="signal-eyebrow">FIELD NOTES / TRANSMISSION PENDING</p>
-        <h1>Notes from the review loop are <em>incoming.</em></h1>
+        <p class="signal-eyebrow">FIELD NOTES / TRANSMISSION 001</p>
+        <h1>Notes from the <em>review loop.</em></h1>
         <p class="utility-lede">
-          We’ll publish the decisions, failures, and operating patterns behind a score-centered review gate for agent-written pull requests.
+          Practical decisions, failure modes, and operating patterns for teams reviewing code written with coding agents.
         </p>
         <div class="signal-actions">
           <a
             class="signal-primary"
+            href={firstPost.href}
+            data-analytics-event="blog_post_clicked"
+            data-analytics-location="blog_hero"
+          >
+            Read the first field note <span aria-hidden="true">↗</span>
+          </a>
+          <a
+            class="signal-secondary"
             href={repositoryUrl}
             data-analytics-event="source_link_clicked"
             data-analytics-location="blog_hero"
-          >
-            Follow development <span aria-hidden="true">↗</span>
-          </a>
-          <a class="signal-secondary" href="/">Back to the product</a>
+          >View the source</a>
         </div>
       </div>
 
-      <aside class="utility-console" aria-label="Planned field notes">
+      <aside class="utility-console" aria-label="Latest field note">
         <div class="console-topline">
           <span>CHANNEL / RG</span>
-          <span>DRAFTS / 03</span>
-          <strong>OFF AIR</strong>
+          <span>POSTS / 01</span>
+          <strong>LIVE</strong>
         </div>
         <div class="utility-status">
-          <p>NEXT TRANSMISSION</p>
-          <strong>SOON_</strong>
-          <span>No filler. The first post ships when there is something useful to report.</span>
+          <p>LATEST TRANSMISSION</p>
+          <strong>001_</strong>
+          <span>{firstPost.description}</span>
         </div>
-        <dl class="utility-queue blog-queue">
-          {plannedNotes.map(([number, title]) => (
-            <div>
-              <dt>{number}</dt>
-              <dd>{title}</dd>
-            </div>
-          ))}
-        </dl>
+        <a class="blog-entry" href={firstPost.href}>
+          <span>{firstPost.number}</span>
+          <strong>{firstPost.title}</strong>
+          <small>{firstPost.date}</small>
+        </a>
         <div class="console-footer">
           <span>/blog</span>
-          <strong>STATUS / QUEUED</strong>
+          <strong>STATUS / PUBLISHED</strong>
         </div>
       </aside>
     </section>

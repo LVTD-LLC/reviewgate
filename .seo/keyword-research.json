@@ -1,5 +1,5 @@
 {
-  "as_of": "2026-07-22",
+  "as_of": "2026-07-29",
   "market": {
     "location": "United States",
     "language": "English"
@@ -12,10 +12,10 @@
     "domain_rank": null,
     "backlinks": null,
     "referring_domains": null,
-    "gsc_property_present": false,
+    "gsc_property_present": true,
     "plausible_status": "attempted_failed",
-    "posthog_project_present": false,
-    "notes": "DataForSEO returned zero ranked keywords and no backlink-summary row for the new subdomain. The GSC service account is connected but has no ReviewGate property. Plausible rejected the site/key pair, and PostHog has no ReviewGate project."
+    "posthog_project_present": true,
+    "notes": "DataForSEO returned zero ranked keywords and no backlink-summary row for the new subdomain. The dedicated sc-domain:reviewgate.lvtd.dev Search Console property is connected with full-user access, has zero 90-day rows, and lists the sitemap with zero errors or warnings as of 2026-07-29. Plausible rejected the site/key pair. PostHog project 534132 is connected and production ingestion is verified."
   },
   "competitor_authority": [
     {
