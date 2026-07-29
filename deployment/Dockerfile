@@ -4,7 +4,11 @@ WORKDIR /app
 
 COPY site/ ./
 RUN npm ci
-RUN npm run build
+RUN --mount=type=secret,id=posthog_key \
+    if [ -f /run/secrets/posthog_key ]; then \
+      export PUBLIC_POSTHOG_KEY="$(cat /run/secrets/posthog_key)"; \
+    fi; \
+    npm run build
 
 FROM nginx:stable-alpine
 
