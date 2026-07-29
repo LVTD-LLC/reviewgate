@@ -28,6 +28,8 @@ Each tracked finding is exactly one of:
 
 Still-open findings remain present even if a later model pass omits or rewrites them. Reviewer silence and unrelated same-file edits are never fix evidence. The reviewer must either emit the equivalent finding again or emit the same semantic identity with `resolution_disposition: fixed` and a non-empty `resolution_evidence_summary`. ReviewGate records an automatic fixed transition only when the delta deletes every prior current-head evidence location and the resolution checks every added line in each non-empty contiguous replacement block. Pure deletions remain open for explicit disposition because a separate added line cannot prove that the underlying path is gone. Grounded disposition updates and their resolution candidates travel in the review artifact; summary publication revalidates those candidates against the repository and delta before applying the exact same convergence result. Findings grounded only in previously deleted lines remain open for an explicit disposition; partial evidence, a partial block, or a different reviewer-authored fingerprint is insufficient.
 
+When relevant code changes and the reviewer emits the same semantic identity again, ReviewGate refreshes its current evidence and wording but preserves the strongest prior blocking severity, confidence, and evidence-gate result. An unresolved blocker cannot become advisory through reviewer drift; only an explicit validated disposition can settle it.
+
 Fixed, rejected, intentional, disputed, and superseded identities remain suppressed unless the relevant code or external contract changed, the code fingerprint changed, and the new finding supplies specific `reopening_evidence`.
 
 ## Late findings

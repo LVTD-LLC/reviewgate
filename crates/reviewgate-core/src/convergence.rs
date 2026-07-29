@@ -429,7 +429,8 @@ pub fn reconcile_findings_with_updates(
                 let relevant_changed = relevant_code_changed(&previous.finding, delta, false);
                 match current {
                     Some(current) if relevant_changed => {
-                        previous.finding = current;
+                        previous.finding =
+                            preserve_open_blocking_policy(&previous.finding, current);
                         push_still_open_record(
                             &mut previous,
                             &delta.current_reviewed_sha,
@@ -532,6 +533,16 @@ pub fn reconcile_findings_with_updates(
         tracked_findings,
         notes,
     })
+}
+
+fn preserve_open_blocking_policy(prior: &Finding, mut current: Finding) -> Finding {
+    if prior.is_blocking(DEFAULT_TARGET_SCORE) {
+        current.severity = current.severity.min(prior.severity);
+        current.confidence = current.confidence.max(prior.confidence);
+        current.evidence_gate_result = prior.evidence_gate_result;
+        current.calibrate_policy();
+    }
+    current
 }
 
 #[cfg(test)]
@@ -814,6 +825,43 @@ mod tests {
         assert_eq!(
             result.tracked_findings[0].disposition,
             FindingDisposition::StillOpen
+        );
+    }
+
+    #[test]
+    fn same_identity_recurrence_cannot_downgrade_an_open_blocker() {
+        let prior_finding = blocker(
+            "general:parser",
+            "parser.positional_operand",
+            "src/parser.rs",
+            0.99,
+            "Remove the positional operand.",
+        );
+        let prior = tracked(
+            prior_finding.clone(),
+            FindingDisposition::StillOpen,
+            "sha-1",
+        );
+        let mut weaker = prior_finding;
+        weaker.severity = Severity::P4;
+        weaker.confidence = 0.25;
+        weaker.evidence_gate_result = EvidenceGateResult::NotRequired;
+        weaker.blocking_reason = None;
+        let delta =
+            ConvergenceDelta::head_changed("sha-1", "sha-2", [String::from("src/parser.rs")]);
+
+        let result =
+            reconcile_findings(vec![weaker], &[prior], &delta).expect("recurrence reconciles");
+
+        assert_eq!(result.findings[0].severity, Severity::P1);
+        assert_eq!(result.findings[0].confidence, 0.99);
+        assert_eq!(
+            result.findings[0].evidence_gate_result,
+            EvidenceGateResult::Passed
+        );
+        assert_eq!(
+            result.findings[0].blocking_reason,
+            Some(BlockingReason::ValidatedDefect)
         );
     }
 
