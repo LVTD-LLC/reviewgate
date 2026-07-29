@@ -207,6 +207,9 @@
         "scope",
         "severity",
         "confidence",
+        "classification",
+        "evidence_gate_result",
+        "blocking_reason",
         "file",
         "line",
         "title",
@@ -230,12 +233,32 @@
           "enum": ["P0", "P1", "P2", "P3", "P4"]
         },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "classification": {
+          "type": "string",
+          "enum": ["defect", "security", "reliability_risk", "contract_ambiguity", "suggestion"],
+          "description": "Finding kind. Contract ambiguity and suggestion are always advisory."
+        },
+        "evidence_gate_result": {
+          "type": "string",
+          "enum": ["passed", "failed", "not_required"],
+          "description": "Deterministic evidence-gate result. Only passed findings can block."
+        },
+        "blocking_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            "validated_defect",
+            "validated_security",
+            "validated_reliability_risk",
+            null
+          ],
+          "description": "Deterministic reason the finding blocks, or null for advisory findings."
+        },
         "grounding": {
           "anyOf": [
             { "$ref": "#/$defs/finding_grounding" },
             { "type": "null" }
           ],
-          "description": "Required by ReviewGate for P0-P3 publication. P4 advisory findings may omit it."
+          "description": "Required before a high-confidence P0-P3 defect, security finding, or reliability risk can block. Advisory findings may omit it."
         },
         "file": { "type": ["string", "null"] },
         "line": { "type": ["integer", "null"], "minimum": 1 },

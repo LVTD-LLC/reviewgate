@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reviewgate_core::{
-    Finding, FindingEvidence, SUMMARY_MARKER, SecretString, Severity, extract_summary_state,
+    DEFAULT_TARGET_SCORE, Finding, FindingEvidence, SUMMARY_MARKER, SecretString, Severity,
+    extract_summary_state,
 };
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
@@ -502,6 +503,19 @@ fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
         finding_comment_heading_prefix(finding),
         finding.title
     ));
+    body.push_str(&format!(
+        "Classification: `{}`\n\nDisposition: `{}`\n\nEvidence gate: `{}`\n\n",
+        finding.classification.as_str(),
+        if finding.is_blocking(DEFAULT_TARGET_SCORE) {
+            "blocking"
+        } else {
+            "advisory"
+        },
+        finding.evidence_gate_result.as_str()
+    ));
+    if let Some(reason) = finding.blocking_reason {
+        body.push_str(&format!("Blocking reason: `{}`\n\n", reason.as_str()));
+    }
     if let Some(detail) = &finding.detail
         && !detail.trim().is_empty()
     {
@@ -544,9 +558,14 @@ fn evidence_location(evidence: &FindingEvidence) -> String {
 }
 
 fn finding_comment_heading_prefix(finding: &Finding) -> String {
+    let disposition = if finding.is_blocking(DEFAULT_TARGET_SCORE) {
+        "Blocking"
+    } else {
+        "Advisory"
+    };
     match finding.angle_id.as_deref().and_then(format_angle_label) {
-        Some(label) => format!("{label} / {}", finding.severity.as_str()),
-        None => finding.severity.as_str().to_string(),
+        Some(label) => format!("{label} / {disposition} / {}", finding.severity.as_str()),
+        None => format!("{disposition} / {}", finding.severity.as_str()),
     }
 }
 
@@ -1027,6 +1046,9 @@ mod tests {
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.92,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: Some(reviewgate_core::FindingGrounding {
                 claim: "The changed branch drops the error.".to_string(),
                 causal_path: "request -> changed branch -> silent success".to_string(),
@@ -1111,8 +1133,14 @@ mod tests {
         assert!(
             plan.drafts[0]
                 .body
-                .contains("**P2: Missing regression test for retry exhaustion**")
+                .contains("**Blocking / P2: Missing regression test for retry exhaustion**")
         );
+        assert!(
+            plan.drafts[0]
+                .body
+                .contains("Classification: `reliability_risk`")
+        );
+        assert!(plan.drafts[0].body.contains("Disposition: `blocking`"));
         assert!(!plan.drafts[0].body.contains("rg_002"));
     }
 
@@ -1125,6 +1153,9 @@ mod tests {
                 scope: reviewgate_core::FindingScope::File,
                 severity: Severity::P2,
                 confidence: 0.72,
+                classification: reviewgate_core::FindingClassification::ReliabilityRisk,
+                evidence_gate_result: reviewgate_core::EvidenceGateResult::NotRequired,
+                blocking_reason: None,
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: None,
@@ -1138,6 +1169,9 @@ mod tests {
                 scope: reviewgate_core::FindingScope::Pr,
                 severity: Severity::P1,
                 confidence: 0.9,
+                classification: reviewgate_core::FindingClassification::ReliabilityRisk,
+                evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedReliabilityRisk),
                 grounding: None,
                 file: None,
                 line: None,
@@ -1165,7 +1199,7 @@ mod tests {
         assert!(
             plan.drafts[1]
                 .body
-                .contains("**P1: Cross-file release risk**")
+                .contains("**Blocking / P1: Cross-file release risk**")
         );
     }
 
@@ -1211,7 +1245,7 @@ mod tests {
         let body = render_inline_comment_body(&finding);
 
         assert!(body.contains(&inline_comment_marker("adversarial:rg_001")));
-        assert!(body.contains("**Adversarial / P2: Missing error handling**"));
+        assert!(body.contains("**Adversarial / Blocking / P2: Missing error handling**"));
     }
 
     #[test]
@@ -1269,6 +1303,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 scope: reviewgate_core::FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.95,
+                classification: reviewgate_core::FindingClassification::Security,
+                evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedSecurity),
                 grounding: None,
                 file: Some(".github/workflows/reviewgate.yml".to_string()),
                 line: Some(6),
@@ -1286,6 +1323,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 scope: reviewgate_core::FindingScope::Line,
                 severity: Severity::P1,
                 confidence: 0.95,
+                classification: reviewgate_core::FindingClassification::Security,
+                evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedSecurity),
                 grounding: None,
                 file: Some(".github/workflows/reviewgate.yml".to_string()),
                 line: Some(15),
@@ -1318,6 +1358,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(20),
@@ -1347,6 +1390,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/other.rs".to_string()),
             line: Some(11),
@@ -1373,6 +1419,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(10),
@@ -1383,6 +1432,8 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         let low_confidence = Finding {
             id: "rg_low".to_string(),
             confidence: 0.5,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::NotRequired,
+            blocking_reason: None,
             ..duplicate.clone()
         };
         let no_line = Finding {
@@ -1407,6 +1458,13 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
 
         assert_eq!(plan.drafts.len(), 2);
         assert_eq!(plan.drafts[0].finding_id, "rg_low");
+        assert!(
+            plan.drafts[0]
+                .body
+                .contains("**Advisory / P1: Already posted**")
+        );
+        assert!(plan.drafts[0].body.contains("Disposition: `advisory`"));
+        assert!(!plan.drafts[0].body.contains("Blocking reason:"));
         assert_eq!(plan.drafts[1].finding_id, "rg_no_line");
         assert_eq!(plan.drafts[1].line, 11);
     }
@@ -1419,6 +1477,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::File,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(10),
@@ -1457,6 +1518,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::File,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: None,
@@ -1485,6 +1549,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Pr,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: None,
             line: None,
@@ -1524,6 +1591,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                     scope: reviewgate_core::FindingScope::Line,
                     severity: Severity::P1,
                     confidence: 0.95,
+                    classification: reviewgate_core::FindingClassification::Defect,
+                    evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+                    blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
                     grounding: None,
                     file: Some("src/lib.rs".to_string()),
                     line: Some(10),
@@ -1552,6 +1622,9 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             scope: reviewgate_core::FindingScope::Line,
             severity: Severity::P1,
             confidence: 0.95,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(10),

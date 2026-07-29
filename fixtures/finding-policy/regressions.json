@@ -1,0 +1,102 @@
+[
+  {
+    "name": "PR 365 positional parser claim contradicted by exact call path",
+    "source": "rowset-pr-365",
+    "classification": "defect",
+    "severity": "P0",
+    "confidence": 0.99,
+    "evidence_gate_result": "failed",
+    "title": "parseFlags rejects positional arguments",
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 upload artifact permission claim contradicts runtime authentication",
+    "source": "rowset-pr-365",
+    "classification": "reliability_risk",
+    "severity": "P1",
+    "confidence": 0.98,
+    "evidence_gate_result": "failed",
+    "title": "Artifact upload lacks actions write",
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 reusable workflow permission claim contradicts caller grant",
+    "source": "rowset-pr-365",
+    "classification": "reliability_risk",
+    "severity": "P1",
+    "confidence": 0.98,
+    "evidence_gate_result": "failed",
+    "title": "Release cutter lacks actions write",
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 output directory creation is an optional robustness preference",
+    "source": "rowset-pr-365",
+    "classification": "suggestion",
+    "severity": "P3",
+    "confidence": 0.9,
+    "evidence_gate_result": "not_required",
+    "title": "Consider creating missing output directories",
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 checksum tool wording remains an optional suggestion",
+    "source": "rowset-pr-365",
+    "classification": "suggestion",
+    "severity": "P4",
+    "confidence": 0.9,
+    "evidence_gate_result": "not_required",
+    "title": "Explain how to install a SHA-256 checksum tool",
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 package permission finding retracts its own claim",
+    "source": "rowset-pr-365",
+    "classification": "contract_ambiguity",
+    "severity": "P0",
+    "confidence": 0.99,
+    "evidence_gate_result": "not_required",
+    "title": "Permission analysis is internally contradictory",
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 duplicate permission finding points at the wrong workflow",
+    "source": "rowset-pr-365",
+    "classification": "contract_ambiguity",
+    "severity": "P1",
+    "confidence": 0.99,
+    "evidence_gate_result": "not_required",
+    "title": "Permission claim needs contract clarification",
+    "expected_blocking": false
+  },
+  {
+    "name": "parser mutation passes positional operands to the flag parser",
+    "source": "mutation",
+    "classification": "defect",
+    "severity": "P0",
+    "confidence": 0.99,
+    "evidence_gate_result": "passed",
+    "title": "Unsliced operands reach parseFlags",
+    "expected_blocking": true
+  },
+  {
+    "name": "permission mutation removes the package write grant",
+    "source": "mutation",
+    "classification": "reliability_risk",
+    "severity": "P1",
+    "confidence": 0.99,
+    "evidence_gate_result": "passed",
+    "title": "Image promotion lacks packages write",
+    "expected_blocking": true
+  },
+  {
+    "name": "installer mutation continues without checksum verification",
+    "source": "mutation",
+    "classification": "security",
+    "severity": "P1",
+    "confidence": 0.99,
+    "evidence_gate_result": "passed",
+    "title": "Installer accepts an unverified binary",
+    "expected_blocking": true
+  }
+]
