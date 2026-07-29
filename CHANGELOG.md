@@ -4,7 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-29
 
-- Reported how many agent disposition receipts were applied or ignored at review and summary publication time, including bounded reason counts for stale, unauthorized, malformed, actor-mismatched, or invalid receipts.
+- Reported how many agent disposition receipts were newly applied, replayed as duplicates, or ignored at review and summary publication time, including bounded reason counts for stale, unauthorized, malformed, actor-mismatched, or invalid receipts.
 - Verified the SEO foundation deployment in production, submitted the sitemap through the covering Search Console domain property with no errors or warnings, and confirmed PostHog receives the pageview and install-intent event contracts.
 - Consumed exact-head agent dispositions using GitHub's maintainer association on the author-bound receipt instead of silently discarding them when the workflow token cannot re-query a human collaborator's permission. Advanced the action runtime pin to `v0.4.3`.
 - Added crawlable sitemap and robots files, homepage product/organization schema, and privacy-limited PostHog measurement for pageviews plus explicit install/source intent. Updated the production smoke test to match the current homepage contract.

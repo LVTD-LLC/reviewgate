@@ -766,6 +766,7 @@ struct AgentDispositionReplay {
     actor_mismatch: usize,
     invalid: usize,
     applied: usize,
+    duplicate: usize,
 }
 
 fn encode_agent_disposition_comment(state: &AgentDispositionState) -> CliResult<String> {
@@ -852,8 +853,12 @@ fn apply_agent_disposition_comments(
         let mut candidate = state.clone();
         match update.apply_to_summary(&mut candidate, comment.id) {
             Ok(()) => {
-                *state = candidate;
-                replay.applied += 1;
+                if candidate == *state {
+                    replay.duplicate += 1;
+                } else {
+                    *state = candidate;
+                    replay.applied += 1;
+                }
             }
             Err(error) => {
                 replay.invalid += 1;
@@ -872,9 +877,10 @@ fn report_agent_disposition_replay(stage: &str, replay: AgentDispositionReplay) 
         return;
     }
     println!(
-        "ReviewGate agent dispositions ({stage}): {} found; {} applied; {} unauthorized; {} stale; {} actor mismatch; {} malformed; {} invalid.",
+        "ReviewGate agent dispositions ({stage}): {} found; {} applied; {} duplicates; {} unauthorized; {} stale; {} actor mismatch; {} malformed; {} invalid.",
         replay.found,
         replay.applied,
+        replay.duplicate,
         replay.unauthorized,
         replay.stale,
         replay.actor_mismatch,
@@ -7515,7 +7521,7 @@ review_angles:
             AgentDispositionReplay {
                 found: 2,
                 malformed: 1,
-                applied: 1,
+                duplicate: 1,
                 ..AgentDispositionReplay::default()
             }
         );
