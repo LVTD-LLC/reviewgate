@@ -552,6 +552,8 @@ pub struct ReviewArtifact {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub angle_errors: Vec<ReviewAngleError>,
     pub findings: Vec<Finding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disposition_updates: Vec<FindingDispositionUpdate>,
     pub notes: Vec<String>,
 }
 
@@ -801,6 +803,7 @@ impl ReviewArtifact {
                 model: "reviewgate".to_string(),
             }],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         }
     }
@@ -1912,6 +1915,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings,
+            disposition_updates: vec![],
             notes: vec![],
         }
     }
@@ -2268,6 +2272,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![angle_error.clone(), angle_error.clone()],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
         assert!(duplicate_errors.validate().is_err());
@@ -2322,6 +2327,7 @@ mod tests {
                 model: "balanced".to_string(),
             }],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec!["provider body: sentinel-secret".to_string()],
         };
 
@@ -2438,6 +2444,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![finding],
+            disposition_updates: vec![],
             notes: vec![],
         };
         let summary = render_summary(&artifact).expect("summary renders");
@@ -2503,6 +2510,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![scoring_finding("rg_001", Severity::P3)],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -2641,6 +2649,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Fix the escaped table issue.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -2676,6 +2685,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -2707,6 +2717,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
         let first = render_summary(&artifact).expect("summary renders");
@@ -2957,6 +2968,7 @@ mod tests {
                     agent_instruction: "Consider a style tweak.".to_string(),
                 },
             ],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3007,6 +3019,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Fix this issue before expecting the target score.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3053,6 +3066,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3111,6 +3125,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Add a regression test for the missing branch.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3152,6 +3167,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Add the regression test.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3186,6 +3202,7 @@ mod tests {
                 model: "balanced".to_string(),
             }],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3232,6 +3249,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
         let previous = SummaryState::for_artifact(&valid, None, 20).expect("valid state");
@@ -3256,6 +3274,7 @@ mod tests {
                 model: "balanced".to_string(),
             }],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3335,6 +3354,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Fix the security issue.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3378,6 +3398,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Fix the confidence value.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3403,6 +3424,7 @@ mod tests {
             angle_results: vec![],
             angle_errors: vec![],
             findings: vec![],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3542,6 +3564,7 @@ mod tests {
                     agent_instruction: "Consider a rename later.".to_string(),
                 },
             ],
+            disposition_updates: vec![],
             notes: vec![],
         };
 
@@ -3599,6 +3622,7 @@ mod tests {
                 detail: None,
                 agent_instruction: "Review when convenient.".to_string(),
             }],
+            disposition_updates: vec![],
             notes: vec![],
         };
 

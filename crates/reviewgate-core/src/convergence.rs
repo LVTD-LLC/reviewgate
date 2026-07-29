@@ -38,7 +38,7 @@ pub struct FindingDispositionRecord {
     pub code_fingerprint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct FindingDispositionUpdate {
     pub semantic_fingerprint: String,
     pub disposition: FindingDisposition,
@@ -46,6 +46,7 @@ pub struct FindingDispositionUpdate {
     pub actor: String,
     pub reviewed_sha: String,
     pub code_fingerprint: String,
+    pub resolution: Finding,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -358,11 +359,20 @@ pub fn reconcile_findings_with_updates(
     let mut notes = Vec::new();
     let mut updates_by_fingerprint = BTreeMap::new();
     for update in disposition_updates {
+        let resolution_grounding = update.resolution.grounding.as_ref();
         if update.semantic_fingerprint.trim().is_empty()
             || update.evidence_summary.trim().is_empty()
             || update.actor.trim().is_empty()
             || update.reviewed_sha != delta.current_reviewed_sha
             || update.code_fingerprint.trim().is_empty()
+            || update.semantic_fingerprint != validate_semantic_identity(&update.resolution)?
+            || update.code_fingerprint != finding_code_fingerprint(&update.resolution)
+            || resolution_grounding.and_then(|grounding| grounding.resolution_disposition)
+                != Some(FindingDisposition::Fixed)
+            || resolution_grounding
+                .and_then(|grounding| grounding.resolution_evidence_summary.as_deref())
+                .map(str::trim)
+                != Some(update.evidence_summary.trim())
         {
             return Err(ReviewGateError::InvalidReviewOutcome(
                 "disposition update is incomplete or targets the wrong SHA".to_string(),
@@ -824,11 +834,11 @@ mod tests {
             0.99,
             "The parser now rejects positional operands.",
         );
-        fixed_evidence
-            .grounding
-            .as_mut()
-            .expect("grounding")
-            .causal_path = "parser guard -> rejected positional operand".to_string();
+        let grounding = fixed_evidence.grounding.as_mut().expect("grounding");
+        grounding.causal_path = "parser guard -> rejected positional operand".to_string();
+        grounding.resolution_disposition = Some(FindingDisposition::Fixed);
+        grounding.resolution_evidence_summary =
+            Some("The new parser guard rejects the prior reproduction.".to_string());
         let update = FindingDispositionUpdate {
             semantic_fingerprint: prior.semantic_fingerprint.clone(),
             disposition: FindingDisposition::Fixed,
@@ -836,6 +846,7 @@ mod tests {
             actor: "reviewgate".to_string(),
             reviewed_sha: "sha-2".to_string(),
             code_fingerprint: finding_code_fingerprint(&fixed_evidence),
+            resolution: fixed_evidence,
         };
         let delta =
             ConvergenceDelta::head_changed("sha-1", "sha-2", [String::from("src/parser.rs")]);
@@ -869,11 +880,11 @@ mod tests {
         );
         let prior = tracked(prior_finding, FindingDisposition::StillOpen, "sha-1");
         let mut fixed_evidence = prior.finding.clone();
-        fixed_evidence
-            .grounding
-            .as_mut()
-            .expect("grounding")
-            .causal_path = "parser guard -> rejected positional operand".to_string();
+        let grounding = fixed_evidence.grounding.as_mut().expect("grounding");
+        grounding.causal_path = "parser guard -> rejected positional operand".to_string();
+        grounding.resolution_disposition = Some(FindingDisposition::Fixed);
+        grounding.resolution_evidence_summary =
+            Some("The parser guard rejects the prior reproduction.".to_string());
         let update = FindingDispositionUpdate {
             semantic_fingerprint: prior.semantic_fingerprint.clone(),
             disposition: FindingDisposition::Fixed,
@@ -881,6 +892,7 @@ mod tests {
             actor: "reviewgate".to_string(),
             reviewed_sha: "sha-2".to_string(),
             code_fingerprint: finding_code_fingerprint(&fixed_evidence),
+            resolution: fixed_evidence,
         };
         let delta =
             ConvergenceDelta::head_changed("sha-1", "sha-2", [String::from("docs/parser.md")]);

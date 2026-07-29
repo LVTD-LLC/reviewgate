@@ -125,12 +125,52 @@
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }
     },
+    "disposition_updates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/disposition_update" },
+      "description": "Validated convergence transitions that summary publication must apply to the prior canonical finding state."
+    },
     "notes": {
       "type": "array",
       "items": { "type": "string" }
     }
   },
   "$defs": {
+    "disposition_update": {
+      "type": "object",
+      "required": [
+        "semantic_fingerprint",
+        "disposition",
+        "evidence_summary",
+        "actor",
+        "reviewed_sha",
+        "code_fingerprint",
+        "resolution"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "semantic_fingerprint": { "type": "string", "minLength": 1 },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "still_open",
+            "rejected_with_evidence",
+            "intentional_contract",
+            "disputed",
+            "superseded"
+          ]
+        },
+        "evidence_summary": { "type": "string", "minLength": 1 },
+        "actor": { "type": "string", "minLength": 1 },
+        "reviewed_sha": { "type": "string", "minLength": 1 },
+        "code_fingerprint": { "type": "string", "minLength": 1 },
+        "resolution": {
+          "$ref": "#/$defs/finding",
+          "description": "The grounded resolution candidate revalidated against the repository and convergence delta before publication."
+        }
+      }
+    },
     "cost_component": {
       "type": "object",
       "required": ["label", "model", "estimated_cost_usd"],
@@ -293,7 +333,7 @@
         "resolution_disposition": {
           "type": ["string", "null"],
           "enum": ["fixed", null],
-          "description": "Set to fixed only when the delta deletes exact prior current-head evidence and the resolution checks every added line in its replacement block; otherwise null."
+          "description": "Set to fixed only when the delta deletes every prior current-head evidence location and the resolution checks every added line in each replacement block; otherwise null."
         },
         "resolution_evidence_summary": {
           "type": ["string", "null"],
