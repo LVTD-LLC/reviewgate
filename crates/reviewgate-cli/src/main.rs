@@ -1320,14 +1320,20 @@ fn apply_convergence_policy(
     disposition_updates: &[FindingDispositionUpdate],
 ) -> CliResult<Vec<TrackedFinding>> {
     if artifact.status == ReviewStatus::ReviewError {
-        artifact.disposition_updates.clear();
-        let tracked_findings = context
-            .previous_state
-            .as_ref()
-            .map(|state| state.tracked_findings.clone())
-            .unwrap_or_default();
-        artifact.tracked_findings = tracked_findings.clone();
-        return Ok(tracked_findings);
+        artifact.disposition_updates = disposition_updates.to_vec();
+        let result = reconcile_findings_with_updates(
+            artifact.findings.clone(),
+            context
+                .previous_state
+                .as_ref()
+                .map(|state| state.tracked_findings.as_slice())
+                .unwrap_or_default(),
+            &context.convergence_delta,
+            disposition_updates,
+        )?;
+        artifact.notes.extend(result.notes);
+        artifact.tracked_findings = result.tracked_findings.clone();
+        return Ok(result.tracked_findings);
     }
     artifact.disposition_updates = disposition_updates.to_vec();
     let result = reconcile_findings_with_updates(
@@ -7954,6 +7960,72 @@ let resync_state = state.clone();
             .expect_err("missing canonical history must fail closed");
         assert!(error.to_string().contains("git command failed"));
         fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn inconclusive_findings_survive_a_successful_same_head_omission() {
+        let mut inconclusive: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        inconclusive.findings.truncate(1);
+        inconclusive.score = None;
+        inconclusive.status = ReviewStatus::ReviewError;
+        inconclusive.angle_errors = vec![ReviewAngleError {
+            angle_id: "adversarial".to_string(),
+            angle_name: "Adversarial".to_string(),
+            kind: ReviewErrorKind::MalformedResponse,
+            retryable: true,
+            message: "The reviewer returned an invalid structured response.".to_string(),
+            model: "test".to_string(),
+        }];
+        let first_context = ReviewContext {
+            reviewed_sha: inconclusive.reviewed_sha.clone(),
+            scope: ReviewScope::Local,
+            previous_state: None,
+            convergence_delta: reviewgate_core::ConvergenceDelta::first_review(
+                &inconclusive.reviewed_sha,
+            ),
+            pull_request: PullRequestContext::default(),
+            changed_files: vec!["app/webhooks/retry.py".to_string()],
+            diff: String::new(),
+            analyzed_line_count: 1,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+
+        let tracked = apply_convergence_policy(&mut inconclusive, &first_context, &[])
+            .expect("inconclusive finding is tracked");
+        assert_eq!(tracked.len(), 1);
+        let state = SummaryState::for_artifact_with_convergence(
+            &inconclusive,
+            None,
+            20,
+            ReviewScope::Local,
+            tracked,
+        )
+        .expect("inconclusive state builds");
+
+        let mut successful_omission = inconclusive.clone();
+        successful_omission.score = Some(DEFAULT_TARGET_SCORE);
+        successful_omission.status = ReviewStatus::Passed;
+        successful_omission.angle_errors.clear();
+        successful_omission.findings.clear();
+        successful_omission.tracked_findings.clear();
+        let retry_context = ReviewContext {
+            previous_state: Some(state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
+                &successful_omission.reviewed_sha,
+            ),
+            ..first_context
+        };
+
+        let carried = apply_convergence_policy(&mut successful_omission, &retry_context, &[])
+            .expect("same-head omission keeps the prior finding");
+
+        assert_eq!(carried.len(), 1);
+        assert_eq!(successful_omission.findings.len(), 1);
+        assert_eq!(successful_omission.status, ReviewStatus::NeedsChanges);
+        assert!(successful_omission.score.is_some_and(|score| score < 5));
     }
 
     #[test]
