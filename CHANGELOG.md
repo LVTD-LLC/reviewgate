@@ -5,6 +5,7 @@ Changes are grouped by calendar date, newest first.
 ## 2026-07-29
 
 - Published the first ReviewGate field note, “How to Tell If Code Is AI-Generated: What Actually Works,” with Article, HowTo, FAQ, and breadcrumb schema; replaced the blog placeholder with a live index; and added a concise installation, permissions, configuration, and repair-loop docs page. Corrected the SEO foundation to use the dedicated `sc-domain:reviewgate.lvtd.dev` Search Console property and registered private Rowset SEO research state.
+- Bound agent disposition receipts to writer-only commit-status attestations so GitHub Actions can verify the exact comment author, reviewed SHA, and payload digest even when its token redacts maintainer associations. Advanced the action runtime pin to `v0.4.5`.
 - Reported how many agent disposition receipts were newly applied, replayed as duplicates, or ignored at review and summary publication time, including bounded reason counts for stale, unauthorized, malformed, actor-mismatched, or invalid receipts. Advanced the action runtime pin to `v0.4.4`.
 - Verified the SEO foundation deployment in production, submitted the sitemap through the covering Search Console domain property with no errors or warnings, and confirmed PostHog receives the pageview and install-intent event contracts.
 - Consumed exact-head agent dispositions using GitHub's maintainer association on the author-bound receipt instead of silently discarding them when the workflow token cannot re-query a human collaborator's permission. Advanced the action runtime pin to `v0.4.3`.
