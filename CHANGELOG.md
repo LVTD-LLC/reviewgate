@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-29
 
+- Fixed the action manifest so GitHub can load the new agent-result outputs, and added real YAML parsing to the site check to catch invalid action metadata before release.
 - Added a stable `reviewgate-agent-result/v1` contract and exact-head `reviewgate check` retrieval. Every review outcome now writes action outputs and uploads a bounded, SHA-named `reviewgate-agent-result` artifact with structured findings, thread IDs, angle errors, costs, and disposition history. Retrieval accepts artifacts only from the configured ReviewGate workflow's exact PR/head run.
 - Made terminal agent-result publication recover from a missing or malformed internal review artifact by emitting a sanitized, non-retryable `review_error` result for the live PR head.
 - Added `reviewgate disposition` for authenticated writers to submit `accepted`, `fixed`, `rejected_with_evidence`, `already_implemented`, `intentional_contract`, or `needs_human` as repository/PR/head-bound JSON. Rereviews revalidate each GitHub author's live write permission and carry immutable comment events into canonical finding history without Markdown scraping or dropping repeated state transitions.
