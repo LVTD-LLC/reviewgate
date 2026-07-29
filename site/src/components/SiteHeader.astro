@@ -1,0 +1,38 @@
+---
+interface Props {
+  current?: "product" | "docs" | "blog";
+}
+
+const { current = "product" } = Astro.props;
+const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
+
+const links = [
+  { href: "/", label: "Product", key: "product" },
+  { href: "/docs", label: "Docs", key: "docs" },
+  { href: "/blog", label: "Blog", key: "blog" },
+];
+---
+
+<header class="signal-header">
+  <a class="signal-logo" href="/" aria-label="Homepage">
+    <span aria-hidden="true">RG</span>
+    <strong>ReviewGate</strong>
+  </a>
+
+  <nav class="desktop-nav signal-nav" aria-label="Primary">
+    {links.map((link) => (
+      <a href={link.href} aria-current={current === link.key ? "page" : undefined}>{link.label}</a>
+    ))}
+    <a href={repositoryUrl}>GitHub</a>
+  </nav>
+
+  <details class="mobile-nav signal-mobile-nav">
+    <summary>Menu</summary>
+    <nav aria-label="Mobile">
+      {links.map((link) => (
+        <a href={link.href} aria-current={current === link.key ? "page" : undefined}>{link.label}</a>
+      ))}
+      <a href={repositoryUrl}>GitHub</a>
+    </nav>
+  </details>
+</header>

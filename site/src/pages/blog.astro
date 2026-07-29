@@ -1,0 +1,63 @@
+---
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
+
+const plannedNotes = [
+  ["NOTE / 001", "Why ReviewGate uses a fixed 5/5 threshold"],
+  ["NOTE / 002", "The canonical PR comment as a coordination surface"],
+  ["NOTE / 003", "Designing review artifacts that coding agents can consume"],
+];
+---
+
+<BaseLayout
+  title="Field notes coming soon - ReviewGate"
+  description="ReviewGate engineering field notes are coming soon, covering agent-written pull requests, review contracts, and reliable repair loops."
+>
+  <main class="concept signal-site utility-site">
+    <SiteHeader current="blog" />
+
+    <section class="utility-hero" aria-label="Blog status">
+      <div class="utility-copy">
+        <p class="signal-eyebrow">FIELD NOTES / TRANSMISSION PENDING</p>
+        <h1>Notes from the review loop are <em>incoming.</em></h1>
+        <p class="utility-lede">
+          We’ll publish the decisions, failures, and operating patterns behind a score-centered review gate for agent-written pull requests.
+        </p>
+        <div class="signal-actions">
+          <a class="signal-primary" href={repositoryUrl}>Follow development <span aria-hidden="true">↗</span></a>
+          <a class="signal-secondary" href="/">Back to the product</a>
+        </div>
+      </div>
+
+      <aside class="utility-console" aria-label="Planned field notes">
+        <div class="console-topline">
+          <span>CHANNEL / RG</span>
+          <span>DRAFTS / 03</span>
+          <strong>OFF AIR</strong>
+        </div>
+        <div class="utility-status">
+          <p>NEXT TRANSMISSION</p>
+          <strong>SOON_</strong>
+          <span>No filler. The first post ships when there is something useful to report.</span>
+        </div>
+        <dl class="utility-queue blog-queue">
+          {plannedNotes.map(([number, title]) => (
+            <div>
+              <dt>{number}</dt>
+              <dd>{title}</dd>
+            </div>
+          ))}
+        </dl>
+        <div class="console-footer">
+          <span>/blog</span>
+          <strong>STATUS / QUEUED</strong>
+        </div>
+      </aside>
+    </section>
+
+    <SiteFooter />
+  </main>
+</BaseLayout>
