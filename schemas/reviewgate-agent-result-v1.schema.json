@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewgate.lvtd.dev/schemas/reviewgate-agent-result-v1.schema.json",
+  "title": "ReviewGate Agent Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scope",
+    "status",
+    "score",
+    "reviewed_sha",
+    "angle_errors",
+    "costs",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": { "const": "reviewgate-agent-result/v1" },
+    "scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "local" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "repository", "pull_request_number"],
+          "properties": {
+            "kind": { "const": "pull_request" },
+            "repository": { "type": "string", "minLength": 1 },
+            "pull_request_number": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["passed", "needs_changes", "review_error"]
+    },
+    "score": { "type": ["integer", "null"], "minimum": 0, "maximum": 5 },
+    "reviewed_sha": { "type": "string", "minLength": 1 },
+    "angle_errors": {
+      "type": "array",
+      "items": { "$ref": "reviewgate-review-output-v3.schema.json#/$defs/review_angle_error" }
+    },
+    "costs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["estimated_total_usd", "summary"],
+      "properties": {
+        "estimated_total_usd": { "type": ["number", "null"], "minimum": 0 },
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "reviewgate-review-output-v3.schema.json#/properties/cost_summary"
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "semantic_fingerprint",
+        "disposition",
+        "severity",
+        "confidence",
+        "classification",
+        "blocking_reason",
+        "path",
+        "line",
+        "claim",
+        "causal_evidence",
+        "evidence",
+        "reproduction",
+        "suggested_fix",
+        "thread_id",
+        "prior_dispositions"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "semantic_fingerprint": { "type": "string", "minLength": 1 },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "still_open",
+            "rejected_with_evidence",
+            "intentional_contract",
+            "disputed",
+            "superseded"
+          ]
+        },
+        "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3", "P4"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "defect",
+            "security",
+            "reliability_risk",
+            "contract_ambiguity",
+            "suggestion"
+          ]
+        },
+        "blocking_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            "validated_defect",
+            "validated_security",
+            "validated_reliability_risk",
+            null
+          ]
+        },
+        "path": { "type": ["string", "null"] },
+        "line": { "type": ["integer", "null"], "minimum": 1 },
+        "claim": { "type": ["string", "null"] },
+        "causal_evidence": { "type": ["string", "null"] },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "reviewgate-review-output-v3.schema.json#/$defs/finding_evidence"
+          }
+        },
+        "reproduction": { "type": ["string", "null"] },
+        "suggested_fix": { "type": "string", "minLength": 1 },
+        "thread_id": { "type": ["integer", "null"], "minimum": 1 },
+        "prior_dispositions": {
+          "type": "array",
+          "items": {
+            "$ref": "reviewgate-review-output-v3.schema.json#/$defs/disposition_record"
+          }
+        }
+      }
+    }
+  }
+}

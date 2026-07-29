@@ -130,12 +130,75 @@
       "items": { "$ref": "#/$defs/disposition_update" },
       "description": "Validated convergence transitions that summary publication must apply to the prior canonical finding state."
     },
+    "tracked_findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/tracked_finding" },
+      "description": "Canonical semantic finding state, including settled findings and bounded disposition history."
+    },
     "notes": {
       "type": "array",
       "items": { "type": "string" }
     }
   },
   "$defs": {
+    "disposition_record": {
+      "type": "object",
+      "required": [
+        "disposition",
+        "evidence_summary",
+        "actor",
+        "reviewed_sha",
+        "code_fingerprint"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "still_open",
+            "rejected_with_evidence",
+            "intentional_contract",
+            "disputed",
+            "superseded"
+          ]
+        },
+        "evidence_summary": { "type": "string", "minLength": 1 },
+        "actor": { "type": "string", "minLength": 1 },
+        "reviewed_sha": { "type": "string", "minLength": 1 },
+        "code_fingerprint": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tracked_finding": {
+      "type": "object",
+      "required": [
+        "semantic_fingerprint",
+        "finding",
+        "disposition",
+        "disposition_history"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "semantic_fingerprint": { "type": "string", "minLength": 1 },
+        "finding": { "$ref": "#/$defs/finding" },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "still_open",
+            "rejected_with_evidence",
+            "intentional_contract",
+            "disputed",
+            "superseded"
+          ]
+        },
+        "disposition_history": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/disposition_record" }
+        }
+      }
+    },
     "disposition_update": {
       "type": "object",
       "required": [

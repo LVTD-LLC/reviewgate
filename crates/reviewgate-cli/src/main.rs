@@ -687,11 +687,13 @@ fn apply_convergence_policy(
 ) -> CliResult<Vec<TrackedFinding>> {
     if artifact.status == ReviewStatus::ReviewError {
         artifact.disposition_updates.clear();
-        return Ok(context
+        let tracked_findings = context
             .previous_state
             .as_ref()
             .map(|state| state.tracked_findings.clone())
-            .unwrap_or_default());
+            .unwrap_or_default();
+        artifact.tracked_findings = tracked_findings.clone();
+        return Ok(tracked_findings);
     }
     artifact.disposition_updates = disposition_updates.to_vec();
     let result = reconcile_findings_with_updates(
@@ -706,6 +708,7 @@ fn apply_convergence_policy(
     )?;
     artifact.findings = result.findings;
     artifact.notes.extend(result.notes);
+    artifact.tracked_findings = result.tracked_findings.clone();
     recompute_artifact_outcome(artifact)?;
     Ok(result.tracked_findings)
 }
@@ -3738,6 +3741,7 @@ fn aggregate_angle_artifacts(
         angle_errors: vec![],
         findings,
         disposition_updates: vec![],
+        tracked_findings: vec![],
         notes,
     };
     artifact.validate()?;
@@ -6107,6 +6111,7 @@ review_angles:
             }],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -6143,6 +6148,7 @@ review_angles:
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec!["<untrusted note>".to_string()],
         };
 
@@ -6176,6 +6182,7 @@ review_angles:
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -6206,6 +6213,7 @@ review_angles:
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         fs::write(
@@ -6283,6 +6291,7 @@ review_angles:
                 angle_errors: vec![],
                 findings,
                 disposition_updates: vec![],
+                tracked_findings: vec![],
                 notes: vec![],
             };
 
@@ -6445,6 +6454,7 @@ Thanks {also not json}."#;
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7124,6 +7134,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let adversarial = ReviewArtifact {
@@ -7156,6 +7167,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 agent_instruction: "Handle and test the error path.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7205,6 +7217,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let mut aggregate = aggregate_angle_artifacts(
@@ -7260,6 +7273,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let mut aggregate = aggregate_angle_artifacts(
@@ -7327,6 +7341,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 },
             ],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7381,6 +7396,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 agent_instruction: "Keep generated IDs bounded.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7412,6 +7428,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let general_angle = general_review_angle();
@@ -7637,6 +7654,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     ..finding
                 }],
                 disposition_updates: vec![],
+                tracked_findings: vec![],
                 notes: vec![],
             };
             let context = ReviewContext {
@@ -7967,6 +7985,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![false_p0, real_p2, advisory],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -8054,6 +8073,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             findings: vec![finding],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 

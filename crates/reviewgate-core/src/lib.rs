@@ -4,8 +4,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod agent_result;
 mod convergence;
 
+pub use agent_result::*;
 pub use convergence::{
     ConvergenceDelta, ConvergenceResult, FindingDisposition, FindingDispositionRecord,
     FindingDispositionUpdate, LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_DISPOSITION_HISTORY,
@@ -554,10 +556,17 @@ pub struct ReviewArtifact {
     pub findings: Vec<Finding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disposition_updates: Vec<FindingDispositionUpdate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked_findings: Vec<TrackedFinding>,
     pub notes: Vec<String>,
 }
 
 impl ReviewArtifact {
+    pub fn with_tracked_findings(mut self, tracked_findings: Vec<TrackedFinding>) -> Self {
+        self.tracked_findings = tracked_findings;
+        self
+    }
+
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.reviewed_sha.trim().is_empty() {
             return Err(ReviewGateError::InvalidReviewOutcome(
@@ -804,6 +813,7 @@ impl ReviewArtifact {
             }],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         }
     }
@@ -1916,6 +1926,7 @@ mod tests {
             angle_errors: vec![],
             findings,
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         }
     }
@@ -2273,6 +2284,7 @@ mod tests {
             angle_errors: vec![angle_error.clone(), angle_error.clone()],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         assert!(duplicate_errors.validate().is_err());
@@ -2328,6 +2340,7 @@ mod tests {
             }],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec!["provider body: sentinel-secret".to_string()],
         };
 
@@ -2445,6 +2458,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![finding],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let summary = render_summary(&artifact).expect("summary renders");
@@ -2511,6 +2525,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![scoring_finding("rg_001", Severity::P3)],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -2650,6 +2665,7 @@ mod tests {
                 agent_instruction: "Fix the escaped table issue.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -2686,6 +2702,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -2718,6 +2735,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let first = render_summary(&artifact).expect("summary renders");
@@ -2969,6 +2987,7 @@ mod tests {
                 },
             ],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3020,6 +3039,7 @@ mod tests {
                 agent_instruction: "Fix this issue before expecting the target score.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3067,6 +3087,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3126,6 +3147,7 @@ mod tests {
                 agent_instruction: "Add a regression test for the missing branch.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3168,6 +3190,7 @@ mod tests {
                 agent_instruction: "Add the regression test.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3203,6 +3226,7 @@ mod tests {
             }],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3250,6 +3274,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let previous = SummaryState::for_artifact(&valid, None, 20).expect("valid state");
@@ -3275,6 +3300,7 @@ mod tests {
             }],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3355,6 +3381,7 @@ mod tests {
                 agent_instruction: "Fix the security issue.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3399,6 +3426,7 @@ mod tests {
                 agent_instruction: "Fix the confidence value.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3425,6 +3453,7 @@ mod tests {
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3565,6 +3594,7 @@ mod tests {
                 },
             ],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -3623,6 +3653,7 @@ mod tests {
                 agent_instruction: "Review when convenient.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
