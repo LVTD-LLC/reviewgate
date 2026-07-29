@@ -8,8 +8,9 @@ mod convergence;
 
 pub use convergence::{
     ConvergenceDelta, ConvergenceResult, FindingDisposition, FindingDispositionRecord,
-    LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_DISPOSITION_HISTORY, ReviewScope, TrackedFinding,
-    reconcile_findings, semantic_fingerprint,
+    FindingDispositionUpdate, LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_DISPOSITION_HISTORY,
+    ReviewScope, TrackedFinding, finding_code_fingerprint, reconcile_findings,
+    reconcile_findings_with_updates, semantic_fingerprint,
 };
 
 pub const SUMMARY_MARKER: &str = "<!-- reviewgate-summary -->";
@@ -299,6 +300,10 @@ pub struct Finding {
 pub struct FindingGrounding {
     #[serde(default)]
     pub semantic_key: String,
+    #[serde(default)]
+    pub resolution_disposition: Option<FindingDisposition>,
+    #[serde(default)]
+    pub resolution_evidence_summary: Option<String>,
     pub claim: String,
     pub causal_path: String,
     pub test_assessment: String,
@@ -1923,6 +1928,8 @@ mod tests {
             blocking_reason: None,
             grounding: Some(FindingGrounding {
                 semantic_key: format!("test.{id}"),
+                resolution_disposition: None,
+                resolution_evidence_summary: None,
                 claim: "The invariant fixture is violated.".to_string(),
                 causal_path: "fixture -> deterministic score".to_string(),
                 test_assessment: "The current test covers the invariant.".to_string(),
@@ -3667,6 +3674,8 @@ mod tests {
     fn grounding_serializes_absent_proof_fields_as_schema_nulls() {
         let grounding = FindingGrounding {
             semantic_key: "test.checked_claim".to_string(),
+            resolution_disposition: None,
+            resolution_evidence_summary: None,
             claim: "Checked claim.".to_string(),
             causal_path: "change -> failure".to_string(),
             test_assessment: "No test covers the path.".to_string(),
@@ -3682,5 +3691,10 @@ mod tests {
 
         assert_eq!(value["reproduction"], serde_json::Value::Null);
         assert_eq!(value["proof"], serde_json::Value::Null);
+        assert_eq!(value["resolution_disposition"], serde_json::Value::Null);
+        assert_eq!(
+            value["resolution_evidence_summary"],
+            serde_json::Value::Null
+        );
     }
 }

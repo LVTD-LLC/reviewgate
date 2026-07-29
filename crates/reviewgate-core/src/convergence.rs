@@ -38,6 +38,16 @@ pub struct FindingDispositionRecord {
     pub code_fingerprint: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindingDispositionUpdate {
+    pub semantic_fingerprint: String,
+    pub disposition: FindingDisposition,
+    pub evidence_summary: String,
+    pub actor: String,
+    pub reviewed_sha: String,
+    pub code_fingerprint: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TrackedFinding {
     pub semantic_fingerprint: String,
@@ -128,7 +138,7 @@ fn normalize_identity_component(value: &str) -> String {
     normalized
 }
 
-fn code_fingerprint(finding: &Finding) -> String {
+pub fn finding_code_fingerprint(finding: &Finding) -> String {
     let mut canonical = String::new();
     canonical.push_str(finding.file.as_deref().unwrap_or("pr"));
     canonical.push('\n');
@@ -172,7 +182,7 @@ fn disposition_record(
         evidence_summary: evidence_summary.into(),
         actor: "reviewgate".to_string(),
         reviewed_sha: reviewed_sha.to_string(),
-        code_fingerprint: code_fingerprint(finding),
+        code_fingerprint: finding_code_fingerprint(finding),
     }
 }
 
@@ -250,6 +260,15 @@ pub fn reconcile_findings(
     previous_findings: &[TrackedFinding],
     delta: &ConvergenceDelta,
 ) -> Result<ConvergenceResult, ReviewGateError> {
+    reconcile_findings_with_updates(current_findings, previous_findings, delta, &[])
+}
+
+pub fn reconcile_findings_with_updates(
+    current_findings: Vec<Finding>,
+    previous_findings: &[TrackedFinding],
+    delta: &ConvergenceDelta,
+    disposition_updates: &[FindingDispositionUpdate],
+) -> Result<ConvergenceResult, ReviewGateError> {
     if delta.current_reviewed_sha.trim().is_empty() {
         return Err(ReviewGateError::InvalidReviewOutcome(
             "convergence current_reviewed_sha must not be empty".to_string(),
@@ -313,6 +332,11 @@ pub fn reconcile_findings(
     let unchanged_head =
         delta.previous_reviewed_sha.as_deref() == Some(delta.current_reviewed_sha.as_str());
     if unchanged_head {
+        if !disposition_updates.is_empty() {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "unchanged-head review cannot record disposition updates".to_string(),
+            ));
+        }
         let findings = previous_by_fingerprint
             .values()
             .filter(|tracked| tracked.disposition == FindingDisposition::StillOpen)
@@ -332,9 +356,64 @@ pub fn reconcile_findings(
     let mut findings = Vec::new();
     let mut tracked_findings = Vec::new();
     let mut notes = Vec::new();
+    let mut updates_by_fingerprint = BTreeMap::new();
+    for update in disposition_updates {
+        if update.semantic_fingerprint.trim().is_empty()
+            || update.evidence_summary.trim().is_empty()
+            || update.actor.trim().is_empty()
+            || update.reviewed_sha != delta.current_reviewed_sha
+            || update.code_fingerprint.trim().is_empty()
+        {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "disposition update is incomplete or targets the wrong SHA".to_string(),
+            ));
+        }
+        if updates_by_fingerprint
+            .insert(update.semantic_fingerprint.clone(), update.clone())
+            .is_some()
+        {
+            return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                "duplicate disposition update {}",
+                update.semantic_fingerprint
+            )));
+        }
+    }
 
     for (fingerprint, mut previous) in previous_by_fingerprint {
         let current = current_by_fingerprint.remove(&fingerprint);
+        let update = updates_by_fingerprint.remove(&fingerprint);
+        if let Some(update) = update {
+            let prior_code_fingerprint = previous
+                .disposition_history
+                .last()
+                .map(|record| record.code_fingerprint.as_str())
+                .unwrap_or_default();
+            if previous.disposition != FindingDisposition::StillOpen
+                || update.disposition != FindingDisposition::Fixed
+                || current.is_some()
+                || !relevant_code_changed(&previous.finding, delta, false)
+                || update.code_fingerprint == prior_code_fingerprint
+            {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "fixed disposition update for {fingerprint} is not justified by the current delta"
+                )));
+            }
+            previous.disposition = FindingDisposition::Fixed;
+            previous.disposition_history.push(FindingDispositionRecord {
+                disposition: update.disposition,
+                evidence_summary: update.evidence_summary,
+                actor: update.actor,
+                reviewed_sha: update.reviewed_sha,
+                code_fingerprint: update.code_fingerprint,
+            });
+            if previous.disposition_history.len() > MAX_DISPOSITION_HISTORY {
+                previous
+                    .disposition_history
+                    .drain(0..previous.disposition_history.len() - MAX_DISPOSITION_HISTORY);
+            }
+            tracked_findings.push(previous);
+            continue;
+        }
         match previous.disposition {
             FindingDisposition::StillOpen => {
                 let relevant_changed = relevant_code_changed(&previous.finding, delta, false);
@@ -370,7 +449,7 @@ pub fn reconcile_findings(
             | FindingDisposition::Fixed
             | FindingDisposition::Superseded => {
                 if let Some(current) = current {
-                    let current_code_fingerprint = code_fingerprint(&current);
+                    let current_code_fingerprint = finding_code_fingerprint(&current);
                     let prior_code_fingerprint = previous
                         .disposition_history
                         .last()
@@ -397,6 +476,11 @@ pub fn reconcile_findings(
             }
         }
         tracked_findings.push(previous);
+    }
+    if let Some(unknown) = updates_by_fingerprint.keys().next() {
+        return Err(ReviewGateError::InvalidReviewOutcome(format!(
+            "disposition update references unknown finding {unknown}"
+        )));
     }
 
     for (fingerprint, finding) in current_by_fingerprint {
@@ -509,6 +593,8 @@ mod tests {
             blocking_reason: Some(BlockingReason::ValidatedDefect),
             grounding: Some(FindingGrounding {
                 semantic_key: semantic_key.to_string(),
+                resolution_disposition: None,
+                resolution_evidence_summary: None,
                 claim: "The changed configuration omits a required permission.".to_string(),
                 causal_path: "workflow job -> package publication".to_string(),
                 test_assessment: "No test covers the permission boundary.".to_string(),
@@ -722,6 +808,94 @@ mod tests {
     }
 
     #[test]
+    fn explicit_evidence_backed_update_marks_an_open_finding_fixed() {
+        let prior_finding = blocker(
+            "general:parser",
+            "parser.positional_operand",
+            "src/parser.rs",
+            0.99,
+            "Remove the positional operand.",
+        );
+        let prior = tracked(prior_finding, FindingDisposition::StillOpen, "sha-1");
+        let mut fixed_evidence = blocker(
+            "general:parser-fixed",
+            "parser.positional_operand",
+            "src/parser.rs",
+            0.99,
+            "The parser now rejects positional operands.",
+        );
+        fixed_evidence
+            .grounding
+            .as_mut()
+            .expect("grounding")
+            .causal_path = "parser guard -> rejected positional operand".to_string();
+        let update = FindingDispositionUpdate {
+            semantic_fingerprint: prior.semantic_fingerprint.clone(),
+            disposition: FindingDisposition::Fixed,
+            evidence_summary: "The new parser guard rejects the prior reproduction.".to_string(),
+            actor: "reviewgate".to_string(),
+            reviewed_sha: "sha-2".to_string(),
+            code_fingerprint: finding_code_fingerprint(&fixed_evidence),
+        };
+        let delta =
+            ConvergenceDelta::head_changed("sha-1", "sha-2", [String::from("src/parser.rs")]);
+
+        let result = reconcile_findings_with_updates(vec![], &[prior], &delta, &[update])
+            .expect("validated update reconciles");
+
+        assert!(result.findings.is_empty());
+        assert_eq!(
+            result.tracked_findings[0].disposition,
+            FindingDisposition::Fixed
+        );
+        assert_eq!(
+            result.tracked_findings[0]
+                .disposition_history
+                .last()
+                .expect("latest record")
+                .actor,
+            "reviewgate"
+        );
+    }
+
+    #[test]
+    fn fixed_update_requires_the_prior_findings_relevant_file_to_change() {
+        let prior_finding = blocker(
+            "general:parser",
+            "parser.positional_operand",
+            "src/parser.rs",
+            0.99,
+            "Remove the positional operand.",
+        );
+        let prior = tracked(prior_finding, FindingDisposition::StillOpen, "sha-1");
+        let mut fixed_evidence = prior.finding.clone();
+        fixed_evidence
+            .grounding
+            .as_mut()
+            .expect("grounding")
+            .causal_path = "parser guard -> rejected positional operand".to_string();
+        let update = FindingDispositionUpdate {
+            semantic_fingerprint: prior.semantic_fingerprint.clone(),
+            disposition: FindingDisposition::Fixed,
+            evidence_summary: "The parser guard rejects the prior reproduction.".to_string(),
+            actor: "reviewgate".to_string(),
+            reviewed_sha: "sha-2".to_string(),
+            code_fingerprint: finding_code_fingerprint(&fixed_evidence),
+        };
+        let delta =
+            ConvergenceDelta::head_changed("sha-1", "sha-2", [String::from("docs/parser.md")]);
+
+        let error = reconcile_findings_with_updates(vec![], &[prior], &delta, &[update])
+            .expect_err("unrelated changes cannot fix the finding");
+
+        assert!(
+            error
+                .to_string()
+                .contains("is not justified by the current delta")
+        );
+    }
+
+    #[test]
     fn unrelated_external_contract_change_does_not_clear_an_open_finding() {
         let prior = tracked(
             blocker(
@@ -798,7 +972,7 @@ mod tests {
                         .to_string(),
                     actor: "repair-agent".to_string(),
                     reviewed_sha: round.sha.clone(),
-                    code_fingerprint: code_fingerprint(&tracked.finding),
+                    code_fingerprint: finding_code_fingerprint(&tracked.finding),
                 });
             }
             let current = round

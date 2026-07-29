@@ -271,6 +271,8 @@
       "type": "object",
       "required": [
         "semantic_key",
+        "resolution_disposition",
+        "resolution_evidence_summary",
         "claim",
         "causal_path",
         "test_assessment",
@@ -287,6 +289,15 @@
           "type": "string",
           "minLength": 1,
           "description": "Stable machine-readable root-cause identity. Reuse it across wording and line movement."
+        },
+        "resolution_disposition": {
+          "type": ["string", "null"],
+          "enum": ["fixed", null],
+          "description": "Set to fixed only when current-head evidence proves an equivalent prior still-open finding is resolved; otherwise null."
+        },
+        "resolution_evidence_summary": {
+          "type": ["string", "null"],
+          "description": "Concise explanation of the current-head evidence proving the prior finding is fixed."
         },
         "claim": { "type": "string", "minLength": 1 },
         "causal_path": {

@@ -700,7 +700,7 @@ Finding fields:
 | `classification` | `defect`, `security`, `reliability_risk`, `contract_ambiguity`, or `suggestion` | Finding kind. Contract ambiguities and suggestions are advisory. |
 | `evidence_gate_result` | `passed`, `failed`, or `not_required` | Deterministic evidence-gate outcome. Only `passed` can block. |
 | `blocking_reason` | `validated_defect`, `validated_security`, `validated_reliability_risk`, or null | Auditable deterministic reason the finding blocks. Advisory findings use null. |
-| `grounding` | object or null | Required before an eligible P0-P3 can block; contains a stable `semantic_key`, the checked claim, causal path, test assessment, exact evidence (`new` for current-head lines, `old` for deleted diff lines), related tests, P0-P1 reproduction/proof, and optional novelty/reopening evidence used by rereview convergence. |
+| `grounding` | object or null | Required before an eligible P0-P3 can block; contains a stable `semantic_key`, the checked claim, causal path, test assessment, exact evidence (`new` for current-head lines, `old` for deleted diff lines), related tests, P0-P1 reproduction/proof, and rereview fields. A prior still-open identity is fixed only when `resolution_disposition: fixed`, a non-empty `resolution_evidence_summary`, and exact changed current-head evidence prove the prior failure is gone. |
 | `file` | string or null | Target file when known. |
 | `line` | integer or null | Right-side changed line for line findings when known. |
 | `title` | string | Short finding title. |
