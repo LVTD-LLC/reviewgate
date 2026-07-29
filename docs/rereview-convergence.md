@@ -26,7 +26,7 @@ Each tracked finding is exactly one of:
 | `disputed` | A human decision is still required. |
 | `superseded` | A newer finding or contract replaced this identity. |
 
-Still-open findings remain present even if a later model pass omits or rewrites them. Reviewer silence and unrelated same-file edits are never fix evidence. The reviewer must either emit the equivalent finding again or emit the same semantic identity with `resolution_disposition: fixed`, a non-empty `resolution_evidence_summary`, and exact evidence on a changed current-head line proving the prior failure is gone. ReviewGate records that transition only when the delta directly replaces prior checked evidence (or restores evidence previously deleted); a different reviewer-authored fingerprint alone is insufficient.
+Still-open findings remain present even if a later model pass omits or rewrites them. Reviewer silence and unrelated same-file edits are never fix evidence. The reviewer must either emit the equivalent finding again or emit the same semantic identity with `resolution_disposition: fixed` and a non-empty `resolution_evidence_summary`. ReviewGate records an automatic fixed transition only when the delta deletes exact prior current-head evidence and the resolution checks every added line in that contiguous replacement block. Findings grounded only in previously deleted lines remain open for an explicit disposition; a partial block or different reviewer-authored fingerprint is insufficient.
 
 Fixed, rejected, intentional, disputed, and superseded identities remain suppressed unless the relevant code or external contract changed, the code fingerprint changed, and the new finding supplies specific `reopening_evidence`.
 
