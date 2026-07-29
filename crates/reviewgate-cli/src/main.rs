@@ -842,33 +842,12 @@ fn apply_agent_disposition_comments(
     Ok(())
 }
 
-fn authorized_disposition_actors(
-    repo: &Path,
-    repository: &str,
-    comments: &[AgentDispositionComment],
-) -> BTreeSet<String> {
-    let candidates = disposition_actor_candidates(comments);
-    resolve_authorized_disposition_actors(candidates, |actor| {
-        fetch_actor_write_permission(repo, repository, actor)
-    })
-}
-
-fn resolve_authorized_disposition_actors(
-    candidates: BTreeSet<String>,
-    mut has_write_permission: impl FnMut(&str) -> CliResult<bool>,
-) -> BTreeSet<String> {
-    candidates
-        .into_iter()
-        .filter(|actor| match has_write_permission(actor) {
-            Ok(authorized) => authorized,
-            Err(error) => {
-                eprintln!(
-                    "ReviewGate warning: ignored agent dispositions from {actor} because live permission verification failed: {error}"
-                );
-                false
-            }
-        })
-        .collect()
+fn authorized_disposition_actors(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
+    // GitHub supplies author_association on the immutable comment author. The
+    // submitting CLI also verifies write permission before creating the
+    // comment. Rechecking a human through the workflow's installation token
+    // can return a token-scoped false negative and silently discard the receipt.
+    disposition_actor_candidates(comments)
 }
 
 fn disposition_actor_candidates(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
@@ -2605,8 +2584,7 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
-        let authorized_actors =
-            authorized_disposition_actors(&repo, &repository, &disposition_comments);
+        let authorized_actors = authorized_disposition_actors(&disposition_comments);
         apply_agent_disposition_comments(previous, &disposition_comments, &authorized_actors)?;
     }
     let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
@@ -3825,7 +3803,7 @@ fn load_previous_summary_state(
     };
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
-    let authorized_actors = authorized_disposition_actors(repo, repository, &disposition_comments);
+    let authorized_actors = authorized_disposition_actors(&disposition_comments);
     apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_actors)?;
     Ok(Some(state))
 }
@@ -7362,7 +7340,7 @@ review_angles:
     }
 
     #[test]
-    fn disposition_comments_are_versioned_author_bound_and_require_live_write_permission() {
+    fn disposition_comments_are_versioned_author_bound_and_trust_maintainer_association() {
         let artifact: ReviewArtifact =
             serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
                 .expect("fixture");
@@ -7407,8 +7385,25 @@ review_angles:
             FindingDisposition::Disputed
         );
 
-        let trusted = AgentDispositionComment {
+        let forged_author = AgentDispositionComment {
             id: 2,
+            author_login: "different-agent".to_string(),
+            author_association: "COLLABORATOR".to_string(),
+            body: body.clone(),
+        };
+        apply_agent_disposition_comments(
+            &mut state,
+            std::slice::from_ref(&forged_author),
+            &BTreeSet::from(["different-agent".to_string()]),
+        )
+        .expect("actor mismatch ignored");
+        assert_ne!(
+            state.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+
+        let trusted = AgentDispositionComment {
+            id: 3,
             author_login: "repair-agent".to_string(),
             author_association: "COLLABORATOR".to_string(),
             body,
@@ -7417,31 +7412,23 @@ review_angles:
             disposition_actor_candidates(std::slice::from_ref(&trusted)),
             BTreeSet::from(["repair-agent".to_string()])
         );
-        let permission_checked = resolve_authorized_disposition_actors(
-            BTreeSet::from(["api-failure".to_string(), "repair-agent".to_string()]),
-            |actor| {
-                if actor == "api-failure" {
-                    bail!("simulated permission API failure");
-                }
-                Ok(true)
-            },
-        );
+        let association_authorized = authorized_disposition_actors(std::slice::from_ref(&trusted));
         assert_eq!(
-            permission_checked,
+            association_authorized,
             BTreeSet::from(["repair-agent".to_string()])
         );
         apply_agent_disposition_comments(
             &mut state,
             std::slice::from_ref(&trusted),
-            &BTreeSet::new(),
+            &association_authorized,
         )
-        .expect("live read permission ignored");
-        assert_ne!(
+        .expect("maintainer-associated disposition applied");
+        assert_eq!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
         );
         let malformed = AgentDispositionComment {
-            id: 3,
+            id: 4,
             author_login: "repair-agent".to_string(),
             author_association: "COLLABORATOR".to_string(),
             body: format!(
@@ -7453,7 +7440,7 @@ review_angles:
             &[malformed, trusted],
             &BTreeSet::from(["repair-agent".to_string()]),
         )
-        .expect("invalid comment isolated and live write permission applied");
+        .expect("invalid comment isolated and maintainer disposition applied");
         assert_eq!(
             state.tracked_findings[0].disposition,
             FindingDisposition::Disputed
