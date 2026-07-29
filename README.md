@@ -109,6 +109,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
+      actions: read
+      attestations: read
       contents: read
       pull-requests: write
       issues: write
@@ -143,6 +145,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: write
+      attestations: read
+      contents: read
       pull-requests: write
       issues: write
     concurrency:
@@ -163,6 +167,8 @@ The fork-safety guard is intentional. GitHub does not expose repository secrets 
 
 | Permission | Why ReviewGate needs it |
 | --- | --- |
+| `actions: read` | Measure queue time from the current workflow run. |
+| `attestations: read` | Verify the release binary's signed GitHub build provenance. |
 | `contents: read` | Check out the repository and inspect the PR diff/context. |
 | `issues: write` | Create or update the canonical PR summary comment. GitHub PR comments use the issues comments API. |
 | `pull-requests: write` | Publish inline PR review comments for findings. |
@@ -170,7 +176,7 @@ The fork-safety guard is intentional. GitHub does not expose repository secrets 
 
 If `checks: write` is omitted, the review can still write JSON and summary comments, but the check-run publishing step cannot succeed. If `issues: write` is omitted, canonical summary publishing fails visibly because the summary is product-critical.
 
-The rereview job has a separate least-privilege boundary: `actions: write` to enumerate and rerun the selected workflow run, `pull-requests: write` to verify the open PR/current head and reserve the command with a bot-owned PR comment, and `issues: write` for the acknowledgement reaction and bounded feedback. GitHub may reject PR conversation writes when the job grants only `pull-requests: read`, even though PR comments use the issues-comments API.
+The rereview job has a separate least-privilege boundary: `actions: write` to enumerate and rerun the selected workflow run, `contents: read` and `attestations: read` to download and verify the runtime, `pull-requests: write` to verify the open PR/current head and reserve the command with a bot-owned PR comment, and `issues: write` for the acknowledgement reaction and bounded feedback. GitHub may reject PR conversation writes when the job grants only `pull-requests: read`, even though PR comments use the issues-comments API.
 
 ### Action Inputs
 
@@ -182,17 +188,21 @@ The rereview job has a separate least-privilege boundary: `actions: write` to en
 | `config` | No | `.reviewgate.yml` | Path to ReviewGate config in the checked-out repository. |
 | `model` | No | Built-in balanced model | Exact OpenRouter model ID. Leave empty to use the default. |
 | `min_severity` | No | `P4` | Lowest severity published as inline PR comments. One of `P0`, `P1`, `P2`, `P3`, `P4`. |
+| `angle_timeout_seconds` | No | `180` | Maximum OpenRouter time for one review angle. |
+| `total_timeout_seconds` | No | `480` | Maximum combined OpenRouter time across all review angles. |
 
 The built-in default model is `deepseek/deepseek-v4-flash`. The Rust model preset mapping also defines `qwen/qwen3-coder` for cheap runs and `anthropic/claude-sonnet-4` for strong runs, but the public action currently exposes exact model override rather than a preset input.
 
 ### Runner Requirements
 
-The documented workflow uses `ubuntu-latest`, which includes Git, Cargo/Rust tooling, `curl`, and the GitHub CLI. If you run ReviewGate on a self-hosted runner, make sure the runner has:
+ReviewGate downloads its version-pinned Linux X64 release binary and verifies its GitHub build-provenance attestation before executing it. Normal action startup does not install Rust or compile source. The supported action runner is GitHub's `ubuntu-latest` Linux X64 image. Self-hosted and other Linux distributions are not supported yet. The runner provides:
 
 - Git;
-- Rustup or Rust/Cargo capable of using the repository's `1.96.0` toolchain;
 - `curl`;
-- GitHub CLI `gh`.
+- GitHub CLI `gh` with attestation support;
+- `tar` and GNU `date`.
+
+The clean-run target is startup in at most 15 seconds, excluding GitHub queue time. Model calls are capped at 180 seconds per angle and 480 seconds across all angles by default. The canonical summary reports queue, startup, model-review, and publishing durations independently.
 
 ## Prerequisites
 
@@ -459,15 +469,16 @@ Network calls to GitHub happen in the CLI through `gh`; reusable publishing logi
 `action.yml` is intentionally thin. It:
 
 1. validates the `openrouter_api_key` input;
-2. publishes a temporary `ReviewGate: running` start signal;
-3. runs `reviewgate-cli review-pr`;
-4. publishes inline findings best-effort;
-5. publishes or updates the canonical summary comment;
-6. publishes a ReviewGate check run under `always()`;
-7. writes `.reviewgate/result.json` with the stable agent contract and action outputs;
-8. uploads it as the `reviewgate-agent-result` Actions artifact under `always()`.
+2. downloads the pinned Linux X64 runtime and verifies its signed provenance;
+3. publishes a temporary `ReviewGate: running` start signal;
+4. runs `reviewgate review-pr` with explicit angle and total budgets;
+5. publishes inline findings best-effort and records phase timings;
+6. publishes or updates the canonical summary comment;
+7. publishes a ReviewGate check run under `always()`;
+8. writes `.reviewgate/result.json` with the stable agent contract and action outputs;
+9. uploads it as the `reviewgate-agent-result` Actions artifact under `always()`.
 
-The action runs the Rust CLI from `$GITHUB_ACTION_PATH`, not from the checked-out PR workspace. That keeps product logic in Rust while letting users install ReviewGate as a normal composite GitHub Action. In `rereview` mode it only validates the comment event and requests a safe current-head rerun; it does not run model-backed review steps.
+The action executes the verified release binary from the runner temp directory, never from the checked-out PR workspace. That keeps product logic in Rust without compiling ReviewGate in consumer workflows. In `rereview` mode it only validates the comment event and requests a safe current-head rerun; it does not run model-backed review steps.
 
 ### Marketing Site
 
@@ -661,8 +672,9 @@ use the smaller, stable `reviewgate-agent-result/v1` contract in
 `reviewed_sha`, and `result_path` outputs.
 
 The agent result includes the repository/PR scope, exact reviewed SHA, typed
-angle errors, cost data, inline thread IDs, and canonical tracked findings with
-their semantic fingerprints and prior disposition history. Its schema is:
+angle errors, cost and runtime timing data, inline thread IDs, and canonical
+tracked findings with their semantic fingerprints and prior disposition
+history. Its schema is:
 
 ```text
 schemas/reviewgate-agent-result-v1.schema.json
@@ -707,7 +719,7 @@ Optional top-level fields:
 | --- | --- | --- |
 | `estimated_cost_usd` | number or null | Current run estimated cost. |
 | `cost_summary` | object or null | Current cost plus per-component cost details. |
-| `metrics` | object or null | Finding counts, severity counts, inline candidate count, analyzed line count, and cost source. |
+| `metrics` | object or null | Finding counts, severity counts, inline candidate count, analyzed line count, cost source, and optional queue/startup/model/publish timings. |
 | `review_stages` | array | Review stages that ran or were selected for reporting. |
 | `angle_results` | array | Per-angle score and status derived from the angle-owned `finding_ids`, plus verdict and model. |
 | `angle_errors` | array | Sanitized typed failures with angle, kind, retryability, message, and model. |
@@ -840,6 +852,9 @@ The composite action maps inputs into these environment variables while invoking
 | `REVIEWGATE_CONFIG` | `inputs.config` |
 | `REVIEWGATE_MODEL` | `inputs.model` |
 | `REVIEWGATE_MIN_SEVERITY` | `inputs.min_severity` |
+| `REVIEWGATE_ANGLE_TIMEOUT_SECONDS` | `inputs.angle_timeout_seconds` |
+| `REVIEWGATE_TOTAL_TIMEOUT_SECONDS` | `inputs.total_timeout_seconds` |
+| `REVIEWGATE_BIN` | Verified release binary path |
 | `OPENROUTER_API_KEY` | `inputs.openrouter_api_key` |
 | `GH_TOKEN` | `${{ github.token }}` for publishing steps |
 
@@ -1109,6 +1124,7 @@ Release checklist highlights:
 - keep Cargo package versions aligned;
 - run the full required checks;
 - publish an immutable release tag;
+- wait for the release workflow to build and attest the Linux X64 runtime;
 - move the `v0` major tag after release;
 - run the fresh consumer smoke test in `docs/v0-smoke.md`.
 

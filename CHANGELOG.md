@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-29
 
+- Replaced consumer-side Rust compilation with a version-pinned Linux X64 release binary that is built without publication credentials, attested, verified, and smoke-tested before its draft release becomes public. Added explicit 180-second per-angle and 480-second whole-review budgets, typed timeout outcomes, and queue/startup/model/publish timings in review artifacts, canonical summaries, and the structured agent result.
 - Fixed the action manifest so GitHub can load the new agent-result outputs, and added real YAML parsing to the site check to catch invalid action metadata before release.
 - Added a stable `reviewgate-agent-result/v1` contract and exact-head `reviewgate check` retrieval. Every review outcome now writes action outputs and uploads a bounded, SHA-named `reviewgate-agent-result` artifact with structured findings, thread IDs, angle errors, costs, and disposition history. Retrieval accepts artifacts only from the configured ReviewGate workflow's exact PR/head run.
 - Made terminal agent-result publication recover from a missing or malformed internal review artifact by emitting a sanitized, non-retryable `review_error` result for the live PR head.

@@ -53,6 +53,7 @@ jq -r '
   "status: \(.status)",
   "score: \(if .score == null then "unavailable" else "\(.score)/5" end)",
   "reviewed_sha: \(.reviewed_sha)",
+  "runtime: \(if .timings == null then "unavailable" else "\(.timings.model_ms)ms model, \(.timings.startup_ms)ms startup" end)",
   "open blockers: \([.findings[] | select(.disposition == "still_open" and .blocking_reason != null)] | length)"
 ' "$RESULT_FILE"
 ```
@@ -85,6 +86,7 @@ review infrastructure failure.
 
 ## Output
 
-Report the PR, status, score, reviewed SHA, open blockers, review errors, and
-the recommended next action. Include semantic fingerprints so another agent
-can submit structured dispositions without searching Markdown.
+Report the PR, status, score, reviewed SHA, runtime timings when available,
+open blockers, review errors, and the recommended next action. Include semantic
+fingerprints so another agent can submit structured dispositions without
+searching Markdown.

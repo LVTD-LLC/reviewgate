@@ -14,6 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  actions: read
+  attestations: read
   contents: read
   pull-requests: write
   issues: write
@@ -49,9 +51,9 @@ jobs:
           fi
       - name: Run ReviewGate
         if: steps.openrouter.outputs.configured == 'true'
-        # ReviewGate reviews this repository with the main-branch action so PRs
+        # ReviewGate reviews this repository with the stable v0 action so PRs
         # cannot change the reviewer implementation that scores the same PR.
-        uses: LVTD-LLC/reviewgate@main
+        uses: LVTD-LLC/reviewgate@v0
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml

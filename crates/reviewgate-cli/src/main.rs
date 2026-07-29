@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -18,7 +19,7 @@ use reviewgate_core::{
     OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
     OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleError,
     ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewScope, ReviewStage, ReviewStatus,
-    Severity, SummaryOptions, SummaryState, TrackedFinding, compute_effective_score,
+    ReviewTimings, Severity, SummaryOptions, SummaryState, TrackedFinding, compute_effective_score,
     compute_metrics, compute_score, encode_summary_state, estimate_model_cost_usd,
     extract_summary_state, fallback_model_pricing, finding_code_fingerprint,
     parse_openrouter_model_pricing, reconcile_findings_with_updates, render_summary,
@@ -133,6 +134,10 @@ enum Command {
         openrouter_base_url: Option<String>,
         #[arg(long)]
         mock_artifact: Option<PathBuf>,
+        #[arg(long, default_value_t = 180)]
+        angle_timeout_seconds: u64,
+        #[arg(long, default_value_t = 480)]
+        total_timeout_seconds: u64,
     },
     /// Render a summary from an existing artifact, optionally carrying forward hidden state.
     RenderSummary {
@@ -144,6 +149,19 @@ enum Command {
         summary_out: Option<PathBuf>,
         #[arg(long)]
         min_severity: Option<String>,
+    },
+    /// Record action phase durations in an existing review artifact.
+    RecordTimings {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        queue_ms: Option<u64>,
+        #[arg(long)]
+        startup_ms: u64,
+        #[arg(long)]
+        model_ms: u64,
+        #[arg(long)]
+        publish_ms: u64,
     },
     /// Re-run the latest ReviewGate workflow run for a pull request branch.
     Recheck {
@@ -408,6 +426,8 @@ fn main() -> CliResult<()> {
             model,
             openrouter_base_url,
             mock_artifact,
+            angle_timeout_seconds,
+            total_timeout_seconds,
         } => review_pr(ReviewPrOptions {
             repo,
             config,
@@ -418,6 +438,8 @@ fn main() -> CliResult<()> {
             model,
             openrouter_base_url,
             mock_artifact,
+            angle_timeout_seconds,
+            total_timeout_seconds,
         }),
         Command::RenderSummary {
             input,
@@ -430,6 +452,21 @@ fn main() -> CliResult<()> {
             summary_out,
             min_severity,
         }),
+        Command::RecordTimings {
+            input,
+            queue_ms,
+            startup_ms,
+            model_ms,
+            publish_ms,
+        } => record_timings(
+            input,
+            ReviewTimings {
+                queue_ms,
+                startup_ms,
+                model_ms,
+                publish_ms,
+            },
+        ),
         Command::Recheck { repo, pr, workflow } => recheck(repo, pr, workflow),
         Command::RequestRereview {
             repo,
@@ -1003,6 +1040,8 @@ struct ReviewPrOptions {
     model: Option<String>,
     openrouter_base_url: Option<String>,
     mock_artifact: Option<PathBuf>,
+    angle_timeout_seconds: u64,
+    total_timeout_seconds: u64,
 }
 
 #[derive(Debug)]
@@ -1253,6 +1292,12 @@ fn adversarial_review_angle() -> ReviewAngle {
 }
 
 fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
+    if options.angle_timeout_seconds == 0 {
+        bail!("angle_timeout_seconds must be greater than zero");
+    }
+    if options.total_timeout_seconds == 0 {
+        bail!("total_timeout_seconds must be greater than zero");
+    }
     let repo = options.repo.canonicalize().unwrap_or(options.repo.clone());
     let config_path = resolve_repo_path(&repo, &options.config);
     let config_values = read_config_values(&config_path)?;
@@ -1275,8 +1320,17 @@ fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
             .unwrap_or_else(|| OPENROUTER_DEFAULT_BASE_URL.to_string());
         let mut angle_artifacts = Vec::new();
         let mut failed_angles = Vec::new();
+        let angle_timeout = Duration::from_secs(options.angle_timeout_seconds);
+        let total_timeout = Duration::from_secs(options.total_timeout_seconds);
+        let review_started = Instant::now();
         for angle in review_angles {
-            match run_live_angle_review(&context, &angle, &base_url, &api_key, &model) {
+            let Some(timeout) =
+                remaining_angle_budget(angle_timeout, total_timeout, review_started.elapsed())
+            else {
+                failed_angles.push((angle, AngleReviewFailure::Timeout));
+                continue;
+            };
+            match run_live_angle_review(&context, &angle, &base_url, &api_key, &model, timeout) {
                 Ok(artifact) => angle_artifacts.push((angle, artifact)),
                 Err(error) => failed_angles.push((angle, error)),
             }
@@ -1311,6 +1365,35 @@ fn review_pr(options: ReviewPrOptions) -> CliResult<()> {
     write_or_print(options.json_out, &pretty_json, "review JSON")?;
     write_or_print(options.summary_out, &summary, "review summary")?;
 
+    Ok(())
+}
+
+fn remaining_angle_budget(
+    angle_timeout: Duration,
+    total_timeout: Duration,
+    elapsed: Duration,
+) -> Option<Duration> {
+    total_timeout
+        .checked_sub(elapsed)
+        .filter(|remaining| !remaining.is_zero())
+        .map(|remaining| remaining.min(angle_timeout))
+}
+
+fn record_timings(input: PathBuf, timings: ReviewTimings) -> CliResult<()> {
+    let raw = fs::read_to_string(&input)
+        .with_context(|| format!("failed to read artifact {}", input.display()))?;
+    let mut artifact: ReviewArtifact = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse artifact {}", input.display()))?;
+    artifact.validate()?;
+    let mut metrics = artifact
+        .metrics
+        .take()
+        .unwrap_or_else(|| compute_metrics(&artifact, Severity::P4));
+    metrics.timings = Some(timings);
+    artifact.metrics = Some(metrics);
+    artifact.validate()?;
+    fs::write(&input, serde_json::to_string_pretty(&artifact)?)
+        .with_context(|| format!("failed to write {}", input.display()))?;
     Ok(())
 }
 
@@ -4360,7 +4443,9 @@ fn run_live_angle_review(
     base_url: &str,
     api_key: &str,
     model: &str,
+    timeout: Duration,
 ) -> Result<ReviewArtifact, AngleReviewFailure> {
+    let started = Instant::now();
     let prompt = build_review_prompt_for_angle(context, angle);
     let pull_request_scope = build_pull_request_scope_message(&context.pull_request);
     let response = call_openrouter_with_curl(
@@ -4369,6 +4454,7 @@ fn run_live_angle_review(
         model,
         pull_request_scope.as_deref(),
         &prompt,
+        timeout,
     )
     .map_err(|error| AngleReviewFailure::from_request_error(&error))?;
     let mut artifact = parse_angle_artifact_content(&response.content)?;
@@ -4376,7 +4462,16 @@ fn run_live_angle_review(
         artifact.models = vec![model.to_string()];
     }
     let (model_pricing, cost_source) = if response.usage.is_some() {
-        resolve_model_cost_inputs(base_url, api_key, model)
+        timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .map_or(
+                (
+                    fallback_model_pricing(model),
+                    Some(CostSource::FallbackPricing),
+                ),
+                |remaining| resolve_model_cost_inputs(base_url, api_key, model, remaining),
+            )
     } else {
         (None, None)
     };
@@ -4413,8 +4508,11 @@ fn resolve_model_cost_inputs(
     base_url: &str,
     api_key: &str,
     model: &str,
+    timeout: Duration,
 ) -> (Option<ModelPricing>, Option<CostSource>) {
-    if let Ok(Some(pricing)) = fetch_openrouter_model_pricing_with_curl(base_url, api_key, model) {
+    if let Ok(Some(pricing)) =
+        fetch_openrouter_model_pricing_with_curl(base_url, api_key, model, timeout)
+    {
         (Some(pricing), Some(CostSource::OpenRouterUsage))
     } else {
         (
@@ -5448,6 +5546,7 @@ fn call_openrouter_with_curl(
     model: &str,
     pull_request_scope: Option<&str>,
     prompt: &str,
+    timeout: Duration,
 ) -> CliResult<OpenRouterCompletion> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body_path = unique_temp_path("reviewgate-openrouter-body", "json");
@@ -5475,14 +5574,12 @@ fn call_openrouter_with_curl(
     fs::write(&body_path, body.to_string())
         .with_context(|| format!("failed to write {}", body_path.display()))?;
 
-    let curl_config = format!(
-        "fail-with-body\nsilent\nshow-error\nwrite-out = \"{}\"\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\n{}data-binary = \"@{}\"\n",
-        CURL_HTTP_STATUS_WRITE_OUT,
-        curl_config_quote(&url),
-        curl_config_quote(api_key),
-        openrouter_attribution_curl_headers(),
-        curl_config_quote(&body_path.display().to_string()),
-    );
+    let curl_config = openrouter_request_curl_config(
+        &url,
+        api_key,
+        &body_path.display().to_string(),
+        timeout_seconds_ceil(timeout),
+    )?;
     let mut child = ProcessCommand::new("curl")
         .arg("--config")
         .arg("-")
@@ -5522,14 +5619,17 @@ fn fetch_openrouter_model_pricing_with_curl(
     base_url: &str,
     api_key: &str,
     model: &str,
+    timeout: Duration,
 ) -> CliResult<Option<ModelPricing>> {
     let url = format!(
         "{}{}",
         base_url.trim_end_matches('/'),
         OPENROUTER_MODELS_PATH
     );
+    let timeout_seconds = timeout_seconds_ceil(timeout).min(15);
     let curl_config = format!(
-        "fail-with-body\nsilent\nshow-error\nrequest = \"GET\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\n{}",
+        "fail-with-body\nsilent\nshow-error\nmax-time = {timeout_seconds}\nconnect-timeout = {}\nrequest = \"GET\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\n{}",
+        timeout_seconds.min(15),
         curl_config_quote(&url),
         curl_config_quote(api_key),
         openrouter_attribution_curl_headers(),
@@ -5560,6 +5660,30 @@ fn fetch_openrouter_model_pricing_with_curl(
         .context("OpenRouter models response was not valid JSON")?;
     parse_openrouter_model_pricing(&response, model)
         .context("OpenRouter models response had invalid pricing")
+}
+
+fn openrouter_request_curl_config(
+    url: &str,
+    api_key: &str,
+    body_path: &str,
+    timeout_seconds: u64,
+) -> CliResult<String> {
+    if timeout_seconds == 0 {
+        bail!("OpenRouter request timeout must be greater than zero");
+    }
+    Ok(format!(
+        "fail-with-body\nsilent\nshow-error\nwrite-out = \"{}\"\nmax-time = {timeout_seconds}\nconnect-timeout = {}\nrequest = \"POST\"\nurl = \"{}\"\nheader = \"Authorization: Bearer {}\"\nheader = \"Content-Type: application/json\"\n{}data-binary = \"@{}\"\n",
+        CURL_HTTP_STATUS_WRITE_OUT,
+        timeout_seconds.min(15),
+        curl_config_quote(url),
+        curl_config_quote(api_key),
+        openrouter_attribution_curl_headers(),
+        curl_config_quote(body_path),
+    ))
+}
+
+fn timeout_seconds_ceil(timeout: Duration) -> u64 {
+    timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0)
 }
 
 fn parse_openrouter_usage(response: &serde_json::Value) -> Option<OpenRouterUsage> {
@@ -6802,6 +6926,9 @@ review_angles:
         let inline_start = action
             .find("- name: Publish ReviewGate findings")
             .expect("findings step exists");
+        let timings_start = action
+            .find("- name: Record ReviewGate timings")
+            .expect("timings step exists");
         let summary_start = action
             .find("- name: Publish ReviewGate summary")
             .expect("summary step exists");
@@ -6814,19 +6941,34 @@ review_angles:
         let upload_start = action
             .find("- name: Upload ReviewGate agent result")
             .expect("agent result upload exists");
-        assert!(inline_start < summary_start);
+        assert!(inline_start < timings_start);
+        assert!(timings_start < summary_start);
         assert!(summary_start < check_run_start);
         assert!(check_run_start < result_start);
         assert!(result_start < upload_start);
 
-        let findings_step = &action[inline_start..summary_start];
+        let findings_step = &action[inline_start..timings_start];
+        let timings_step = &action[timings_start..summary_start];
         let summary_step = &action[summary_start..check_run_start];
         let check_run_step = &action[check_run_start..];
 
         assert!(findings_step.contains("publish-findings"));
-        assert!(!findings_step.contains("GITHUB_OUTPUT"));
+        assert!(findings_step.contains("publish_ms="));
+        assert!(findings_step.contains("publish_status=0"));
+        assert!(findings_step.contains("|| publish_status=$?"));
+        let publish_call = findings_step
+            .find("publish-findings")
+            .expect("publish call");
+        let publish_output = findings_step.find("publish_ms=").expect("timing output");
+        let publish_exit = findings_step
+            .find("exit \"$publish_status\"")
+            .expect("captured status exit");
+        assert!(publish_call < publish_output);
+        assert!(publish_output < publish_exit);
         assert!(!findings_step.contains("scan(\"<!-- reviewgate-finding:.*? -->\")"));
+        assert!(timings_step.contains("continue-on-error: true"));
         assert!(!summary_step.contains("continue-on-error: true"));
+        assert!(summary_step.contains("inputs.mode == 'review' && always()"));
         assert!(summary_step.contains("publish-summary"));
         assert!(!summary_step.contains("inline-comments-available"));
         assert!(summary_step.contains("::error title=ReviewGate summary publish failed::"));
@@ -6843,14 +6985,151 @@ review_angles:
         assert!(action.contains("result_path:"));
         assert!(action.contains("reviewed_sha:"));
 
+        assert!(action.contains("- name: Install verified ReviewGate runtime"));
+        assert!(action.contains("gh attestation verify"));
+        assert!(action.contains("reviewgate-x86_64-unknown-linux-gnu.tar.gz"));
+        assert!(action.contains("steps.runtime.outputs.binary"));
+        assert!(action.contains("angle_timeout_seconds:"));
+        assert!(action.contains("total_timeout_seconds:"));
+        assert!(action.contains("--angle-timeout-seconds"));
+        assert!(action.contains("--total-timeout-seconds"));
+        assert!(action.contains("record-timings"));
+        assert!(!action.contains("cargo run"));
+        assert!(!action.contains("Cargo.toml"));
+
         let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
+        assert!(dogfood_workflow.contains("actions: read"));
+        assert!(dogfood_workflow.contains("attestations: read"));
         assert!(dogfood_workflow.contains("checks: write"));
         assert!(dogfood_workflow.contains("github.run_id"));
         assert!(dogfood_workflow.contains("timeout-minutes: 20"));
-        assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@main"));
+        assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@v0"));
         assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
+    }
+
+    #[test]
+    fn release_workflow_builds_and_attests_the_action_runtime() {
+        let workflow = include_str!("../../../.github/workflows/release-runtime.yml");
+
+        assert!(workflow.contains("push:\n    tags:"));
+        assert!(workflow.contains("build:\n    permissions:\n      contents: read"));
+        assert!(workflow.contains("attest:\n    needs: build"));
+        assert!(workflow.contains("verify:\n    needs: attest"));
+        assert!(workflow.contains("publish:\n    needs: verify"));
+        assert!(workflow.contains("persist-credentials: false"));
+        assert!(workflow.contains("cargo +1.96.0 build --locked --release -p reviewgate-cli"));
+        assert!(workflow.contains("reviewgate-x86_64-unknown-linux-gnu.tar.gz"));
+        assert!(workflow.contains("actions/upload-artifact@"));
+        assert!(workflow.contains("actions/download-artifact@"));
+        assert!(workflow.contains("actions/attest-build-provenance@"));
+        assert!(workflow.contains("subject-path:"));
+        assert!(workflow.contains("gh attestation verify"));
+        assert!(workflow.contains("gh release create \"$RELEASE_TAG\" --draft"));
+        assert!(workflow.contains("gh release upload"));
+        assert!(workflow.contains("gh release edit \"$RELEASE_TAG\" --draft=false"));
+        assert!(workflow.contains("RELEASE_TAG: ${{ github.ref_name }}"));
+        assert!(!workflow.contains("${{ github.event.release.tag_name }}"));
+        assert!(workflow.contains("id-token: write"));
+        assert!(workflow.contains("attestations: write"));
+        let publish_job = workflow
+            .split_once("\n  publish:")
+            .map(|(_, job)| job)
+            .expect("publish job");
+        assert!(!publish_job.contains("id-token: write"));
+        assert!(!publish_job.contains("attestations: write"));
+        assert!(!publish_job.contains("\"$runtime_dir/reviewgate\""));
+    }
+
+    #[test]
+    fn curl_runtime_budget_is_explicit_and_nonzero() {
+        let config = openrouter_request_curl_config(
+            "https://openrouter.ai/api/v1/chat/completions",
+            "secret",
+            "/tmp/body.json",
+            90,
+        )
+        .expect("valid timeout");
+
+        assert!(config.contains("max-time = 90"));
+        assert!(config.contains("connect-timeout = 15"));
+        assert!(
+            openrouter_request_curl_config(
+                "https://openrouter.ai/api/v1/chat/completions",
+                "secret",
+                "/tmp/body.json",
+                0,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn total_runtime_budget_caps_each_angle_and_expires() {
+        let angle = Duration::from_secs(180);
+        let total = Duration::from_secs(480);
+
+        assert_eq!(
+            remaining_angle_budget(angle, total, Duration::from_secs(20)),
+            Some(Duration::from_secs(180))
+        );
+        assert_eq!(
+            remaining_angle_budget(angle, total, Duration::from_secs(450)),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            remaining_angle_budget(angle, total, Duration::from_secs(480)),
+            None
+        );
+    }
+
+    #[test]
+    fn record_timings_persists_all_action_phases() {
+        let dir = unique_test_dir("reviewgate-record-timings");
+        let input = dir.join("review.json");
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        artifact = artifact.with_computed_score().expect("score computes");
+        artifact.metrics = Some(compute_metrics(&artifact, Severity::P4));
+        artifact
+            .metrics
+            .as_mut()
+            .expect("metrics exist")
+            .inline_eligible_count = 7;
+        fs::write(
+            &input,
+            serde_json::to_string(&artifact).expect("artifact serializes"),
+        )
+        .expect("write artifact");
+
+        let timings = ReviewTimings {
+            queue_ms: Some(10),
+            startup_ms: 20,
+            model_ms: 30,
+            publish_ms: 40,
+        };
+        record_timings(input.clone(), timings.clone()).expect("timings persist");
+
+        let persisted: ReviewArtifact =
+            serde_json::from_str(&fs::read_to_string(input).expect("read artifact"))
+                .expect("parse artifact");
+        fs::remove_dir_all(dir).ok();
+        assert_eq!(
+            persisted
+                .metrics
+                .as_ref()
+                .and_then(|metrics| metrics.timings.clone()),
+            Some(timings)
+        );
+        assert_eq!(
+            persisted
+                .metrics
+                .expect("metrics remain")
+                .inline_eligible_count,
+            7
+        );
     }
 
     #[test]

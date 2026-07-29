@@ -1,0 +1,121 @@
+name: Release ReviewGate runtime
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Validate release contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned_version="$(awk '$1 == "REVIEWGATE_RUNTIME_VERSION:" { print $2 }' action.yml)"
+          if [ "$pinned_version" != "$RELEASE_TAG" ]; then
+            echo "::error title=Runtime version mismatch::action.yml pins $pinned_version but the release tag is $RELEASE_TAG." >&2
+            exit 1
+          fi
+      - run: rustup toolchain install 1.96.0 --profile minimal
+      - run: cargo +1.96.0 build --locked --release -p reviewgate-cli
+      - name: Package runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/reviewgate dist/reviewgate
+          tar -C dist -czf reviewgate-x86_64-unknown-linux-gnu.tar.gz reviewgate
+          sha256sum reviewgate-x86_64-unknown-linux-gnu.tar.gz \
+            > reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256
+      - name: Stage runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reviewgate-runtime
+          path: |
+            reviewgate-x86_64-unknown-linux-gnu.tar.gz
+            reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256
+          if-no-files-found: error
+
+  attest:
+    needs: build
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download staged runtime
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: reviewgate-runtime
+      - name: Attest runtime
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: reviewgate-x86_64-unknown-linux-gnu.tar.gz
+
+  verify:
+    needs: attest
+    permissions:
+      attestations: read
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download staged runtime
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: reviewgate-runtime
+      - name: Verify runtime before publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify reviewgate-x86_64-unknown-linux-gnu.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow LVTD-LLC/reviewgate/.github/workflows/release-runtime.yml \
+            --source-ref "refs/tags/$RELEASE_TAG" \
+            --deny-self-hosted-runners
+          runtime_dir="$(mktemp -d)"
+          tar -xzf reviewgate-x86_64-unknown-linux-gnu.tar.gz -C "$runtime_dir"
+          "$runtime_dir/reviewgate" --help >/dev/null
+
+  publish:
+    needs: verify
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download verified runtime
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: reviewgate-runtime
+      - name: Publish verified runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha256sum --check reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" \
+            reviewgate-x86_64-unknown-linux-gnu.tar.gz \
+            reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
