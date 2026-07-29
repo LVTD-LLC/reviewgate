@@ -2634,7 +2634,6 @@ fn publish_agent_result(repo: PathBuf, input: PathBuf, output: PathBuf) -> CliRe
         pull_request_number(&event).context("ReviewGate agent result requires a PR number")?;
     let repository = github_repository()?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let artifact = read_prepared_artifact(&input, &head_sha)?;
     let thread_ids = match fetch_review_thread_ids(&repo, &repository, pr_number) {
         Ok(thread_ids) => thread_ids,
         Err(error) => {
@@ -2644,8 +2643,9 @@ fn publish_agent_result(repo: PathBuf, input: PathBuf, output: PathBuf) -> CliRe
             BTreeMap::new()
         }
     };
-    let result = AgentReviewResult::from_artifact(
-        &artifact,
+    let result = project_agent_result_from_artifact_path(
+        &input,
+        &head_sha,
         ReviewScope::PullRequest {
             repository,
             pull_request_number: pr_number,
@@ -2676,6 +2676,26 @@ fn publish_agent_result(repo: PathBuf, input: PathBuf, output: PathBuf) -> CliRe
             .unwrap_or_else(|| "unavailable".to_string())
     );
     Ok(())
+}
+
+fn project_agent_result_from_artifact_path(
+    input: &Path,
+    current_head_sha: &str,
+    scope: ReviewScope,
+    thread_ids: BTreeMap<String, String>,
+) -> CliResult<AgentReviewResult> {
+    match read_prepared_artifact(input, current_head_sha) {
+        Ok(artifact) => {
+            AgentReviewResult::from_artifact(&artifact, scope, thread_ids).map_err(Into::into)
+        }
+        Err(error) => {
+            eprintln!(
+                "ReviewGate warning: internal review artifact is unavailable; publishing a terminal review_error result: {error}"
+            );
+            AgentReviewResult::artifact_validation_error(scope, current_head_sha)
+                .map_err(Into::into)
+        }
+    }
 }
 
 fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> CliResult<()> {
@@ -6831,6 +6851,63 @@ review_angles:
         assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
+    }
+
+    #[test]
+    fn missing_internal_artifact_projects_a_terminal_agent_result() {
+        let repo = unique_test_dir("reviewgate-agent-result-missing-artifact");
+        let input = repo.join("missing-review.json");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 49,
+        };
+
+        let result = project_agent_result_from_artifact_path(
+            &input,
+            "current-head",
+            scope.clone(),
+            BTreeMap::new(),
+        )
+        .expect("missing internal artifact still produces a terminal result");
+        fs::remove_dir_all(repo).ok();
+
+        assert_eq!(result.scope, scope);
+        assert_eq!(result.reviewed_sha, "current-head");
+        assert_eq!(result.status, ReviewStatus::ReviewError);
+        assert_eq!(result.score, None);
+        assert_eq!(result.angle_errors.len(), 1);
+        assert_eq!(result.angle_errors[0].angle_id, "artifact_validation");
+        assert!(!result.angle_errors[0].retryable);
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn malformed_internal_artifact_projects_the_same_sanitized_terminal_result() {
+        let repo = unique_test_dir("reviewgate-agent-result-malformed-artifact");
+        let input = repo.join("review.json");
+        fs::write(&input, r#"{"status":"provider secret: do not expose""#)
+            .expect("write malformed artifact");
+
+        let result = project_agent_result_from_artifact_path(
+            &input,
+            "current-head",
+            ReviewScope::PullRequest {
+                repository: "LVTD-LLC/reviewgate".to_string(),
+                pull_request_number: 49,
+            },
+            BTreeMap::new(),
+        )
+        .expect("malformed internal artifact still produces a terminal result");
+        fs::remove_dir_all(repo).ok();
+
+        let encoded = serde_json::to_string(&result).expect("serialize agent result");
+        assert_eq!(result.status, ReviewStatus::ReviewError);
+        assert_eq!(result.angle_errors[0].angle_id, "artifact_validation");
+        assert_eq!(
+            result.angle_errors[0].message,
+            "The review artifact failed deterministic validation."
+        );
+        assert!(!encoded.contains("provider secret"));
     }
 
     #[test]

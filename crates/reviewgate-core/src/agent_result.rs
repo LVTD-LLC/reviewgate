@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentDisposition, BlockingReason, CostSummary, DEFAULT_TARGET_SCORE, Finding,
     FindingClassification, FindingDisposition, FindingDispositionRecord, FindingEvidence,
-    MAX_DISPOSITION_HISTORY, ReviewAngleError, ReviewArtifact, ReviewGateError, ReviewScope,
-    ReviewStatus, Severity, SummaryState, finding_code_fingerprint, semantic_fingerprint,
+    MAX_DISPOSITION_HISTORY, ReviewAngleError, ReviewArtifact, ReviewErrorKind, ReviewGateError,
+    ReviewScope, ReviewStatus, Severity, SummaryState, finding_code_fingerprint,
+    semantic_fingerprint,
 };
 
 pub const AGENT_RESULT_SCHEMA_VERSION: &str = "reviewgate-agent-result/v1";
@@ -164,6 +165,34 @@ impl AgentDispositionState {
 }
 
 impl AgentReviewResult {
+    pub fn artifact_validation_error(
+        scope: ReviewScope,
+        reviewed_sha: impl Into<String>,
+    ) -> Result<Self, ReviewGateError> {
+        let result = Self {
+            schema_version: AGENT_RESULT_SCHEMA_VERSION.to_string(),
+            scope,
+            status: ReviewStatus::ReviewError,
+            score: None,
+            reviewed_sha: reviewed_sha.into(),
+            angle_errors: vec![ReviewAngleError {
+                angle_id: "artifact_validation".to_string(),
+                angle_name: "Artifact validation".to_string(),
+                kind: ReviewErrorKind::MalformedResponse,
+                retryable: false,
+                message: "The review artifact failed deterministic validation.".to_string(),
+                model: "reviewgate".to_string(),
+            }],
+            costs: AgentResultCosts {
+                estimated_total_usd: None,
+                summary: None,
+            },
+            findings: vec![],
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
     pub fn from_artifact(
         artifact: &ReviewArtifact,
         scope: ReviewScope,
