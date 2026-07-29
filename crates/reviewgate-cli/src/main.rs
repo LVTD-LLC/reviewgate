@@ -6448,6 +6448,9 @@ case "$*" in
     printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"PRRC_note"}}}}\n'
     ;;
   *resolveReviewThread*)
+    if [ "$REVIEWGATE_TEST_SCENARIO" = "resolve_failure" ]; then
+      exit 1
+    fi
     printf '{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_test","isResolved":true}}}}\n'
     ;;
   *)
@@ -6512,6 +6515,12 @@ esac
         assert!(!failure.status.success());
         assert!(failure_log.contains("addPullRequestReviewThreadReply"));
         assert!(!failure_log.contains("resolveReviewThread"));
+
+        let (partial_failure, partial_failure_log) =
+            run_thread_mutation_subprocess("resolve_failure");
+        assert!(!partial_failure.status.success());
+        assert!(partial_failure_log.contains("addPullRequestReviewThreadReply"));
+        assert!(partial_failure_log.contains("resolveReviewThread"));
     }
 
     #[test]

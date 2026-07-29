@@ -270,9 +270,12 @@ runs:
         REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
       run: |
         set -euo pipefail
-        "$REVIEWGATE_BIN" reconcile-threads \
+        if ! "$REVIEWGATE_BIN" reconcile-threads \
           --repo "$GITHUB_WORKSPACE" \
-          --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
+          --input "$GITHUB_WORKSPACE/.reviewgate/review.json"; then
+          echo "::error title=ReviewGate thread reconciliation incomplete::The review output was published, but one or more finding-thread updates failed. Rerun ReviewGate; reconciliation is idempotent and resumes from GitHub's observed state." >&2
+          exit 1
+        fi
 
     - name: Publish ReviewGate agent result
       id: agent-result
