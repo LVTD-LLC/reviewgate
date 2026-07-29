@@ -14,7 +14,7 @@
 
 | # | Phase | Pattern | Status | PR |
 |---|---|---|---|---|
-| 0 | Technical foundations | Setup | pending | – |
+| 0 | Technical foundations | Setup | in_progress | branch `seo/phase-0-foundations` (PR TBD) |
 | 1 | Retarget the homepage for “AI code review tool” | Homepage boost | pending | – |
 | 2 | Build the internal-link spine and reusable Astro SEO layouts | Internal links | pending | – |
 | 3 | CodeRabbit alternatives | A — alternatives | pending | – |
@@ -38,8 +38,8 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 
 - **Domain:** https://reviewgate.lvtd.dev
 - **Keyword source:** DataForSEO, United States / English, measured 2026-07-22
-- **Connected sources:** GSC service account, DataForSEO, PostHog management API, Exa, Jina Reader, live web search
-- **Degraded sources:** Plausible query failed authorization; PostHog has no ReviewGate project; GSC has no ReviewGate property
+- **Connected sources:** GSC domain property, DataForSEO, ReviewGate PostHog project, Exa, Jina Reader, live web search
+- **Degraded sources:** Plausible query failed authorization
 - **Authority baseline:** DataForSEO returned no domain-rank/backlink record and zero ranked keywords for the new subdomain
 - **Stack:** Astro 7, TypeScript 6, npm, static output
 - **Marketing root:** `site/src/pages`
@@ -50,11 +50,11 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 
 | Source | Status | Credential/config evidence | API/tool evidence | Used for | Saved config | Reason |
 |---|---|---|---|---|---|---|
-| GSC | connected | Infisical `/services/google-search-console` | `sites.list` succeeded; 19 properties, no ReviewGate match | property/indexing baseline | `gsc_property: null` | Service works, but the site is not configured yet. |
+| GSC | connected | Infisical `/services/google-search-console` | `sc-domain:lvtd.dev` queried; 0 ReviewGate rows and no submitted sitemap | property/indexing baseline | `sc-domain:lvtd.dev` | The domain property covers the ReviewGate subdomain. |
 | Ahrefs | missing | Loaded tools, environment, TOOLS.md, repo, recursive Infisical name scan | Not attempted | none | `ahrefs_project_id: null` | No credential or MCP connection found. |
 | DataForSEO | connected | Infisical `/services/dataforseo` | Keyword, rank, backlink, and live SERP requests succeeded | demand, KD, CPC, SERPs, authority | US / English | Primary measured market-data source. |
 | Plausible | attempted_failed | Runtime key + TOOLS.md API host | ReviewGate v2 query returned 401 | conversion weighting | site ID recorded | Key lacks access or site does not exist. |
-| PostHog | connected | Runtime personal API key + TOOLS.md | 13 projects listed; no ReviewGate project | instrumentation check | `posthog_project_id: null` | Management API works; no product project exists. |
+| PostHog | connected | Runtime personal API key + TOOLS.md | ReviewGate project 534132 provisioned with anonymized IPs and no session replay | pageviews and install/source intent | project ID + hosts | Production build key is stored as a GitHub Actions secret. |
 | Exa / web search | connected | Runtime Exa key + live search tool | Eight relevant category sources plus current SERPs | competitor and source discovery | no ID needed | Category and outreach surfaces confirmed. |
 | Jina / Firecrawl / WebFetch | connected | Runtime Jina and Firecrawl keys | Jina returned 200 for five relevant product/source pages | page extraction | no ID needed | Current competitor and product pages were inspectable. |
 
@@ -74,7 +74,7 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 |---|---|
 | `site/astro.config.mjs` | Domain and future sitemap integration. |
 | `site/src/pages/index.astro` | Entire current marketing page and homepage copy. |
-| `site/src/layouts/BaseLayout.astro` | Title, description, canonical, Open Graph, and future schema slots. |
+| `site/src/layouts/BaseLayout.astro` | Title, description, canonical, Open Graph, JSON-LD, and analytics bootstrap. |
 | `site/src/styles/global.css` | Visual tokens and page styles. |
 | `deployment/nginx.conf` | Static hosting and route behavior. |
 | `.seo/keyword-research.json` | Measured keyword, competitor, SERP, and extraction cache. |
@@ -96,9 +96,9 @@ Statuses: `pending` → `in_progress` → `completed`. Add the PR number after m
 ### Owned search and analytics baseline
 
 - DataForSEO found **0 ranked keywords** for `reviewgate.lvtd.dev` and no backlink-summary row. Treat authority as effectively new/unknown.
-- The connected GSC service account does not yet contain a ReviewGate property, so there are no owned query, page, position, sitemap, or indexing rows.
+- The connected GSC service account can query the `sc-domain:lvtd.dev` property. It returned no ReviewGate query/page rows for the latest 90-day window and no submitted ReviewGate sitemap.
 - Plausible conversion data is unavailable because the site/key query returned 401.
-- PostHog API access works, but no ReviewGate project exists among the 13 visible projects.
+- PostHog project 534132 now exists for ReviewGate. It will start collecting anonymous pageviews plus explicit install/source intent after Phase 0 deploys.
 - There are therefore no striking-distance or conversion-weighted opportunities yet. Phase ordering uses measured market demand, SERP shape, product fit, and implementation dependencies.
 
 ### Primary commercial opportunity
@@ -155,7 +155,7 @@ No conversion source is usable for ReviewGate yet. Use CPC only as a weak commer
 
 ### Striking-distance opportunities
 
-None: DataForSEO reports zero ranked keywords and GSC has no ReviewGate property.
+None: DataForSEO reports zero ranked keywords, and the `sc-domain:lvtd.dev` property returned zero ReviewGate query/page rows.
 
 ### Out of scope
 
@@ -168,20 +168,21 @@ None: DataForSEO reports zero ranked keywords and GSC has no ReviewGate property
 
 ### Phase 0 — Technical foundations
 
-**Why:** Production currently returns 404 for both `/sitemap.xml` and `/robots.txt`, the 172-character description exceeds the sprint heuristic, and the homepage has no JSON-LD. Measurement is also absent.
+**Why:** Production currently returns 404 for both the sitemap and `/robots.txt`, the 160-character homepage description exceeds the sprint heuristic, and the homepage has no JSON-LD. The July 29 redesign added unique `/docs` and `/blog` metadata, so the old duplicate/missing-page concerns no longer apply.
 
 **Scope:**
 
-1. Add `@astrojs/sitemap`, configure it in `site/astro.config.mjs`, and verify the generated sitemap.
-2. Add `site/public/robots.txt` allowing crawl and referencing `https://reviewgate.lvtd.dev/sitemap.xml`.
-3. Shorten the homepage meta description while keeping the GitHub Action, agent PR, score, and JSON differentiators.
+1. Add `@astrojs/sitemap`, configure it in `site/astro.config.mjs`, and verify the generated sitemap index covers `/`, `/docs/`, and `/blog/`.
+2. Add `site/public/robots.txt` allowing crawl and referencing `https://reviewgate.lvtd.dev/sitemap-index.xml`.
+3. Shorten the homepage description to 147 characters without dropping the action, score, audience, or review-contract positioning.
 4. Add reusable JSON-LD support to `BaseLayout.astro`; emit `SoftwareApplication` and `Organization` on the homepage.
-5. Add the ReviewGate domain-prefix property to GSC and submit the sitemap.
-6. Decide on Plausible or PostHog, provision the site/project, and verify pageviews plus outbound GitHub/install intent events.
+5. Use the existing `sc-domain:lvtd.dev` GSC property and submit the sitemap after deployment.
+6. Provision a privacy-limited PostHog project with anonymized IPs and no session replay; measure anonymous pageviews plus explicit install/source intent events.
+7. Keep production measurement credentials outside the repository by injecting the public project key from GitHub Actions at image build time.
 
-**Files:** `site/package.json`, `site/package-lock.json`, `site/astro.config.mjs`, `site/public/robots.txt`, `site/src/layouts/BaseLayout.astro`, `site/src/pages/index.astro`, `.seo/config.json`, `docs/seo-sprint.md`, `CHANGELOG.md`.
+**Files:** `site/package.json`, `site/package-lock.json`, `site/astro.config.mjs`, `site/public/robots.txt`, `site/src/layouts/BaseLayout.astro`, `site/src/scripts/analytics.ts`, page/CTA components, `deployment/Dockerfile`, `.github/workflows/deploy.yml`, `.seo/config.json`, `.seo/link-inventory.md`, `docs/seo-sprint.md`, `CHANGELOG.md`.
 
-**Verification:** Astro check/build; generated sitemap and robots return valid files; one H1; unique title/description/canonical; JSON-LD parses; production smoke check after deploy; GSC submission recorded.
+**Verification:** Astro check/build; generated sitemap index and robots return valid files; one H1 per page; unique title/description/canonical; JSON-LD parses; dependency audit is clean; production smoke check after deploy; GSC sitemap submission recorded; PostHog receives production pageview and intent events.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 

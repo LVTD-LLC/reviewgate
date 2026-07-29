@@ -27,7 +27,14 @@ const plannedNotes = [
           We’ll publish the decisions, failures, and operating patterns behind a score-centered review gate for agent-written pull requests.
         </p>
         <div class="signal-actions">
-          <a class="signal-primary" href={repositoryUrl}>Follow development <span aria-hidden="true">↗</span></a>
+          <a
+            class="signal-primary"
+            href={repositoryUrl}
+            data-analytics-event="source_link_clicked"
+            data-analytics-location="blog_hero"
+          >
+            Follow development <span aria-hidden="true">↗</span>
+          </a>
           <a class="signal-secondary" href="/">Back to the product</a>
         </div>
       </div>

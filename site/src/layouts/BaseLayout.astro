@@ -4,9 +4,10 @@ import "../styles/global.css";
 interface Props {
   title: string;
   description: string;
+  jsonLd?: Record<string, unknown> | Record<string, unknown>[];
 }
 
-const { title, description } = Astro.props;
+const { title, description, jsonLd } = Astro.props;
 ---
 
 <!doctype html>
@@ -23,9 +24,11 @@ const { title, description } = Astro.props;
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="canonical" href={Astro.url.href} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    {jsonLd && <script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />}
     <title>{title}</title>
   </head>
   <body>
     <slot />
+    <script src="../scripts/analytics.ts"></script>
   </body>
 </html>

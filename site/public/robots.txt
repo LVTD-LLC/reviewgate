@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://reviewgate.lvtd.dev/sitemap-index.xml

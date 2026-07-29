@@ -16,15 +16,17 @@
   "keyword_data_source": "dataforseo",
   "dataforseo_location": "United States",
   "dataforseo_language": "English",
-  "gsc_property": null,
+  "gsc_property": "sc-domain:lvtd.dev",
   "ahrefs_project_id": null,
   "plausible_site_id": "reviewgate.lvtd.dev",
-  "posthog_project_id": null,
+  "posthog_project_id": 534132,
+  "posthog_host": "https://us.posthog.com",
+  "posthog_ingest_host": "https://us.i.posthog.com",
   "tool_evidence": {
     "gsc": {
       "status": "connected",
       "credential_discovery": "Infisical /services/google-search-console",
-      "call": "Search Console sites.list succeeded; 19 properties visible, no ReviewGate property"
+      "call": "Search Console domain property sc-domain:lvtd.dev queried successfully; ReviewGate has zero 90-day rows and no submitted sitemap"
     },
     "ahrefs": {
       "status": "missing",
@@ -44,7 +46,7 @@
     "posthog": {
       "status": "connected",
       "credential_discovery": "POSTHOG_API_KEY runtime environment and workspace TOOLS.md",
-      "call": "projects.list succeeded; 13 projects visible, no ReviewGate project"
+      "call": "ReviewGate project 534132 provisioned with anonymized IPs, no session replay, and repository build secret configured"
     },
     "search_discovery": {
       "status": "connected",
