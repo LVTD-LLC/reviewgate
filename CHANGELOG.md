@@ -4,7 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
-- Reconciled ReviewGate-owned inline threads by semantic finding identity: rereviews retain still-open and moved findings without duplicate comments, resolve settled findings, reopen evidence-backed recurrences, preserve human discussion, reject marker-shaped untrusted text, and expose truthful unknown/open/resolved/outdated state plus lifecycle transitions in the stable agent result.
+- Reconciled ReviewGate-owned inline threads by semantic finding identity: rereviews retain still-open and moved findings without duplicate comments, resolve settled findings, reopen evidence-backed recurrences, preserve human discussion, reject marker-shaped untrusted text, and expose truthful unknown/open/resolved/outdated state plus lifecycle transitions in the stable agent result. Advanced the action runtime pin to `v0.5.0`.
 
 ## 2026-07-29
 
