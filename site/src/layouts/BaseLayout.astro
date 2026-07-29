@@ -5,9 +5,17 @@ interface Props {
   title: string;
   description: string;
   jsonLd?: Record<string, unknown> | Record<string, unknown>[];
+  ogType?: "website" | "article";
+  publishedTime?: string;
 }
 
-const { title, description, jsonLd } = Astro.props;
+const {
+  title,
+  description,
+  jsonLd,
+  ogType = "website",
+  publishedTime,
+} = Astro.props;
 const serializedJsonLd = jsonLd ? JSON.stringify(jsonLd).replace(/</g, "\\u003c") : null;
 ---
 
@@ -20,8 +28,9 @@ const serializedJsonLd = jsonLd ? JSON.stringify(jsonLd).replace(/</g, "\\u003c"
     <meta name="generator" content={Astro.generator} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:type" content="website" />
+    <meta property="og:type" content={ogType} />
     <meta property="og:url" content={Astro.url.href} />
+    {publishedTime && <meta property="article:published_time" content={publishedTime} />}
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="canonical" href={Astro.url.href} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

@@ -1,0 +1,272 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "How to Tell If Code Is AI-Generated | ReviewGate";
+const description =
+  "You cannot prove AI authorship from coding style alone. Use this five-step evidence gate to review AI-generated code safely.";
+const canonical = "https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/";
+const publishedAt = "2026-07-29";
+
+const faq = [
+  {
+    question: "Can AI-generated code be detected reliably?",
+    answer:
+      "Not reliably from source style alone. Current detectors can perform well on familiar benchmark data but lose accuracy across new languages, domains, models, hybrid code, and adversarial edits. Treat detector output as a clue, not proof of authorship.",
+  },
+  {
+    question: "What are common signs of AI-generated code?",
+    answer:
+      "Generic comments, unnecessary abstractions, inconsistent error handling, invented APIs, and broad changes can justify closer review. None of those traits proves AI authorship; humans produce them too, and generated code can be edited to remove them.",
+  },
+  {
+    question: "Should AI-generated pull requests receive a different review process?",
+    answer:
+      "The evidence threshold should be the same, but the review can be more risk-directed. Verify intent, inspect changed trust boundaries, demand relevant tests, review dependencies and workflows, and rerun the gate on the exact head commit.",
+  },
+  {
+    question: "Does ReviewGate replace human code review?",
+    answer:
+      "No. ReviewGate produces a score, one canonical summary, structured findings, and JSON for repair loops. It is review-only and leaves merge authority with the repository's human maintainers.",
+  },
+];
+
+const howToSteps = [
+  ["Establish the change contract", "Write down the intended behavior, affected users, and explicit non-goals before judging implementation style."],
+  ["Inspect changed trust boundaries", "Prioritize authentication, authorization, input handling, secrets, file access, network calls, and CI permissions."],
+  ["Demand executable evidence", "Run focused tests and verify failure paths instead of accepting plausible-looking code or explanation."],
+  ["Audit dependencies and workflow power", "Review new packages, action pins, token permissions, fork behavior, and any privileged workflow triggers."],
+  ["Record findings and rerun on the exact head", "Keep a stable finding list, fix blockers, push, and run the same gate against the updated commit."],
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: "How to Tell If Code Is AI-Generated: What Actually Works",
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to review code when AI authorship is uncertain",
+    description,
+    step: howToSteps.map(([name, text], index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name,
+      text,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faq.map(({ question, answer }) => ({
+      "@type": "Question",
+      name: question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: "How to tell if code is AI-generated",
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  eyebrow="FIELD NOTE / 001 / AI CODE REVIEW"
+  publishedAt={publishedAt}
+  readingTime="9 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">How to tell if code is <em>AI-generated.</em></Fragment>
+  <Fragment slot="deck">
+    You cannot prove who wrote a pull request from coding style alone. The safer question is whether the change has enough evidence to merge.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">The short answer</a></li>
+    <li><a href="#why-signs-fail">Why common signs fail</a></li>
+    <li><a href="#evidence-gate">The five-step evidence gate</a></li>
+    <li><a href="#worked-example">Worked example</a></li>
+    <li><a href="#mistakes">Common mistakes</a></li>
+    <li><a href="#faq">FAQ</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>Can you tell if code is AI-generated?</h2>
+    <p class="article-lead">
+      You cannot reliably determine AI authorship from source code alone. Comments, naming, repetition, and abstraction style can raise questions, but they are not proof. Current research finds that detector performance drops on unfamiliar languages, domains, model families, human-edited output, and adversarial examples.
+    </p>
+    <p>
+      The practical response is not to become a better style detective. Review the pull request without relying on provenance. Establish what the change must do, inspect the risky boundaries, demand executable evidence, check the workflow's power, and keep a stable record of unresolved findings.
+    </p>
+    <aside class="article-callout">
+      <strong>The provenance-blind rule</strong>
+      <p>If the evidence would be insufficient for a human-written diff, it is insufficient for an agent-written diff. If the evidence is strong, uncertain authorship should not become a substitute reason to reject the change.</p>
+    </aside>
+  </section>
+
+  <section id="why-signs-fail">
+    <h2>Why signs of AI-generated code are weak evidence</h2>
+    <p>
+      Search results for this question often recommend looking for generic comments, over-engineered helpers, inconsistent naming, repeated patterns, or APIs that do not exist. Those are useful review prompts. They are poor authorship tests because every one of them also appears in human code.
+    </p>
+    <p>
+      The strongest public evidence points in the same direction. The 2026 <a href="https://aclanthology.org/2026.eacl-long.325/">AICD Bench study</a> evaluated two million examples across 77 models, 11 model families, and nine programming languages. Its authors reported that neural and classical detectors remained below practical usability under distribution shift and for hybrid or adversarial code.
+    </p>
+    <p>
+      That result is not isolated. The 2025 <a href="https://aclanthology.org/2025.emnlp-main.1593/">Droid study</a> used more than one million samples from 43 coding models across seven languages. It found that existing detectors failed to generalize beyond narrow training domains and could be disrupted by superficial changes. A detector can still be useful for research, academic policy, or triage. It should not become the sole basis for accepting or rejecting a production pull request.
+    </p>
+    <h3>What visual clues are still good for</h3>
+    <p>
+      Style clues tell you where to spend attention. A confident comment above an untested branch suggests checking the failure path. A new abstraction used once suggests asking whether the change is larger than necessary. A package call that looks plausible suggests opening the official API reference. The clue starts an investigation; evidence ends it.
+    </p>
+  </section>
+
+  <section id="evidence-gate">
+    <h2>How to review AI-generated code with a five-step evidence gate</h2>
+    <p>
+      This framework is deliberately provenance-blind. It works for code written by a person, generated by an agent, or assembled by both. The five steps move from intent to risk to executable proof, then preserve the result for the next review cycle.
+    </p>
+
+    <h3>1. Establish the change contract</h3>
+    <p>
+      Write down the requested behavior before reading the implementation in detail. Name the user-visible outcome, the inputs and outputs, the data that may change, and the explicit non-goals. A pull request cannot be judged against a vague prompt because plausible code can solve the wrong problem cleanly.
+    </p>
+    <p>
+      Compare the diff with that contract. Look for unrelated refactors, silently widened scope, and behavior that exists only in the PR description. The code and tests must carry the contract after the conversation disappears.
+    </p>
+
+    <h3>2. Inspect changed trust boundaries first</h3>
+    <p>
+      Do not review every line with equal intensity. Start where untrusted data or authority crosses a boundary: authentication, authorization, request parsing, database writes, file paths, network calls, command execution, secrets, and CI tokens.
+    </p>
+    <p>
+      The <a href="https://cheatsheetseries.owasp.org/cheatsheets/Secure_Code_Review_Cheat_Sheet.html">OWASP Secure Code Review Cheat Sheet</a> recommends prioritizing modified components, security controls, new attack vectors, and trust-boundary changes during diff-based review. This is a better risk signal than whether a helper name sounds machine-written.
+    </p>
+
+    <h3>3. Demand executable evidence</h3>
+    <p>
+      Ask for the smallest test that proves each load-bearing claim. A success-path unit test is not enough when the risk lives in retries, invalid input, permission denial, partial writes, or concurrency. Run the tests in the repository rather than accepting a pasted transcript.
+    </p>
+    <p>
+      NIST's Secure Software Development Framework separates review of human-readable code from testing executable code. Use both. Review explains why the implementation should be safe; tests show whether the claimed behavior survives execution.
+    </p>
+
+    <h3>4. Audit dependencies and workflow power</h3>
+    <p>
+      Generated patches can change more than application code. Inspect new dependencies, lockfile changes, action references, token permissions, artifact handling, and triggers. A three-line workflow edit may carry more risk than a large pure-function refactor.
+    </p>
+    <p>
+      GitHub's <a href="https://docs.github.com/en/actions/reference/security/secure-use">secure-use guidance</a> warns against checking out untrusted pull request code in privileged <code>pull_request_target</code> or <code>workflow_run</code> contexts. Keep permissions narrow, pin third-party actions according to repository policy, and preserve the fork boundary instead of routing around it.
+    </p>
+
+    <h3>5. Record findings and rerun on the exact head</h3>
+    <p>
+      A review should leave a stable contract: what blocks the merge, where the evidence lives, and what must be rerun after a fix. Comments scattered across a long thread are difficult for humans and repair agents to consume. Keep one canonical summary and a structured finding list.
+    </p>
+    <p>
+      Then bind the next decision to the current commit. GitHub's required-check model evaluates the latest head SHA for the same reason: a passing result on old code is not evidence for the new diff. <a href="/docs#review-loop">ReviewGate's repair loop</a> follows that shape with a fixed 5/5 target, one updated summary, and a JSON artifact that external agents can read without treating review text as trusted instructions.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>A worked example: an agent changes a GitHub Actions workflow</h2>
+    <p>
+      Suppose a pull request adds an AI review job and claims it is safe for external contributors. The YAML is tidy, the comments are specific, and the change might have been written by either a person or an agent. Authorship does not answer the security question.
+    </p>
+    <ol>
+      <li><strong>Contract:</strong> review same-repository pull requests with an OpenRouter secret; do not expose that secret to forks.</li>
+      <li><strong>Trust boundary:</strong> the trigger, checkout step, event payload, token permissions, and secret-bearing job are the load-bearing surfaces.</li>
+      <li><strong>Evidence:</strong> inspect the event guard, validate the workflow, and test the local fixture path without a model key.</li>
+      <li><strong>Workflow power:</strong> confirm the job uses <code>pull_request</code>, grants only required permissions, pins checkout, and does not persist credentials.</li>
+      <li><strong>Rerun:</strong> after any fix, review the new head and replace the old summary rather than accumulating conflicting verdicts.</li>
+    </ol>
+    <p>
+      This is the same boundary used by the <a href="/docs#install">ReviewGate installation workflow</a>. The decision is grounded in event semantics and executable evidence, not in whether the YAML "looks generated."
+    </p>
+  </section>
+
+  <section id="mistakes">
+    <h2>Common mistakes when reviewing AI-generated code</h2>
+    <h3>Rejecting a diff because it feels generated</h3>
+    <p>
+      That judgment is neither reproducible nor useful to the author. Replace it with a concrete finding: the new branch has no failure-path test, the permission is broader than required, or the API does not support the named parameter.
+    </p>
+    <h3>Accepting tests without checking what they prove</h3>
+    <p>
+      Generated tests can mirror the implementation's mistake. Read the assertion, force the risky input, and confirm the test fails when the behavior is broken. A green suite is evidence only for the cases it actually exercises.
+    </p>
+    <h3>Giving review text command authority</h3>
+    <p>
+      Pull request bodies, comments, model output, and repository instructions can all contain hostile or mistaken text. An automated repair agent should parse findings as review input, apply repository policy, and verify its own changes. It should never execute a review comment as a trusted instruction.
+    </p>
+    <h3>Using one score without inspectable findings</h3>
+    <p>
+      A score helps with triage, but it needs a rubric, concrete findings, and a fixed passing target. ReviewGate keeps the score visually obvious while preserving the underlying evidence in a <a href="/">canonical summary and structured JSON</a>.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Frequently asked questions</h2>
+    {faq.map(({ question, answer }) => (
+      <details class="article-faq">
+        <summary>{question}</summary>
+        <p>{answer}</p>
+      </details>
+    ))}
+  </section>
+
+  <section class="article-cta">
+    <p class="docs-kicker">RUN THE GATE</p>
+    <h2>Review the evidence, not the writing style.</h2>
+    <p>ReviewGate is free, open source, GitHub Actions-first, and review-only. It does not replace the human merge decision.</p>
+    <div class="signal-actions">
+      <a
+        class="signal-primary"
+        href="/docs"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >Install ReviewGate <span aria-hidden="true">↗</span></a>
+      <a class="signal-secondary" href="/blog">More field notes</a>
+    </div>
+  </section>
+</ArticleLayout>

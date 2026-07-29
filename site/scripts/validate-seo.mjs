@@ -5,6 +5,10 @@ const expectedPages = [
   ["index.html", "https://reviewgate.lvtd.dev/"],
   ["docs/index.html", "https://reviewgate.lvtd.dev/docs/"],
   ["blog/index.html", "https://reviewgate.lvtd.dev/blog/"],
+  [
+    "blog/how-to-tell-if-code-is-ai-generated/index.html",
+    "https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/",
+  ],
 ];
 
 const titles = new Set();
@@ -37,6 +41,17 @@ assert(jsonLdSource, "homepage must contain JSON-LD");
 
 const schemaTypes = JSON.parse(jsonLdSource).map((entry) => entry["@type"]);
 assert.deepEqual(schemaTypes, ["SoftwareApplication", "Organization"]);
+
+const article = await readFile(
+  new URL("../dist/blog/how-to-tell-if-code-is-ai-generated/index.html", import.meta.url),
+  "utf8",
+);
+const articleJsonLdSource = article.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(articleJsonLdSource, "article must contain JSON-LD");
+const articleSchemaTypes = JSON.parse(articleJsonLdSource).map((entry) => entry["@type"]);
+assert.deepEqual(articleSchemaTypes, ["Article", "HowTo", "FAQPage", "BreadcrumbList"]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);

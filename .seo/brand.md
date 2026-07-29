@@ -69,9 +69,9 @@
 ## Links to existing surfaces
 
 - Homepage: https://reviewgate.lvtd.dev/
-- Install section: https://reviewgate.lvtd.dev/#install
-- Configuration section: https://reviewgate.lvtd.dev/#configure
-- Purpose section: https://reviewgate.lvtd.dev/#purpose
+- Install section: https://reviewgate.lvtd.dev/docs/#install
+- Configuration section: https://reviewgate.lvtd.dev/docs/#configure
+- Review loop: https://reviewgate.lvtd.dev/docs/#review-loop
 - Source and full documentation: https://github.com/LVTD-LLC/reviewgate
 - Pricing: Not applicable; ReviewGate is free and open source.
-- Blog: None yet.
+- Blog: https://reviewgate.lvtd.dev/blog/

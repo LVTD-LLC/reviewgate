@@ -1,0 +1,66 @@
+---
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import BaseLayout from "./BaseLayout.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  eyebrow: string;
+  publishedAt: string;
+  readingTime: string;
+  jsonLd: Record<string, unknown>[];
+}
+
+const {
+  title,
+  description,
+  eyebrow,
+  publishedAt,
+  readingTime,
+  jsonLd,
+} = Astro.props;
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  jsonLd={jsonLd}
+  ogType="article"
+  publishedTime={publishedAt}
+>
+  <main class="concept signal-site article-site">
+    <SiteHeader current="blog" />
+
+    <article class="article-shell">
+      <header class="article-header">
+        <p class="signal-eyebrow">{eyebrow}</p>
+        <h1><slot name="title" /></h1>
+        <p class="article-deck"><slot name="deck" /></p>
+        <div class="article-meta">
+          <span>By ReviewGate maintainers</span>
+          <time datetime={publishedAt}>{new Date(publishedAt).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+            timeZone: "UTC",
+          })}</time>
+          <span>{readingTime}</span>
+        </div>
+      </header>
+
+      <div class="article-grid">
+        <aside class="article-toc" aria-label="On this page">
+          <p>ON THIS PAGE</p>
+          <slot name="toc" />
+        </aside>
+
+        <div class="article-body">
+          <slot />
+        </div>
+      </div>
+    </article>
+
+    <SiteFooter />
+  </main>
+</BaseLayout>
