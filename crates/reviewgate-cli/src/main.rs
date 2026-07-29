@@ -7598,7 +7598,7 @@ review_angles:
             scope: scope.clone(),
             reviewed_sha: state.last_reviewed_sha.clone(),
             submission: AgentDispositionSubmission {
-                semantic_fingerprint: fingerprint,
+                semantic_fingerprint: fingerprint.clone(),
                 disposition: AgentDisposition::Fixed,
                 evidence: "Forged actor evidence.".to_string(),
                 actor: "different-actor".to_string(),
@@ -7609,6 +7609,24 @@ review_angles:
             author_login: Some("repair-agent".to_string()),
             author_association: Some("COLLABORATOR".to_string()),
             body: encode_agent_disposition_comment(&forged).expect("forged encoded"),
+        });
+        let unknown_finding = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: "security:missing.rs:unknown.finding".to_string(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "Unknown finding evidence.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        records.push(IssueCommentRecord {
+            id: 22,
+            author_login: Some("repair-agent".to_string()),
+            author_association: Some("COLLABORATOR".to_string()),
+            body: encode_agent_disposition_comment(&unknown_finding)
+                .expect("unknown finding encoded"),
         });
 
         let comments = agent_disposition_comments(&records);
@@ -7621,9 +7639,10 @@ review_angles:
         assert_eq!(
             replay,
             AgentDispositionReplay {
-                found: 8,
+                found: 9,
                 stale: 1,
                 actor_mismatch: 1,
+                invalid: 1,
                 applied: 6,
                 ..AgentDispositionReplay::default()
             }
