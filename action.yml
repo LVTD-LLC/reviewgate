@@ -112,9 +112,14 @@ runs:
           --jq '[.created_at, .run_started_at] | @tsv' 2>/dev/null || true)"
         if [ -n "$run_times" ]; then
           IFS=$'\t' read -r created_at run_started_at <<< "$run_times"
-          created_ms="$(date -d "$created_at" +%s%3N)"
-          run_started_ms="$(date -d "$run_started_at" +%s%3N)"
-          if [ "$run_started_ms" -ge "$created_ms" ]; then
+          created_ms=""
+          run_started_ms=""
+          if [ -n "$created_at" ] && [ -n "$run_started_at" ]; then
+            created_ms="$(date -d "$created_at" +%s%3N 2>/dev/null || true)"
+            run_started_ms="$(date -d "$run_started_at" +%s%3N 2>/dev/null || true)"
+          fi
+          if [ -n "$created_ms" ] && [ -n "$run_started_ms" ] \
+            && [ "$run_started_ms" -ge "$created_ms" ]; then
             queue_ms=$((run_started_ms - created_ms))
           fi
         fi

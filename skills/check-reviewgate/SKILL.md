@@ -53,7 +53,7 @@ jq -r '
   "status: \(.status)",
   "score: \(if .score == null then "unavailable" else "\(.score)/5" end)",
   "reviewed_sha: \(.reviewed_sha)",
-  "runtime: \(if .timings == null then "unavailable" else "\(.timings.model_ms)ms model, \(.timings.startup_ms)ms startup" end)",
+  "runtime: \(if .timings == null then "unavailable" else "\(.timings.queue_ms // "unavailable")ms queue, \(.timings.startup_ms)ms startup, \(.timings.model_ms)ms model, \(.timings.publish_ms)ms publish" end)",
   "open blockers: \([.findings[] | select(.disposition == "still_open" and .blocking_reason != null)] | length)"
 ' "$RESULT_FILE"
 ```

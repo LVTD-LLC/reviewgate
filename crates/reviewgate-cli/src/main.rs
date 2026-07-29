@@ -6994,6 +6994,13 @@ review_angles:
         assert!(action.contains("--angle-timeout-seconds"));
         assert!(action.contains("--total-timeout-seconds"));
         assert!(action.contains("record-timings"));
+        assert!(
+            action.contains("created_ms=\"$(date -d \"$created_at\" +%s%3N 2>/dev/null || true)\"")
+        );
+        assert!(action.contains(
+            "run_started_ms=\"$(date -d \"$run_started_at\" +%s%3N 2>/dev/null || true)\""
+        ));
+        assert!(action.contains("[ -n \"$created_ms\" ] && [ -n \"$run_started_ms\" ]"));
         assert!(!action.contains("cargo run"));
         assert!(!action.contains("Cargo.toml"));
 
@@ -7037,9 +7044,20 @@ review_angles:
             .split_once("\n  publish:")
             .map(|(_, job)| job)
             .expect("publish job");
+        assert!(publish_job.contains("GH_REPO: ${{ github.repository }}"));
         assert!(!publish_job.contains("id-token: write"));
         assert!(!publish_job.contains("attestations: write"));
         assert!(!publish_job.contains("\"$runtime_dir/reviewgate\""));
+    }
+
+    #[test]
+    fn check_skill_reports_every_runtime_phase() {
+        let skill = include_str!("../../../skills/check-reviewgate/SKILL.md");
+
+        assert!(skill.contains(r#"\(.timings.queue_ms // "unavailable")ms queue"#));
+        assert!(skill.contains(r#"\(.timings.startup_ms)ms startup"#));
+        assert!(skill.contains(r#"\(.timings.model_ms)ms model"#));
+        assert!(skill.contains(r#"\(.timings.publish_ms)ms publish"#));
     }
 
     #[test]
