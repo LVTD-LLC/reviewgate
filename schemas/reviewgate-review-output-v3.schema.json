@@ -333,7 +333,7 @@
         "resolution_disposition": {
           "type": ["string", "null"],
           "enum": ["fixed", null],
-          "description": "Set to fixed only when the delta deletes every prior current-head evidence location and the resolution checks every added line in each replacement block; otherwise null."
+          "description": "Set to fixed only when the delta deletes every prior current-head evidence location and the resolution checks every added line in each non-empty replacement block; pure deletions require explicit disposition."
         },
         "resolution_evidence_summary": {
           "type": ["string", "null"],
