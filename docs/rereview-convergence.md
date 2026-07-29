@@ -41,3 +41,27 @@ The review prompt receives only validated prior disposition data and the Git del
 ## Idempotence
 
 An unchanged head reuses the prior validated finding set and ignores reviewer drift. The maintainer `@reviewgate review` command is a no-op when the canonical state already contains a completed review for that exact head. A prior `review_error` can still be retried because it is not a completed code-quality outcome.
+
+## Finding thread lifecycle
+
+Inline findings carry both their current finding ID and their semantic
+fingerprint. The fingerprint keeps one ReviewGate thread attached to equivalent
+findings when wording, angle ownership, or line anchors move.
+
+After summary publication applies current-head dispositions, ReviewGate plans
+thread changes from the canonical tracked state:
+
+- `still_open` and `disputed` retain the existing thread;
+- `fixed`, `rejected_with_evidence`, `intentional_contract`, and `superseded`
+  receive one machine-readable lifecycle reply and are resolved;
+- an evidence-backed recurrence receives one machine-readable reopening reply
+  and unresolves the existing thread;
+- a repeated run detects the reply marker and becomes a no-op, or completes
+  only the missing resolve operation after a partial failure.
+
+Only threads rooted in a GitHub Actions-authored ReviewGate marker are eligible.
+Human-rooted threads are ignored, and no lifecycle operation deletes comments.
+The agent result projects the observed thread ID,
+unknown/open/resolved/not-published status, stale-anchor flag, lifecycle
+transition, and any reopening evidence. `unknown` means GitHub thread state was
+unavailable; it is never substituted with the definitive `not_published` state.

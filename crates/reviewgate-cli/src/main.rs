@@ -12,24 +12,26 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
     AGENT_DISPOSITIONS_SCHEMA_VERSION, AgentDisposition, AgentDispositionState,
-    AgentDispositionSubmission, AgentReviewResult, CostComponent, CostSource, CostSummary,
-    DEFAULT_TARGET_SCORE, EvidenceGateResult, FindingClassification, FindingDisposition,
-    FindingDispositionUpdate, FindingEvidenceSide, HIGH_CONFIDENCE_THRESHOLD,
-    LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_AGENT_RESULT_BYTES, ModelPreset, ModelPricing,
-    OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
-    OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleError,
-    ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewScope, ReviewStage, ReviewStatus,
-    ReviewTimings, Severity, SummaryOptions, SummaryState, TrackedFinding, compute_effective_score,
-    compute_metrics, compute_score, encode_summary_state, estimate_model_cost_usd,
-    extract_summary_state, fallback_model_pricing, finding_code_fingerprint,
-    parse_openrouter_model_pricing, reconcile_findings_with_updates, render_summary,
-    render_summary_with_options, semantic_fingerprint, status_for_score,
+    AgentDispositionSubmission, AgentResultThread, AgentReviewResult, AgentThreadStatus,
+    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, EvidenceGateResult,
+    FindingClassification, FindingDisposition, FindingDispositionUpdate, FindingEvidenceSide,
+    HIGH_CONFIDENCE_THRESHOLD, LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_AGENT_RESULT_BYTES,
+    ModelPreset, ModelPricing, OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES,
+    OPENROUTER_APP_REFERER, OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL,
+    OPENROUTER_MODELS_PATH, ReviewAngleError, ReviewAngleResult, ReviewArtifact, ReviewErrorKind,
+    ReviewScope, ReviewStage, ReviewStatus, ReviewTimings, Severity, SummaryOptions, SummaryState,
+    TrackedFinding, compute_effective_score, compute_metrics, compute_score, encode_summary_state,
+    estimate_model_cost_usd, extract_summary_state, fallback_model_pricing,
+    finding_code_fingerprint, parse_openrouter_model_pricing, reconcile_findings_with_updates,
+    render_summary, render_summary_with_options, semantic_fingerprint, status_for_score,
 };
 use reviewgate_github::{
-    ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
-    RereviewTarget, SummaryCommentAction, WorkflowRunCandidate, find_rereview_status_comment,
-    inline_comment_finding_ids, plan_inline_comment_drafts, plan_summary_comment_publish,
-    rereview_status_marker, select_rereview_workflow_run, stale_finding_comment_ids,
+    ChangedLineSet, ExistingInlineComment, ExistingReviewThread, ExistingReviewThreadComment,
+    ExistingSummaryComment, InlineCommentDraft, RereviewTarget, ReviewThreadLifecycleAction,
+    SummaryCommentAction, WorkflowRunCandidate, find_rereview_status_comment,
+    inline_comment_identity, is_github_actions_author, plan_inline_comment_drafts,
+    plan_review_thread_lifecycle, plan_summary_comment_publish, rereview_status_marker,
+    select_rereview_workflow_run, stale_finding_comment_ids,
 };
 use sha2::{Digest, Sha256};
 
@@ -213,6 +215,13 @@ enum Command {
         summary_out: PathBuf,
         #[arg(long)]
         min_severity: Option<String>,
+    },
+    /// Reconcile ReviewGate-owned inline threads with canonical finding dispositions.
+    ReconcileThreads {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
     },
     /// Publish a dedicated ReviewGate check run for review availability.
     PublishCheckRun {
@@ -498,6 +507,7 @@ fn main() -> CliResult<()> {
             summary_out,
             min_severity,
         }),
+        Command::ReconcileThreads { repo, input } => reconcile_review_threads(repo, input),
         Command::PublishCheckRun { repo, input, name } => publish_check_run(repo, input, name),
         Command::PublishAgentResult {
             repo,
@@ -1153,52 +1163,89 @@ struct PublishSummaryOptions {
     min_severity: Option<String>,
 }
 
-fn parse_review_thread_ids(raw: &str) -> CliResult<BTreeMap<String, String>> {
+fn parse_review_threads(raw: &str) -> CliResult<Vec<ExistingReviewThread>> {
     let value: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse review threads JSON")?;
-    let mut thread_ids = BTreeMap::new();
-    let pages = value.as_array().map(Vec::as_slice).unwrap_or_default();
-    for page in pages {
-        let entries = if page
+    let mut review_threads = Vec::new();
+    for entry in flatten_gh_paginated_items(&value) {
+        let Some(threads) = entry
             .pointer("/data/repository/pullRequest/reviewThreads/nodes")
-            .is_some()
-        {
-            vec![page]
-        } else {
-            page.as_array()
-                .map(|nested| nested.iter().collect())
-                .unwrap_or_default()
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
         };
-        for entry in entries {
-            let Some(threads) = entry
-                .pointer("/data/repository/pullRequest/reviewThreads/nodes")
+        for thread in threads {
+            let Some(thread_id) = thread.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(is_resolved) = thread
+                .get("isResolved")
+                .and_then(serde_json::Value::as_bool)
+            else {
+                continue;
+            };
+            let Some(is_outdated) = thread
+                .get("isOutdated")
+                .and_then(serde_json::Value::as_bool)
+            else {
+                continue;
+            };
+            let Some(comments) = thread
+                .pointer("/comments/nodes")
                 .and_then(serde_json::Value::as_array)
             else {
                 continue;
             };
-            for thread in threads {
-                let Some(thread_id) = thread.get("id").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let Some(comments) = thread
-                    .pointer("/comments/nodes")
-                    .and_then(serde_json::Value::as_array)
-                else {
-                    continue;
-                };
-                for comment in comments {
-                    let body = comment
-                        .get("body")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    for finding_id in inline_comment_finding_ids(body) {
-                        thread_ids.insert(finding_id, thread_id.to_string());
-                    }
-                }
-            }
+            review_threads.push(ExistingReviewThread {
+                id: thread_id.to_string(),
+                is_resolved,
+                is_outdated,
+                comments: comments
+                    .iter()
+                    .map(|comment| ExistingReviewThreadComment {
+                        author_login: comment
+                            .pointer("/author/login")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
+                        body: comment
+                            .get("body")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                    .collect(),
+            });
         }
     }
-    Ok(thread_ids)
+    Ok(review_threads)
+}
+
+fn agent_result_threads(threads: &[ExistingReviewThread]) -> BTreeMap<String, AgentResultThread> {
+    let mut result = BTreeMap::new();
+    for thread in threads {
+        let Some(root) = thread.comments.first() else {
+            continue;
+        };
+        if !is_github_actions_author(root.author_login.as_deref()) {
+            continue;
+        }
+        let Some(identity) = inline_comment_identity(&root.body) else {
+            continue;
+        };
+        result.insert(
+            identity.semantic_fingerprint,
+            AgentResultThread {
+                id: Some(thread.id.clone()),
+                status: if thread.is_resolved {
+                    AgentThreadStatus::Resolved
+                } else {
+                    AgentThreadStatus::Open
+                },
+                is_outdated: thread.is_outdated,
+            },
+        );
+    }
+    result
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2811,6 +2858,108 @@ fn prepare_validated_summary_publication_artifact(
     )
 }
 
+fn reconcile_review_threads(repo: PathBuf, input: PathBuf) -> CliResult<()> {
+    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
+        println!("ReviewGate thread reconciliation skipped: not a pull_request event.");
+        return Ok(());
+    }
+    if !input.is_file() {
+        bail!(
+            "ReviewGate thread reconciliation requires {}",
+            input.display()
+        );
+    }
+    if !github_token_available() {
+        bail!("ReviewGate thread reconciliation failed: GitHub token is empty");
+    }
+
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let event = read_github_event()?.context("thread reconciliation requires a GitHub event")?;
+    let pr_number =
+        pull_request_number(&event).context("thread reconciliation requires a PR number")?;
+    let repository = github_repository()?;
+    let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
+    let artifact = read_prepared_artifact(&input, &head_sha)?;
+    let threads = fetch_review_threads(&repo, &repository, pr_number)?;
+    let plan = plan_review_thread_lifecycle(&threads, &artifact.tracked_findings);
+    let action_count = plan.actions.len();
+
+    for action in plan.actions {
+        match action {
+            ReviewThreadLifecycleAction::ReplyAndResolve { thread_id, body } => {
+                reply_to_review_thread(&repo, &thread_id, &body)?;
+                resolve_review_thread(&repo, &thread_id)?;
+            }
+            ReviewThreadLifecycleAction::Resolve { thread_id } => {
+                resolve_review_thread(&repo, &thread_id)?;
+            }
+            ReviewThreadLifecycleAction::ReplyAndUnresolve { thread_id, body } => {
+                reply_to_review_thread(&repo, &thread_id, &body)?;
+                unresolve_review_thread(&repo, &thread_id)?;
+            }
+            ReviewThreadLifecycleAction::Unresolve { thread_id } => {
+                unresolve_review_thread(&repo, &thread_id)?;
+            }
+        }
+    }
+
+    println!(
+        "ReviewGate thread lifecycle reconciled {action_count} action(s) across {} thread(s).",
+        threads.len()
+    );
+    Ok(())
+}
+
+fn reply_to_review_thread(repo: &Path, thread_id: &str, body: &str) -> CliResult<()> {
+    let query = r#"mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}"#;
+    gh_dyn(
+        repo,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-f",
+            &format!("threadId={thread_id}"),
+            "-f",
+            &format!("body={body}"),
+        ],
+    )?;
+    Ok(())
+}
+
+fn resolve_review_thread(repo: &Path, thread_id: &str) -> CliResult<()> {
+    let query = r#"mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}"#;
+    gh_dyn(
+        repo,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-f",
+            &format!("threadId={thread_id}"),
+        ],
+    )?;
+    Ok(())
+}
+
+fn unresolve_review_thread(repo: &Path, thread_id: &str) -> CliResult<()> {
+    let query = r#"mutation($threadId:ID!){unresolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}"#;
+    gh_dyn(
+        repo,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-f",
+            &format!("threadId={thread_id}"),
+        ],
+    )?;
+    Ok(())
+}
+
 fn validate_serialized_disposition_updates(
     repo: &Path,
     artifact: &ReviewArtifact,
@@ -2852,13 +3001,13 @@ fn publish_agent_result(repo: PathBuf, input: PathBuf, output: PathBuf) -> CliRe
         pull_request_number(&event).context("ReviewGate agent result requires a PR number")?;
     let repository = github_repository()?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let thread_ids = match fetch_review_thread_ids(&repo, &repository, pr_number) {
-        Ok(thread_ids) => thread_ids,
+    let threads = match fetch_review_threads(&repo, &repository, pr_number) {
+        Ok(threads) => Some(agent_result_threads(&threads)),
         Err(error) => {
             eprintln!(
-                "ReviewGate warning: inline thread IDs are unavailable in the agent result: {error}"
+                "ReviewGate warning: inline thread state is unavailable in the agent result: {error}"
             );
-            BTreeMap::new()
+            None
         }
     };
     let result = project_agent_result_from_artifact_path(
@@ -2868,7 +3017,7 @@ fn publish_agent_result(repo: PathBuf, input: PathBuf, output: PathBuf) -> CliRe
             repository,
             pull_request_number: pr_number,
         },
-        thread_ids,
+        threads,
     )?;
     let encoded = serde_json::to_string_pretty(&result)?;
     write_or_print(Some(output.clone()), &encoded, "agent result")?;
@@ -2900,11 +3049,29 @@ fn project_agent_result_from_artifact_path(
     input: &Path,
     current_head_sha: &str,
     scope: ReviewScope,
-    thread_ids: BTreeMap<String, String>,
+    threads: Option<BTreeMap<String, AgentResultThread>>,
 ) -> CliResult<AgentReviewResult> {
     match read_prepared_artifact(input, current_head_sha) {
         Ok(artifact) => {
-            AgentReviewResult::from_artifact(&artifact, scope, thread_ids).map_err(Into::into)
+            let threads = threads.unwrap_or_else(|| {
+                artifact
+                    .tracked_findings
+                    .iter()
+                    .map(|tracked| tracked.semantic_fingerprint.clone())
+                    .chain(artifact.findings.iter().map(semantic_fingerprint))
+                    .map(|fingerprint| {
+                        (
+                            fingerprint,
+                            AgentResultThread {
+                                id: None,
+                                status: AgentThreadStatus::Unknown,
+                                is_outdated: false,
+                            },
+                        )
+                    })
+                    .collect()
+            });
+            AgentReviewResult::from_artifact(&artifact, scope, threads).map_err(Into::into)
         }
         Err(error) => {
             eprintln!(
@@ -3240,16 +3407,16 @@ fn fetch_pull_comments(
     parse_pull_comments(&raw)
 }
 
-fn fetch_review_thread_ids(
+fn fetch_review_threads(
     repo: &Path,
     repository: &str,
     pr_number: u64,
-) -> CliResult<BTreeMap<String, String>> {
+) -> CliResult<Vec<ExistingReviewThread>> {
     let (owner, name) = repository
         .split_once('/')
         .context("repository must use owner/name format")?;
     let number = pr_number.to_string();
-    let query = r#"query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{id comments(first:1){nodes{body}}}pageInfo{hasNextPage endCursor}}}}}"#;
+    let query = r#"query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{id isResolved isOutdated comments(first:100){nodes{body author{login}}}}pageInfo{hasNextPage endCursor}}}}}"#;
     let raw = gh_dyn(
         repo,
         &[
@@ -3267,7 +3434,7 @@ fn fetch_review_thread_ids(
             &format!("number={number}"),
         ],
     )?;
-    parse_review_thread_ids(&raw)
+    parse_review_threads(&raw)
 }
 
 fn parse_pull_comments(raw: &str) -> CliResult<Vec<ExistingInlineComment>> {
@@ -3283,7 +3450,15 @@ fn parse_pull_comments(raw: &str) -> CliResult<Vec<ExistingInlineComment>> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string();
-        comments.push(ExistingInlineComment { id, body });
+        let author_login = entry
+            .pointer("/user/login")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        comments.push(ExistingInlineComment {
+            id,
+            author_login,
+            body,
+        });
     }
     Ok(comments)
 }
@@ -6254,6 +6429,91 @@ esac
         (output, log)
     }
 
+    #[cfg(unix)]
+    fn run_thread_mutation_subprocess(scenario: &str) -> (Output, String) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = unique_test_dir(&format!("reviewgate-thread-mutation-{scenario}"));
+        let log_path = test_dir.join("gh.log");
+        let gh_path = test_dir.join("gh");
+        fs::write(
+            &gh_path,
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$REVIEWGATE_TEST_GH_LOG"
+case "$*" in
+  *addPullRequestReviewThreadReply*)
+    if [ "$REVIEWGATE_TEST_SCENARIO" = "reply_failure" ]; then
+      exit 1
+    fi
+    printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"PRRC_note"}}}}\n'
+    ;;
+  *resolveReviewThread*)
+    printf '{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_test","isResolved":true}}}}\n'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .expect("write fake gh");
+        let mut permissions = fs::metadata(&gh_path)
+            .expect("fake gh metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh_path, permissions).expect("make fake gh executable");
+        let existing_path = std::env::var("PATH").unwrap_or_default();
+        let output = ProcessCommand::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "tests::thread_mutation_subprocess_helper",
+                "--nocapture",
+            ])
+            .env("REVIEWGATE_THREAD_MUTATION_HELPER", "1")
+            .env("REVIEWGATE_TEST_GH_LOG", &log_path)
+            .env("REVIEWGATE_TEST_SCENARIO", scenario)
+            .env("PATH", format!("{}:{existing_path}", test_dir.display()))
+            .output()
+            .expect("run thread mutation subprocess");
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        fs::remove_dir_all(test_dir).ok();
+        (output, log)
+    }
+
+    #[test]
+    #[ignore = "subprocess helper invoked by focused orchestration tests"]
+    fn thread_mutation_subprocess_helper() {
+        if std::env::var("REVIEWGATE_THREAD_MUTATION_HELPER").as_deref() != Ok("1") {
+            return;
+        }
+        if let Err(error) = reply_to_review_thread(Path::new("."), "PRRT_test", "lifecycle note")
+            .and_then(|_| resolve_review_thread(Path::new("."), "PRRT_test"))
+        {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn thread_mutations_reply_before_resolve_and_stop_on_reply_failure() {
+        let (success, success_log) = run_thread_mutation_subprocess("success");
+        assert!(success.status.success(), "{success:?}");
+        let reply_index = success_log
+            .find("addPullRequestReviewThreadReply")
+            .expect("reply mutation");
+        let resolve_index = success_log
+            .find("resolveReviewThread")
+            .expect("resolve mutation");
+        assert!(reply_index < resolve_index);
+
+        let (failure, failure_log) = run_thread_mutation_subprocess("reply_failure");
+        assert!(!failure.status.success());
+        assert!(failure_log.contains("addPullRequestReviewThreadReply"));
+        assert!(!failure_log.contains("resolveReviewThread"));
+    }
+
     #[test]
     #[ignore = "subprocess helper invoked by focused orchestration tests"]
     fn rereview_subprocess_helper() {
@@ -7157,6 +7417,9 @@ review_angles:
         let check_run_start = action
             .find("- name: Publish ReviewGate check run")
             .expect("check run step exists");
+        let reconcile_threads_start = action
+            .find("- name: Reconcile ReviewGate finding threads")
+            .expect("thread reconciliation step exists");
         let result_start = action
             .find("- name: Publish ReviewGate agent result")
             .expect("agent result step exists");
@@ -7166,13 +7429,15 @@ review_angles:
         assert!(inline_start < timings_start);
         assert!(timings_start < summary_start);
         assert!(summary_start < check_run_start);
-        assert!(check_run_start < result_start);
+        assert!(check_run_start < reconcile_threads_start);
+        assert!(reconcile_threads_start < result_start);
         assert!(result_start < upload_start);
 
         let findings_step = &action[inline_start..timings_start];
         let timings_step = &action[timings_start..summary_start];
         let summary_step = &action[summary_start..check_run_start];
-        let check_run_step = &action[check_run_start..];
+        let check_run_step = &action[check_run_start..reconcile_threads_start];
+        let reconcile_threads_step = &action[reconcile_threads_start..result_start];
 
         assert!(findings_step.contains("publish-findings"));
         assert!(findings_step.contains("publish_ms="));
@@ -7201,6 +7466,10 @@ review_angles:
         assert!(check_run_step.contains("inputs.mode == 'review' && always()"));
         assert!(!check_run_step.contains("continue-on-error: true"));
         assert!(!check_run_step.contains(concat!("--gate", "-mode")));
+        assert!(reconcile_threads_step.contains("reconcile-threads"));
+        assert!(reconcile_threads_step.contains("steps.summary.outcome == 'success'"));
+        assert!(reconcile_threads_step.contains("inputs.mode == 'review' && always()"));
+        assert!(!reconcile_threads_step.contains("continue-on-error: true"));
         assert!(action.contains("publish-agent-result"));
         assert!(action.contains("reviewgate-agent-result"));
         assert!(action.contains("actions/upload-artifact@"));
@@ -7385,7 +7654,7 @@ review_angles:
             &input,
             "current-head",
             scope.clone(),
-            BTreeMap::new(),
+            Some(BTreeMap::new()),
         )
         .expect("missing internal artifact still produces a terminal result");
         fs::remove_dir_all(repo).ok();
@@ -7414,7 +7683,7 @@ review_angles:
                 repository: "LVTD-LLC/reviewgate".to_string(),
                 pull_request_number: 49,
             },
-            BTreeMap::new(),
+            Some(BTreeMap::new()),
         )
         .expect("malformed internal artifact still produces a terminal result");
         fs::remove_dir_all(repo).ok();
@@ -7430,7 +7699,40 @@ review_angles:
     }
 
     #[test]
-    fn maps_graphql_review_thread_ids_to_their_review_findings() {
+    fn unavailable_thread_fetch_projects_unknown_instead_of_not_published() {
+        let repo = unique_test_dir("reviewgate-agent-result-thread-unavailable");
+        let input = repo.join("review.json");
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        artifact.reviewed_sha = "current-head".to_string();
+        let artifact = artifact.with_computed_score().expect("score computes");
+        fs::write(
+            &input,
+            serde_json::to_string(&artifact).expect("artifact serializes"),
+        )
+        .expect("write artifact");
+
+        let result = project_agent_result_from_artifact_path(
+            &input,
+            "current-head",
+            ReviewScope::PullRequest {
+                repository: "LVTD-LLC/reviewgate".to_string(),
+                pull_request_number: 49,
+            },
+            None,
+        )
+        .expect("unavailable thread state still produces an agent result");
+        fs::remove_dir_all(repo).ok();
+
+        assert!(!result.findings.is_empty());
+        assert!(result.findings.iter().all(|finding| finding.thread_status
+            == AgentThreadStatus::Unknown
+            && finding.thread_transition == reviewgate_core::AgentThreadTransition::Unknown));
+    }
+
+    #[test]
+    fn maps_graphql_review_thread_state_to_semantic_findings() {
         let raw = serde_json::json!([{
             "data": {
                 "repository": {
@@ -7439,15 +7741,27 @@ review_angles:
                             "nodes": [
                                 {
                                     "id": "PRRT_alpha",
+                                    "isResolved": false,
+                                    "isOutdated": true,
                                     "comments": {
                                         "nodes": [{
-                                            "body": reviewgate_github::inline_comment_marker("rg_alpha")
+                                            "body": format!(
+                                                "{}\n\n{}",
+                                                reviewgate_github::inline_comment_marker("general:auth"),
+                                                reviewgate_github::inline_comment_semantic_marker("defect:src.lib.rs:auth")
+                                            ),
+                                            "author": {"login": "github-actions[bot]"}
                                         }]
                                     }
                                 },
                                 {
                                     "id": "PRRT_human",
-                                    "comments": {"nodes": [{"body": "human comment"}]}
+                                    "isResolved": false,
+                                    "isOutdated": false,
+                                    "comments": {"nodes": [{
+                                        "body": "human comment",
+                                        "author": {"login": "maintainer"}
+                                    }]}
                                 }
                             ]
                         }
@@ -7457,9 +7771,46 @@ review_angles:
         }])
         .to_string();
 
+        let threads = parse_review_threads(&raw).expect("thread state");
         assert_eq!(
-            parse_review_thread_ids(&raw).expect("threads"),
-            BTreeMap::from([("rg_alpha".to_string(), "PRRT_alpha".to_string())])
+            threads,
+            vec![
+                ExistingReviewThread {
+                    id: "PRRT_alpha".to_string(),
+                    is_resolved: false,
+                    is_outdated: true,
+                    comments: vec![ExistingReviewThreadComment {
+                        author_login: Some("github-actions[bot]".to_string()),
+                        body: format!(
+                            "{}\n\n{}",
+                            reviewgate_github::inline_comment_marker("general:auth"),
+                            reviewgate_github::inline_comment_semantic_marker(
+                                "defect:src.lib.rs:auth"
+                            )
+                        ),
+                    }],
+                },
+                ExistingReviewThread {
+                    id: "PRRT_human".to_string(),
+                    is_resolved: false,
+                    is_outdated: false,
+                    comments: vec![ExistingReviewThreadComment {
+                        author_login: Some("maintainer".to_string()),
+                        body: "human comment".to_string(),
+                    }],
+                },
+            ]
+        );
+        assert_eq!(
+            agent_result_threads(&threads),
+            BTreeMap::from([(
+                "defect:src.lib.rs:auth".to_string(),
+                AgentResultThread {
+                    id: Some("PRRT_alpha".to_string()),
+                    status: AgentThreadStatus::Open,
+                    is_outdated: true,
+                },
+            )])
         );
     }
 

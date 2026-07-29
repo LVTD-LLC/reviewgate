@@ -227,6 +227,7 @@ runs:
         "$REVIEWGATE_BIN" "${args[@]}"
 
     - name: Publish ReviewGate summary
+      id: summary
       if: ${{ inputs.mode == 'review' && always() }}
       shell: bash
       env:
@@ -258,6 +259,18 @@ runs:
       run: |
         set -euo pipefail
         "$REVIEWGATE_BIN" publish-check-run \
+          --repo "$GITHUB_WORKSPACE" \
+          --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
+
+    - name: Reconcile ReviewGate finding threads
+      if: ${{ inputs.mode == 'review' && always() && steps.summary.outcome == 'success' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REVIEWGATE_BIN: ${{ steps.runtime.outputs.binary }}
+      run: |
+        set -euo pipefail
+        "$REVIEWGATE_BIN" reconcile-threads \
           --repo "$GITHUB_WORKSPACE" \
           --input "$GITHUB_WORKSPACE/.reviewgate/review.json"
 

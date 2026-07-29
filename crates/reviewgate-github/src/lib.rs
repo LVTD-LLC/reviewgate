@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reviewgate_core::{
-    DEFAULT_TARGET_SCORE, Finding, FindingEvidence, SUMMARY_MARKER, SecretString, Severity,
-    extract_summary_state,
+    DEFAULT_TARGET_SCORE, Finding, FindingDisposition, FindingEvidence, SUMMARY_MARKER,
+    SecretString, Severity, TrackedFinding, extract_summary_state, semantic_fingerprint,
 };
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const INLINE_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding:";
+pub const INLINE_COMMENT_SEMANTIC_MARKER_PREFIX: &str = "<!-- reviewgate-finding-semantic:";
+pub const THREAD_RESOLUTION_MARKER_PREFIX: &str = "<!-- reviewgate-thread-resolution:";
 pub const FINDING_COMMENT_MARKER_PREFIX: &str = "<!-- reviewgate-finding-comment:";
 pub const REREVIEW_STATUS_MARKER_PREFIX: &str = "<!-- reviewgate-rereview:";
 
@@ -71,7 +73,7 @@ pub struct ExistingSummaryComment {
     pub body: String,
 }
 
-fn is_github_actions_author(author_login: Option<&str>) -> bool {
+pub fn is_github_actions_author(author_login: Option<&str>) -> bool {
     matches!(author_login, Some("github-actions[bot]" | "github-actions"))
 }
 
@@ -217,7 +219,41 @@ pub fn upsert_summary_comment<C: SummaryCommentClient>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingInlineComment {
     pub id: u64,
+    pub author_login: Option<String>,
     pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineCommentIdentity {
+    pub finding_id: String,
+    pub semantic_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingReviewThreadComment {
+    pub author_login: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingReviewThread {
+    pub id: String,
+    pub is_resolved: bool,
+    pub is_outdated: bool,
+    pub comments: Vec<ExistingReviewThreadComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewThreadLifecycleAction {
+    ReplyAndResolve { thread_id: String, body: String },
+    Resolve { thread_id: String },
+    ReplyAndUnresolve { thread_id: String, body: String },
+    Unresolve { thread_id: String },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewThreadLifecyclePlan {
+    pub actions: Vec<ReviewThreadLifecycleAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,6 +477,13 @@ pub fn inline_comment_marker(finding_id: &str) -> String {
     )
 }
 
+pub fn inline_comment_semantic_marker(fingerprint: &str) -> String {
+    format!(
+        "{INLINE_COMMENT_SEMANTIC_MARKER_PREFIX}{} -->",
+        encode_marker_payload(fingerprint)
+    )
+}
+
 pub fn finding_comment_marker(finding_id: &str) -> String {
     format!(
         "{FINDING_COMMENT_MARKER_PREFIX}{} -->",
@@ -450,6 +493,34 @@ pub fn finding_comment_marker(finding_id: &str) -> String {
 
 pub fn inline_comment_finding_ids(body: &str) -> Vec<String> {
     marker_finding_ids(body, INLINE_COMMENT_MARKER_PREFIX)
+}
+
+pub fn inline_comment_semantic_fingerprints(body: &str) -> Vec<String> {
+    marker_finding_ids(body, INLINE_COMMENT_SEMANTIC_MARKER_PREFIX)
+}
+
+pub fn inline_comment_identity(body: &str) -> Option<InlineCommentIdentity> {
+    let mut lines = body.lines();
+    let finding_line = lines.next()?;
+    if !lines.next()?.is_empty() {
+        return None;
+    }
+    let semantic_line = lines.next()?;
+    let finding_id = inline_comment_finding_ids(finding_line)
+        .into_iter()
+        .next()?;
+    let semantic_fingerprint = inline_comment_semantic_fingerprints(semantic_line)
+        .into_iter()
+        .next()?;
+    if finding_line != inline_comment_marker(&finding_id)
+        || semantic_line != inline_comment_semantic_marker(&semantic_fingerprint)
+    {
+        return None;
+    }
+    Some(InlineCommentIdentity {
+        finding_id,
+        semantic_fingerprint,
+    })
 }
 
 pub fn finding_comment_finding_ids(body: &str) -> Vec<String> {
@@ -476,7 +547,18 @@ fn marker_finding_ids(body: &str, marker_prefix: &str) -> Vec<String> {
 pub fn posted_inline_finding_ids(comments: &[ExistingInlineComment]) -> BTreeSet<String> {
     comments
         .iter()
-        .flat_map(|comment| inline_comment_finding_ids(&comment.body))
+        .filter(|comment| is_github_actions_author(comment.author_login.as_deref()))
+        .filter_map(|comment| inline_comment_identity(&comment.body))
+        .map(|identity| identity.finding_id)
+        .collect()
+}
+
+pub fn posted_inline_semantic_fingerprints(comments: &[ExistingInlineComment]) -> BTreeSet<String> {
+    comments
+        .iter()
+        .filter(|comment| is_github_actions_author(comment.author_login.as_deref()))
+        .filter_map(|comment| inline_comment_identity(&comment.body))
+        .map(|identity| identity.semantic_fingerprint)
         .collect()
 }
 
@@ -490,11 +572,130 @@ pub fn stale_finding_comment_ids(comments: &[ExistingSummaryComment]) -> Vec<u64
 }
 
 pub fn render_inline_comment_body(finding: &Finding) -> String {
+    render_inline_comment_body_with_fingerprint(finding, &semantic_fingerprint(finding))
+}
+
+fn render_inline_comment_body_with_fingerprint(finding: &Finding, fingerprint: &str) -> String {
     let mut body = String::new();
     body.push_str(&inline_comment_marker(&finding.id));
     body.push_str("\n\n");
+    body.push_str(&inline_comment_semantic_marker(fingerprint));
+    body.push_str("\n\n");
     append_finding_comment_contents(&mut body, finding);
     body
+}
+
+fn thread_lifecycle_marker(fingerprint: &str, state: &str) -> String {
+    format!(
+        "{THREAD_RESOLUTION_MARKER_PREFIX}{}:{} -->",
+        encode_marker_payload(fingerprint),
+        state
+    )
+}
+
+pub fn review_thread_resolution_body(tracked: &TrackedFinding) -> String {
+    let disposition = tracked.disposition.as_str();
+    let mut body = thread_lifecycle_marker(&tracked.semantic_fingerprint, disposition);
+    body.push_str("\n\n");
+    body.push_str(&format!(
+        "ReviewGate lifecycle: `{disposition}`. This thread was reconciled against the canonical finding state for the current review head."
+    ));
+    body
+}
+
+pub fn review_thread_reopening_body(tracked: &TrackedFinding) -> String {
+    let mut body = thread_lifecycle_marker(&tracked.semantic_fingerprint, "reopened");
+    body.push_str("\n\n");
+    body.push_str(
+        "ReviewGate lifecycle: `reopened`. Relevant code or contract evidence changed, so this canonical finding is active again.",
+    );
+    body
+}
+
+fn is_evidence_backed_reopening(tracked: &TrackedFinding) -> bool {
+    tracked.disposition == FindingDisposition::StillOpen
+        && tracked
+            .disposition_history
+            .iter()
+            .rev()
+            .skip(1)
+            .any(|record| record.disposition.is_settled())
+        && tracked
+            .finding
+            .grounding
+            .as_ref()
+            .and_then(|grounding| grounding.reopening_evidence.as_deref())
+            .is_some_and(|evidence| !evidence.trim().is_empty())
+}
+
+pub fn plan_review_thread_lifecycle(
+    threads: &[ExistingReviewThread],
+    tracked_findings: &[TrackedFinding],
+) -> ReviewThreadLifecyclePlan {
+    let tracked_by_fingerprint = tracked_findings
+        .iter()
+        .map(|tracked| (tracked.semantic_fingerprint.as_str(), tracked))
+        .collect::<BTreeMap<_, _>>();
+    let mut actions = Vec::new();
+
+    for thread in threads {
+        let Some(root) = thread.comments.first() else {
+            continue;
+        };
+        if !is_github_actions_author(root.author_login.as_deref()) {
+            continue;
+        }
+        let Some(identity) = inline_comment_identity(&root.body) else {
+            continue;
+        };
+        let fingerprint = identity.semantic_fingerprint;
+        let Some(tracked) = tracked_by_fingerprint.get(fingerprint.as_str()) else {
+            continue;
+        };
+        if is_evidence_backed_reopening(tracked) {
+            if !thread.is_resolved {
+                continue;
+            }
+            let marker = thread_lifecycle_marker(&fingerprint, "reopened");
+            let has_reopening_note = thread.comments.iter().any(|comment| {
+                is_github_actions_author(comment.author_login.as_deref())
+                    && comment.body.contains(&marker)
+            });
+            if has_reopening_note {
+                actions.push(ReviewThreadLifecycleAction::Unresolve {
+                    thread_id: thread.id.clone(),
+                });
+            } else {
+                actions.push(ReviewThreadLifecycleAction::ReplyAndUnresolve {
+                    thread_id: thread.id.clone(),
+                    body: review_thread_reopening_body(tracked),
+                });
+            }
+            continue;
+        }
+        if !tracked.disposition.is_settled() {
+            continue;
+        }
+
+        let marker = thread_lifecycle_marker(&fingerprint, tracked.disposition.as_str());
+        let has_resolution_note = thread.comments.iter().any(|comment| {
+            is_github_actions_author(comment.author_login.as_deref())
+                && comment.body.contains(&marker)
+        });
+        match (has_resolution_note, thread.is_resolved) {
+            (false, false) => actions.push(ReviewThreadLifecycleAction::ReplyAndResolve {
+                thread_id: thread.id.clone(),
+                body: review_thread_resolution_body(tracked),
+            }),
+            (false, true) => {}
+            (true, false) => actions.push(ReviewThreadLifecycleAction::Resolve {
+                thread_id: thread.id.clone(),
+            }),
+            (true, true) => {}
+        }
+    }
+
+    ReviewThreadLifecyclePlan { actions }
 }
 
 fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
@@ -607,6 +808,7 @@ pub fn plan_inline_comment_drafts(
     changed_lines: &ChangedLineSet,
 ) -> InlineCommentAnchorPlan {
     let existing_ids = posted_inline_finding_ids(existing_comments);
+    let existing_fingerprints = posted_inline_semantic_fingerprints(existing_comments);
     let mut planned_ids = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut repaired_count = 0u32;
@@ -616,14 +818,16 @@ pub fn plan_inline_comment_drafts(
     let mut fallback_anchors = FallbackAnchorAllocator::new(changed_lines);
 
     for finding in findings {
+        let fingerprint = semantic_fingerprint(finding);
         if !finding.severity.is_at_or_above(min_severity)
             || existing_ids.contains(&finding.id)
+            || existing_fingerprints.contains(&fingerprint)
             || !planned_ids.insert(finding.id.as_str())
         {
             continue;
         }
 
-        let body = render_inline_comment_body(finding);
+        let body = render_inline_comment_body_with_fingerprint(finding, &fingerprint);
         let Some((path, line, anchor_kind)) =
             resolve_finding_inline_anchor(finding, &body, &mut fallback_anchors)
         else {
@@ -1436,6 +1640,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         };
         let low_confidence = Finding {
             id: "rg_low".to_string(),
+            title: "Low confidence advisory".to_string(),
             confidence: 0.5,
             evidence_gate_result: reviewgate_core::EvidenceGateResult::NotRequired,
             blocking_reason: None,
@@ -1443,12 +1648,14 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         };
         let no_line = Finding {
             id: "rg_no_line".to_string(),
+            title: "No exact line".to_string(),
             line: None,
             ..duplicate.clone()
         };
         let existing = ExistingInlineComment {
             id: 9,
-            body: inline_comment_marker("rg_dup"),
+            author_login: Some("github-actions[bot]".to_string()),
+            body: render_inline_comment_body(&duplicate),
         };
         let changed_lines = ChangedLineSet::from_unified_diff(
             "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9,0 +10,2 @@\n+first change\n+second change\n",
@@ -1466,7 +1673,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         assert!(
             plan.drafts[0]
                 .body
-                .contains("**Advisory / P1: Already posted**")
+                .contains("**Advisory / P1: Low confidence advisory**")
         );
         assert!(plan.drafts[0].body.contains("Disposition: `advisory`"));
         assert!(!plan.drafts[0].body.contains("Blocking reason:"));
@@ -1590,6 +1797,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         let comments = vec![
             ExistingInlineComment {
                 id: 1,
+                author_login: Some("github-actions[bot]".to_string()),
                 body: render_inline_comment_body(&Finding {
                     id: "missing auth check".to_string(),
                     angle_id: None,
@@ -1609,6 +1817,7 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             },
             ExistingInlineComment {
                 id: 2,
+                author_login: Some("github-actions[bot]".to_string()),
                 body: "unrelated".to_string(),
             },
         ];
@@ -1639,7 +1848,8 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
         };
         let existing = ExistingInlineComment {
             id: 9,
-            body: inline_comment_marker(&finding.id),
+            author_login: Some("github-actions[bot]".to_string()),
+            body: render_inline_comment_body(&finding),
         };
 
         let changed_lines = ChangedLineSet::from_unified_diff(
@@ -1650,5 +1860,353 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             plan_inline_comment_drafts(&[finding], &[existing], Severity::P2, &changed_lines);
 
         assert!(plan.drafts.is_empty());
+    }
+
+    #[test]
+    fn dedupes_reworded_and_moved_findings_by_semantic_fingerprint() {
+        let first = Finding {
+            id: "general:old-wording".to_string(),
+            angle_id: Some("general".to_string()),
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.99,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
+            grounding: Some(reviewgate_core::FindingGrounding {
+                semantic_key: "cli.argument_slice".to_string(),
+                resolution_disposition: None,
+                resolution_evidence_summary: None,
+                claim: "The positional argument reaches flag parsing.".to_string(),
+                causal_path: "main -> parser".to_string(),
+                test_assessment: "The exact command needs coverage.".to_string(),
+                evidence: vec![],
+                related_tests: vec![],
+                reproduction: Some("Run the command.".to_string()),
+                proof: None,
+                novelty_evidence: None,
+                reopening_evidence: None,
+            }),
+            file: Some("src/main.rs".to_string()),
+            line: Some(10),
+            title: "Old title".to_string(),
+            detail: None,
+            agent_instruction: "Fix the parser.".to_string(),
+        };
+        let mut reworded = first.clone();
+        reworded.id = "adversarial:new-wording".to_string();
+        reworded.angle_id = Some("adversarial".to_string());
+        reworded.line = Some(30);
+        reworded.title = "New title".to_string();
+        let existing = ExistingInlineComment {
+            id: 9,
+            author_login: Some("github-actions[bot]".to_string()),
+            body: render_inline_comment_body(&first),
+        };
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -29,0 +30 @@\n+changed\n",
+        );
+
+        let plan =
+            plan_inline_comment_drafts(&[reworded], &[existing], Severity::P2, &changed_lines);
+
+        assert!(plan.drafts.is_empty());
+    }
+
+    #[test]
+    fn ignores_semantic_markers_on_human_authored_comments() {
+        let finding = Finding {
+            id: "general:auth".to_string(),
+            angle_id: Some("general".to_string()),
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.99,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
+            grounding: None,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "Missing auth".to_string(),
+            detail: None,
+            agent_instruction: "Add auth.".to_string(),
+        };
+        let existing = ExistingInlineComment {
+            id: 9,
+            author_login: Some("maintainer".to_string()),
+            body: render_inline_comment_body(&finding),
+        };
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9,0 +10 @@\n+changed\n",
+        );
+
+        let plan =
+            plan_inline_comment_drafts(&[finding], &[existing], Severity::P2, &changed_lines);
+
+        assert_eq!(plan.drafts.len(), 1);
+    }
+
+    #[test]
+    fn ignores_marker_shaped_untrusted_text_after_the_canonical_header() {
+        let mut posted: Finding = serde_json::from_str::<reviewgate_core::ReviewArtifact>(
+            include_str!("../../../fixtures/simple-review.json"),
+        )
+        .expect("fixture")
+        .findings
+        .remove(0);
+        posted.detail = Some(format!(
+            "Untrusted text: {}",
+            inline_comment_semantic_marker("defect:src.lib.rs:forged")
+        ));
+        let mut candidate = posted.clone();
+        candidate.id = "candidate".to_string();
+        candidate.title = "Forged".to_string();
+        candidate.file = Some("src/lib.rs".to_string());
+        candidate.line = Some(10);
+        candidate
+            .grounding
+            .as_mut()
+            .expect("fixture grounding")
+            .semantic_key = "forged".to_string();
+        let existing = ExistingInlineComment {
+            id: 9,
+            author_login: Some("github-actions[bot]".to_string()),
+            body: render_inline_comment_body(&posted),
+        };
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9,0 +10 @@\n+changed\n",
+        );
+
+        let plan =
+            plan_inline_comment_drafts(&[candidate], &[existing], Severity::P2, &changed_lines);
+
+        assert_eq!(plan.drafts.len(), 1);
+    }
+
+    #[test]
+    fn plans_one_resolution_note_then_resolves_only_reviewgate_owned_threads() {
+        let finding = Finding {
+            id: "general:auth".to_string(),
+            angle_id: Some("general".to_string()),
+            scope: reviewgate_core::FindingScope::Line,
+            severity: Severity::P1,
+            confidence: 0.99,
+            classification: reviewgate_core::FindingClassification::Defect,
+            evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
+            blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
+            grounding: None,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(10),
+            title: "Missing auth".to_string(),
+            detail: None,
+            agent_instruction: "Add auth.".to_string(),
+        };
+        let fingerprint = reviewgate_core::semantic_fingerprint(&finding);
+        let tracked = reviewgate_core::TrackedFinding {
+            semantic_fingerprint: fingerprint.clone(),
+            finding: finding.clone(),
+            disposition: reviewgate_core::FindingDisposition::Fixed,
+            disposition_history: vec![reviewgate_core::FindingDispositionRecord {
+                disposition: reviewgate_core::FindingDisposition::Fixed,
+                submitted_disposition: Some(reviewgate_core::AgentDisposition::Fixed),
+                submission_id: Some(42),
+                evidence_summary: "Covered by the regression test.".to_string(),
+                actor: "maintainer".to_string(),
+                reviewed_sha: "head".to_string(),
+                code_fingerprint: "code-v2".to_string(),
+            }],
+        };
+        let reviewgate_thread = ExistingReviewThread {
+            id: "PRRT_reviewgate".to_string(),
+            is_resolved: false,
+            is_outdated: true,
+            comments: vec![
+                ExistingReviewThreadComment {
+                    author_login: Some("github-actions[bot]".to_string()),
+                    body: render_inline_comment_body(&finding),
+                },
+                ExistingReviewThreadComment {
+                    author_login: Some("maintainer".to_string()),
+                    body: "I verified the test.".to_string(),
+                },
+            ],
+        };
+        let human_thread = ExistingReviewThread {
+            id: "PRRT_human".to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ExistingReviewThreadComment {
+                author_login: Some("maintainer".to_string()),
+                body: render_inline_comment_body(&finding),
+            }],
+        };
+
+        let plan = plan_review_thread_lifecycle(
+            &[reviewgate_thread, human_thread],
+            std::slice::from_ref(&tracked),
+        );
+
+        assert_eq!(
+            plan.actions,
+            vec![ReviewThreadLifecycleAction::ReplyAndResolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+                body: review_thread_resolution_body(&tracked),
+            }]
+        );
+    }
+
+    #[test]
+    fn thread_resolution_planning_is_idempotent() {
+        let finding: Finding = serde_json::from_str::<reviewgate_core::ReviewArtifact>(
+            include_str!("../../../fixtures/simple-review.json"),
+        )
+        .expect("fixture")
+        .findings
+        .remove(0);
+        let tracked = reviewgate_core::TrackedFinding {
+            semantic_fingerprint: reviewgate_core::semantic_fingerprint(&finding),
+            finding,
+            disposition: reviewgate_core::FindingDisposition::RejectedWithEvidence,
+            disposition_history: vec![],
+        };
+        let body = review_thread_resolution_body(&tracked);
+        let unresolved = ExistingReviewThread {
+            id: "PRRT_reviewgate".to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![
+                ExistingReviewThreadComment {
+                    author_login: Some("github-actions[bot]".to_string()),
+                    body: render_inline_comment_body(&tracked.finding),
+                },
+                ExistingReviewThreadComment {
+                    author_login: Some("github-actions[bot]".to_string()),
+                    body,
+                },
+            ],
+        };
+
+        let plan = plan_review_thread_lifecycle(&[unresolved], std::slice::from_ref(&tracked));
+
+        assert_eq!(
+            plan.actions,
+            vec![ReviewThreadLifecycleAction::Resolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn human_resolution_marker_does_not_replace_the_reviewgate_receipt() {
+        let finding: Finding = serde_json::from_str::<reviewgate_core::ReviewArtifact>(
+            include_str!("../../../fixtures/simple-review.json"),
+        )
+        .expect("fixture")
+        .findings
+        .remove(0);
+        let tracked = reviewgate_core::TrackedFinding {
+            semantic_fingerprint: reviewgate_core::semantic_fingerprint(&finding),
+            finding,
+            disposition: reviewgate_core::FindingDisposition::Fixed,
+            disposition_history: vec![],
+        };
+        let thread = ExistingReviewThread {
+            id: "PRRT_reviewgate".to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![
+                ExistingReviewThreadComment {
+                    author_login: Some("github-actions[bot]".to_string()),
+                    body: render_inline_comment_body(&tracked.finding),
+                },
+                ExistingReviewThreadComment {
+                    author_login: Some("maintainer".to_string()),
+                    body: review_thread_resolution_body(&tracked),
+                },
+            ],
+        };
+
+        let plan = plan_review_thread_lifecycle(&[thread], std::slice::from_ref(&tracked));
+
+        assert_eq!(
+            plan.actions,
+            vec![ReviewThreadLifecycleAction::ReplyAndResolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+                body: review_thread_resolution_body(&tracked),
+            }]
+        );
+    }
+
+    #[test]
+    fn evidence_backed_reopening_replies_then_unresolves_idempotently() {
+        let mut finding: Finding = serde_json::from_str::<reviewgate_core::ReviewArtifact>(
+            include_str!("../../../fixtures/simple-review.json"),
+        )
+        .expect("fixture")
+        .findings
+        .remove(0);
+        finding
+            .grounding
+            .as_mut()
+            .expect("fixture grounding")
+            .reopening_evidence = Some("The guarded branch changed on this head.".to_string());
+        let tracked = reviewgate_core::TrackedFinding {
+            semantic_fingerprint: reviewgate_core::semantic_fingerprint(&finding),
+            finding,
+            disposition: reviewgate_core::FindingDisposition::StillOpen,
+            disposition_history: vec![
+                reviewgate_core::FindingDispositionRecord {
+                    disposition: reviewgate_core::FindingDisposition::Fixed,
+                    submitted_disposition: Some(reviewgate_core::AgentDisposition::Fixed),
+                    submission_id: Some(42),
+                    evidence_summary: "Previously fixed.".to_string(),
+                    actor: "repair-agent".to_string(),
+                    reviewed_sha: "old-head".to_string(),
+                    code_fingerprint: "old-code".to_string(),
+                },
+                reviewgate_core::FindingDispositionRecord {
+                    disposition: reviewgate_core::FindingDisposition::StillOpen,
+                    submitted_disposition: None,
+                    submission_id: None,
+                    evidence_summary: "Relevant evidence changed.".to_string(),
+                    actor: "reviewgate".to_string(),
+                    reviewed_sha: "new-head".to_string(),
+                    code_fingerprint: "new-code".to_string(),
+                },
+            ],
+        };
+        let mut thread = ExistingReviewThread {
+            id: "PRRT_reviewgate".to_string(),
+            is_resolved: true,
+            is_outdated: false,
+            comments: vec![ExistingReviewThreadComment {
+                author_login: Some("github-actions[bot]".to_string()),
+                body: render_inline_comment_body(&tracked.finding),
+            }],
+        };
+
+        let first = plan_review_thread_lifecycle(
+            std::slice::from_ref(&thread),
+            std::slice::from_ref(&tracked),
+        );
+        assert_eq!(
+            first.actions,
+            vec![ReviewThreadLifecycleAction::ReplyAndUnresolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+                body: review_thread_reopening_body(&tracked),
+            }]
+        );
+
+        thread.comments.push(ExistingReviewThreadComment {
+            author_login: Some("github-actions[bot]".to_string()),
+            body: review_thread_reopening_body(&tracked),
+        });
+        let retry = plan_review_thread_lifecycle(&[thread], std::slice::from_ref(&tracked));
+        assert_eq!(
+            retry.actions,
+            vec![ReviewThreadLifecycleAction::Unresolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+            }]
+        );
     }
 }

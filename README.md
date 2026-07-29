@@ -477,8 +477,9 @@ Network calls to GitHub happen in the CLI through `gh`; reusable publishing logi
 5. publishes inline findings best-effort and records phase timings;
 6. publishes or updates the canonical summary comment;
 7. publishes a ReviewGate check run under `always()`;
-8. writes `.reviewgate/result.json` with the stable agent contract and action outputs;
-9. uploads it as the `reviewgate-agent-result` Actions artifact under `always()`.
+8. reconciles ReviewGate-owned finding threads against the canonical dispositions;
+9. writes `.reviewgate/result.json` with the stable agent contract and action outputs;
+10. uploads it as the `reviewgate-agent-result` Actions artifact under `always()`.
 
 The action executes the verified release binary from the runner temp directory, never from the checked-out PR workspace. That keeps product logic in Rust without compiling ReviewGate in consumer workflows. In `rereview` mode it only validates the comment event and requests a safe current-head rerun; it does not run model-backed review steps.
 
@@ -590,6 +591,8 @@ Inline comments contain hidden markers:
 ```
 
 ReviewGate uses those markers to avoid duplicate comments across reruns. Finding IDs are percent-encoded in markers so schema-valid IDs can safely round-trip.
+Each comment also carries a semantic-fingerprint marker, so equivalent findings
+retain one thread when wording, angle ownership, or line anchors move.
 
 For each finding at or above `min_severity`, ReviewGate tries to publish an inline comment:
 
@@ -600,6 +603,13 @@ For each finding at or above `min_severity`, ReviewGate tries to publish an inli
 5. If no right-side anchor exists or GitHub rejects the comment, keep the finding in JSON and warn in logs. ReviewGate does not create standalone finding comments for these cases.
 
 Older standalone finding comments with `<!-- reviewgate-finding-comment:... -->` markers are cleaned up by later runs.
+
+After the canonical summary applies current-head dispositions, ReviewGate
+reconciles only threads whose root comment was authored by GitHub Actions and
+contains ReviewGate's semantic marker. Still-open and disputed findings retain
+their existing thread. Fixed, rejected-with-evidence, intentional-contract, and
+superseded findings receive one machine-readable lifecycle reply and are
+resolved idempotently. Human-authored comments are never deleted.
 
 ## Maintainer-Requested Rereviews
 
@@ -676,7 +686,12 @@ use the smaller, stable `reviewgate-agent-result/v1` contract in
 The agent result includes the repository/PR scope, exact reviewed SHA, typed
 angle errors, cost and runtime timing data, inline thread IDs, and canonical
 tracked findings with their semantic fingerprints and prior disposition
-history. Its schema is:
+history. Each finding also exposes `thread_status`, `thread_transition`,
+`thread_outdated`, and `reopening_evidence`, so agents can audit retained,
+resolved, moved-anchor, and justified-reopening behavior without GraphQL. Its
+`unknown` status reports unavailable GitHub thread state without claiming that
+a finding was never published. Its
+schema is:
 
 ```text
 schemas/reviewgate-agent-result-v1.schema.json
@@ -909,6 +924,7 @@ cargo install --git https://github.com/LVTD-LLC/reviewgate --locked reviewgate-c
 | `publish-start-signal` | Action-internal command to create/update the running placeholder summary. |
 | `publish-findings` | Action-internal command to publish eligible findings as inline PR comments. |
 | `publish-summary` | Action-internal command to publish/update the canonical summary and append the step summary. |
+| `reconcile-threads` | Action-internal command to reconcile bot-owned finding threads with canonical dispositions. |
 | `publish-check-run` | Action-internal command to publish review availability as a GitHub check run. |
 | `publish-agent-result` | Action-internal command to write the stable result and action outputs. |
 
