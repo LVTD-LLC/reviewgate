@@ -1403,14 +1403,22 @@ fn apply_convergence_policy(
     disposition_updates: &[FindingDispositionUpdate],
 ) -> CliResult<Vec<TrackedFinding>> {
     if artifact.status == ReviewStatus::ReviewError {
-        artifact.disposition_updates.clear();
-        let tracked_findings = context
-            .previous_state
-            .as_ref()
-            .map(|state| state.tracked_findings.clone())
-            .unwrap_or_default();
-        artifact.tracked_findings = tracked_findings.clone();
-        return Ok(tracked_findings);
+        artifact.disposition_updates = disposition_updates.to_vec();
+        let result = reconcile_findings_with_updates(
+            artifact.findings.clone(),
+            context
+                .previous_state
+                .as_ref()
+                .map(|state| state.tracked_findings.as_slice())
+                .unwrap_or_default(),
+            &context.convergence_delta,
+            disposition_updates,
+        )?;
+        artifact.findings = result.findings;
+        artifact.notes.extend(result.notes);
+        artifact.tracked_findings = result.tracked_findings.clone();
+        recompute_artifact_outcome(artifact)?;
+        return Ok(result.tracked_findings);
     }
     artifact.disposition_updates = disposition_updates.to_vec();
     let result = reconcile_findings_with_updates(
@@ -8251,6 +8259,143 @@ let resync_state = state.clone();
             .expect_err("missing canonical history must fail closed");
         assert!(error.to_string().contains("git command failed"));
         fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn inconclusive_findings_survive_a_successful_same_head_omission() {
+        let mut inconclusive: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        inconclusive.findings.truncate(1);
+        inconclusive.findings[0].angle_id = Some("general".to_string());
+        inconclusive.score = None;
+        inconclusive.status = ReviewStatus::ReviewError;
+        inconclusive.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 3,
+            status: ReviewStatus::NeedsChanges,
+            verdict: "1 validated blocker(s) remain.".to_string(),
+            model: "test".to_string(),
+            finding_ids: vec![inconclusive.findings[0].id.clone()],
+        }];
+        inconclusive.angle_errors = vec![ReviewAngleError {
+            angle_id: "adversarial".to_string(),
+            angle_name: "Adversarial".to_string(),
+            kind: ReviewErrorKind::MalformedResponse,
+            retryable: true,
+            message: "The reviewer returned an invalid structured response.".to_string(),
+            model: "test".to_string(),
+        }];
+        let first_context = ReviewContext {
+            reviewed_sha: inconclusive.reviewed_sha.clone(),
+            scope: ReviewScope::Local,
+            previous_state: None,
+            convergence_delta: reviewgate_core::ConvergenceDelta::first_review(
+                &inconclusive.reviewed_sha,
+            ),
+            pull_request: PullRequestContext::default(),
+            changed_files: vec!["app/webhooks/retry.py".to_string()],
+            diff: String::new(),
+            analyzed_line_count: 1,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+        };
+
+        let tracked = apply_convergence_policy(&mut inconclusive, &first_context, &[])
+            .expect("inconclusive finding is tracked");
+        assert_eq!(tracked.len(), 1);
+        let state = SummaryState::for_artifact_with_convergence(
+            &inconclusive,
+            None,
+            20,
+            ReviewScope::Local,
+            tracked,
+        )
+        .expect("inconclusive state builds");
+
+        let mut suppressed_state = state.clone();
+        let suppressed = &mut suppressed_state.tracked_findings[0];
+        suppressed.disposition = FindingDisposition::RejectedWithEvidence;
+        suppressed
+            .disposition_history
+            .push(reviewgate_core::FindingDispositionRecord {
+                disposition: FindingDisposition::RejectedWithEvidence,
+                submitted_disposition: Some(AgentDisposition::RejectedWithEvidence),
+                submission_id: Some(1),
+                evidence_summary: "Verified false positive.".to_string(),
+                actor: "agent:test".to_string(),
+                reviewed_sha: inconclusive.reviewed_sha.clone(),
+                code_fingerprint: finding_code_fingerprint(&suppressed.finding),
+            });
+        let mut suppressed_recurrence = inconclusive.clone();
+        suppressed_recurrence.tracked_findings.clear();
+        let suppressed_context = ReviewContext {
+            previous_state: Some(suppressed_state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
+                &suppressed_recurrence.reviewed_sha,
+            ),
+            ..first_context.clone()
+        };
+        apply_convergence_policy(&mut suppressed_recurrence, &suppressed_context, &[])
+            .expect("binding disposition suppresses the recurrence");
+        assert!(suppressed_recurrence.findings.is_empty());
+        assert!(
+            suppressed_recurrence.angle_results[0]
+                .finding_ids
+                .is_empty()
+        );
+        assert_eq!(suppressed_recurrence.angle_results[0].score, 5);
+        assert_eq!(
+            suppressed_recurrence.angle_results[0].status,
+            ReviewStatus::Passed
+        );
+
+        let mut inconclusive_omission = inconclusive.clone();
+        inconclusive_omission.findings.clear();
+        inconclusive_omission.tracked_findings.clear();
+        let inconclusive_retry_context = ReviewContext {
+            previous_state: Some(state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
+                &inconclusive_omission.reviewed_sha,
+            ),
+            ..first_context.clone()
+        };
+        let carried =
+            apply_convergence_policy(&mut inconclusive_omission, &inconclusive_retry_context, &[])
+                .expect("inconclusive same-head omission keeps the prior finding");
+        assert_eq!(carried.len(), 1);
+        assert_eq!(inconclusive_omission.findings.len(), 1);
+        let retry_state = SummaryState::for_artifact_with_convergence(
+            &inconclusive_omission,
+            inconclusive_retry_context.previous_state.as_ref(),
+            20,
+            ReviewScope::Local,
+            carried,
+        )
+        .expect("inconclusive retry state builds");
+
+        let mut successful_omission = inconclusive_omission;
+        successful_omission.score = Some(DEFAULT_TARGET_SCORE);
+        successful_omission.status = ReviewStatus::Passed;
+        successful_omission.angle_errors.clear();
+        successful_omission.findings.clear();
+        successful_omission.tracked_findings.clear();
+        let retry_context = ReviewContext {
+            previous_state: Some(retry_state),
+            convergence_delta: reviewgate_core::ConvergenceDelta::unchanged(
+                &successful_omission.reviewed_sha,
+            ),
+            ..first_context
+        };
+
+        let carried = apply_convergence_policy(&mut successful_omission, &retry_context, &[])
+            .expect("same-head omission keeps the prior finding");
+
+        assert_eq!(carried.len(), 1);
+        assert_eq!(successful_omission.findings.len(), 1);
+        assert_eq!(successful_omission.status, ReviewStatus::NeedsChanges);
+        assert!(successful_omission.score.is_some_and(|score| score < 5));
     }
 
     #[test]
