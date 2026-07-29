@@ -70,7 +70,7 @@ jq -r '
 ' .reviewgate/review.json
 ```
 
-Treat a finding with non-null `blocking_reason` but without `evidence_gate_result == "passed"`, high confidence, exact full-line grounding evidence (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment as an invalid blocker. P0-P1 must also expose `grounding.reproduction` or `grounding.proof`. ReviewGate normally suppresses such output before publication; if it appears, request a fresh current-head review instead of editing code from the unsupported claim.
+Treat a finding with non-null `blocking_reason` but without `evidence_gate_result == "passed"`, high confidence, a stable `grounding.semantic_key`, exact full-line grounding evidence (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment as an invalid blocker. P0-P1 must also expose `grounding.reproduction` or `grounding.proof`. ReviewGate normally suppresses such output before publication; if it appears, request a fresh current-head review instead of editing code from the unsupported claim.
 
 Also inspect review angles. Each angle score must be explained by its referenced findings. If a completed angle is below `5/5` without a score-affecting referenced finding, treat the artifact as invalid and wait for or request a fresh ReviewGate run.
 

@@ -2,6 +2,14 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-07-29
+
+- Made rereviews converge on the current PR head: ReviewGate now carries repository/PR-bound finding dispositions in its canonical summary state, reviews only the delta since the last validated SHA, reuses semantic finding identities across wording and line movement, retains still-open findings until an explicit `fixed` resolution deletes every prior current-head evidence location and checks each complete non-empty replacement block, persists grounded disposition updates through summary publication, revalidates their repository evidence at that boundary, and suppresses evidence-rejected or intentional findings unless changed code or contract evidence justifies reopening. Pure deletions remain open for explicit disposition because unrelated added evidence cannot prove the underlying path is gone.
+- Made still-open blocker policy monotonic across same-identity rereviews: changed evidence and wording can refresh, but lower severity, confidence, or evidence status cannot silently remove the blocker without an explicit validated disposition.
+- Added a stricter `0.95` confidence and per-finding novelty-evidence requirement for blockers first introduced after the initial review. Completed reviews on an unchanged head are now idempotent rereview no-ops.
+- Replaced the old hidden summary-state format with a base64url-encoded version 2 contract that cannot be broken by untrusted finding text and is rejected when its repository or pull-request binding does not match. Invalid canonical state now fails closed, and finding count, disposition history, and encoded state size are bounded. The project is pre-user, so old hidden state is deliberately rejected instead of migrated.
+- Added deterministic five-pass PR #364 and repeated-permission PR #365 convergence fixtures, plus focused tests for every disposition, relevant-code changes, justified reopening, unchanged-head drift, and cross-PR state rejection.
+
 ## 2026-07-28
 
 - Added a deterministic finding policy that separates classification, severity, confidence, evidence status, and blocking disposition; only high-confidence validated defects, security findings, and reliability risks now lower the score or fail the ReviewGate check, while contract ambiguities and suggestions remain advisory. Failure to publish that check now fails the action instead of silently leaving an older result in place.

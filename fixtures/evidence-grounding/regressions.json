@@ -17,6 +17,7 @@
       "detail": "The positional project key reaches parseFlags and is rejected.",
       "agent_instruction": "Allow positional operands.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The project key reaches parseFlags.",
         "causal_path": "project get -> projectGet -> parseFlags",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -45,6 +46,7 @@
       "detail": "The full argument slice, including the project key, reaches parseFlags.",
       "agent_instruction": "Slice off the command and project key before parsing flags.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The project key reaches parseFlags.",
         "causal_path": "project get -> projectGet -> parseFlags",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -73,6 +75,7 @@
       "detail": "actions/upload-artifact requires actions: write on GITHUB_TOKEN.",
       "agent_instruction": "Add actions: write.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "actions/upload-artifact authenticates with GITHUB_TOKEN actions:write.",
         "causal_path": "cli job -> upload-artifact -> Actions artifact service",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -101,6 +104,7 @@
       "detail": "The app-image job cannot promote image tags.",
       "agent_instruction": "Add packages: write.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The app-image job lacks packages:write.",
         "causal_path": "tag push -> app-image -> imagetools create -> GHCR",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -129,6 +133,7 @@
       "detail": "The app-image job invokes imagetools create without effective packages:write.",
       "agent_instruction": "Grant packages: write to app-image.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The app-image job lacks packages:write.",
         "causal_path": "tag push -> app-image -> imagetools create -> GHCR",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -158,6 +163,7 @@
       "detail": "The caller does not pass packages:write to the reusable workflow.",
       "agent_instruction": "Grant packages: write on the caller.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The publish caller lacks packages:write.",
         "causal_path": "release-cutter -> publish workflow_call -> app-image -> GHCR",
         "test_assessment": "Inspected the caller and called workflow permission paths.",
@@ -187,6 +193,7 @@
       "detail": "The caller caps the reusable workflow at contents:write, so app-image cannot mutate GHCR.",
       "agent_instruction": "Grant packages: write on the caller.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The publish caller lacks packages:write.",
         "causal_path": "release-cutter -> publish workflow_call -> app-image -> GHCR",
         "test_assessment": "Inspected the caller and called workflow permission paths.",
@@ -215,6 +222,7 @@
       "detail": "github.event.before is empty for workflow_dispatch, so this workflow fails.",
       "agent_instruction": "Handle workflow_dispatch.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The workflow runs on workflow_dispatch with an empty before SHA.",
         "causal_path": "workflow_dispatch -> BEFORE_SHA -> git diff",
         "test_assessment": "Inspected the workflow trigger and deploy step.",
@@ -243,6 +251,7 @@
       "detail": "The script reads INDEXNOW_KEY but the workflow omits it.",
       "agent_instruction": "Add INDEXNOW_KEY to env.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The Notify IndexNow step lacks INDEXNOW_KEY.",
         "causal_path": "deploy -> Notify IndexNow -> submit_indexnow",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -272,6 +281,7 @@
       "detail": "python3 -m scripts.submit_indexnow requires scripts/__init__.py.",
       "agent_instruction": "Add scripts/__init__.py.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "Python requires scripts/__init__.py for -m invocation.",
         "causal_path": "deploy -> python -m -> module discovery",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -300,6 +310,7 @@
       "detail": "The checkout is shallow, so git fetch of the explicit before SHA will fail.",
       "agent_instruction": "Use fetch-depth zero.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "An explicit SHA fetch fails solely because the checkout is shallow.",
         "causal_path": "checkout -> git fetch explicit SHA -> git diff",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -328,6 +339,7 @@
       "detail": "The release job correctly has contents:write, so this is fine and no issue exists here.",
       "agent_instruction": "Add contents: write.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The release job lacks contents:write.",
         "causal_path": "release -> gh release create",
         "test_assessment": "Searched changed and sibling tests for the alleged path.",
@@ -356,6 +368,7 @@
       "detail": "A hypothetical environment could behave differently.",
       "agent_instruction": "Consider adding defensive code.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "An unspecified environment may behave differently.",
         "causal_path": "unspecified environment -> stable",
         "test_assessment": "No concrete failing environment or exact-path test was identified.",
@@ -384,6 +397,7 @@
       "detail": "The mutation now runs without checking that the record belongs to the caller.",
       "agent_instruction": "Restore the ownership check before the mutation.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "Removing the ownership assertion permits a caller to update another user's record.",
         "causal_path": "update_record -> missing ownership assertion -> record.update",
         "test_assessment": "No test covers an update attempted by a non-owner.",
@@ -412,6 +426,7 @@
       "detail": "The added permission allegedly grants a broader capability than the checked line.",
       "agent_instruction": "Change the permission.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The workflow grants unrestricted write access.",
         "causal_path": "permissions -> release job -> package mutation",
         "test_assessment": "No workflow permission test exists.",
@@ -440,6 +455,7 @@
       "detail": "The key is configured only for a later, unrelated step.",
       "agent_instruction": "Pass INDEXNOW_KEY to the Notify IndexNow step.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The Notify IndexNow step lacks INDEXNOW_KEY.",
         "causal_path": "deploy -> Notify IndexNow -> submit_indexnow",
         "test_assessment": "No test supplies step-scoped environment to this workflow.",
@@ -468,6 +484,7 @@
       "detail": "This callsite passes the full argument slice; the separate safe command does not change this path.",
       "agent_instruction": "Slice positional operands before parsing flags in unsafe.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The unsafe command's positional operands reach parseFlags.",
         "causal_path": "unsafe command -> full args -> parseFlags",
         "test_assessment": "No test covers positional operands on the unsafe command.",
@@ -499,6 +516,7 @@
       "detail": "workflow_dispatch does not provide the push event's before SHA, so the explicit fetch receives an empty ref.",
       "agent_instruction": "Use an event-appropriate base SHA or guard the fetch when BEFORE_SHA is absent.",
       "grounding": {
+        "semantic_key": "fixture.evidence_grounding",
         "claim": "The shallow fetch fails during workflow_dispatch because BEFORE_SHA is empty.",
         "causal_path": "workflow_dispatch -> missing github.event.before -> empty git fetch ref",
         "test_assessment": "No workflow test covers manual dispatch payloads.",

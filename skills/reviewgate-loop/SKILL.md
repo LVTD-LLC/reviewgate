@@ -80,7 +80,9 @@ jq -r '
 ' .reviewgate/review.json
 ```
 
-Before changing code, confirm every finding with non-null `blocking_reason` has `evidence_gate_result == "passed"`, high confidence, exact full-line `grounding.evidence` (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment; P0-P1 must also include a reproduction or exceptional proof. If a blocker lacks that contract, request a fresh review instead of repairing the unsupported claim.
+Before changing code, confirm every finding with non-null `blocking_reason` has `evidence_gate_result == "passed"`, high confidence, a stable `grounding.semantic_key`, exact full-line `grounding.evidence` (`side: new` for current-head lines or `side: old` for deleted diff lines), a causal path, and a test assessment; P0-P1 must also include a reproduction or exceptional proof. If a blocker lacks that contract, request a fresh review instead of repairing the unsupported claim.
+
+Push a new head before requesting another completed review. `@reviewgate review` is intentionally a no-op when the canonical state already records a completed review for the exact current SHA.
 
 Also inspect angle results:
 
