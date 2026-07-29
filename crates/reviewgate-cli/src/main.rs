@@ -2590,36 +2590,33 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
         .as_ref()
         .map(|state| state.tracked_findings.as_slice())
         .unwrap_or_default();
-    if artifact.status != ReviewStatus::ReviewError {
-        let (diff, changed_files, delta) = if let Some(previous) = previous_state.as_ref() {
-            collect_convergence_delta(&repo, previous, &head_sha)?
-        } else {
-            (
-                String::new(),
-                Vec::new(),
-                reviewgate_core::ConvergenceDelta::first_review(&head_sha),
-            )
-        };
-        validate_serialized_disposition_updates(
-            &repo,
-            &artifact,
-            &ReviewContext {
-                reviewed_sha: head_sha.clone(),
-                scope: scope.clone(),
-                previous_state: previous_state.clone(),
-                convergence_delta: delta.clone(),
-                pull_request: PullRequestContext::default(),
-                changed_files,
-                diff,
-                analyzed_line_count: 0,
-                data_integrity_review_needed: false,
-                context_files: vec![],
-            },
-        )?;
-        artifact = reconcile_publication_artifact(artifact, previous_tracked_findings, &delta)?;
+    let (diff, changed_files, delta) = if let Some(previous) = previous_state.as_ref() {
+        collect_convergence_delta(&repo, previous, &head_sha)?
     } else {
-        artifact.tracked_findings = previous_tracked_findings.to_vec();
-    }
+        (
+            String::new(),
+            Vec::new(),
+            reviewgate_core::ConvergenceDelta::first_review(&head_sha),
+        )
+    };
+    let publication_context = ReviewContext {
+        reviewed_sha: head_sha.clone(),
+        scope: scope.clone(),
+        previous_state: previous_state.clone(),
+        convergence_delta: delta,
+        pull_request: PullRequestContext::default(),
+        changed_files,
+        diff,
+        analyzed_line_count: 0,
+        data_integrity_review_needed: false,
+        context_files: vec![],
+    };
+    artifact = prepare_validated_summary_publication_artifact(
+        &repo,
+        artifact,
+        previous_tracked_findings,
+        &publication_context,
+    )?;
     fs::write(&options.input, serde_json::to_string_pretty(&artifact)?).with_context(|| {
         format!(
             "failed to persist reconciled artifact {}",
@@ -2667,7 +2664,7 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     Ok(())
 }
 
-fn reconcile_publication_artifact(
+fn prepare_summary_publication_artifact(
     mut artifact: ReviewArtifact,
     previous_tracked_findings: &[TrackedFinding],
     delta: &reviewgate_core::ConvergenceDelta,
@@ -2682,6 +2679,20 @@ fn reconcile_publication_artifact(
     artifact.tracked_findings = convergence.tracked_findings;
     recompute_artifact_outcome(&mut artifact)?;
     Ok(artifact)
+}
+
+fn prepare_validated_summary_publication_artifact(
+    repo: &Path,
+    artifact: ReviewArtifact,
+    previous_tracked_findings: &[TrackedFinding],
+    context: &ReviewContext,
+) -> CliResult<ReviewArtifact> {
+    validate_serialized_disposition_updates(repo, &artifact, context)?;
+    prepare_summary_publication_artifact(
+        artifact,
+        previous_tracked_findings,
+        &context.convergence_delta,
+    )
 }
 
 fn validate_serialized_disposition_updates(
@@ -7512,7 +7523,7 @@ review_angles:
             &BTreeSet::from(["repair-agent".to_string()]),
         )
         .expect("transport replay");
-        let reconciled = reconcile_publication_artifact(
+        let reconciled = prepare_summary_publication_artifact(
             artifact,
             &state.tracked_findings,
             &reviewgate_core::ConvergenceDelta::unchanged(&state.last_reviewed_sha),
@@ -7578,7 +7589,7 @@ review_angles:
             .apply_to_summary(&mut state, 9001)
             .expect("late disposition");
 
-        let reconciled = reconcile_publication_artifact(
+        let reconciled = prepare_summary_publication_artifact(
             artifact,
             &state.tracked_findings,
             &reviewgate_core::ConvergenceDelta::unchanged(&state.last_reviewed_sha),
@@ -8396,6 +8407,49 @@ let resync_state = state.clone();
         assert_eq!(successful_omission.findings.len(), 1);
         assert_eq!(successful_omission.status, ReviewStatus::NeedsChanges);
         assert!(successful_omission.score.is_some_and(|score| score < 5));
+    }
+
+    #[test]
+    fn summary_publication_preserves_a_new_inconclusive_finding() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        artifact.findings.truncate(1);
+        artifact.findings[0].angle_id = Some("general".to_string());
+        artifact.score = None;
+        artifact.status = ReviewStatus::ReviewError;
+        artifact.angle_results = vec![ReviewAngleResult {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            score: 3,
+            status: ReviewStatus::NeedsChanges,
+            verdict: "1 validated blocker(s) remain.".to_string(),
+            model: "test".to_string(),
+            finding_ids: vec![artifact.findings[0].id.clone()],
+        }];
+        artifact.angle_errors = vec![ReviewAngleError {
+            angle_id: "adversarial".to_string(),
+            angle_name: "Adversarial".to_string(),
+            kind: ReviewErrorKind::MalformedResponse,
+            retryable: true,
+            message: "The reviewer returned an invalid structured response.".to_string(),
+            model: "test".to_string(),
+        }];
+
+        let reconciled = prepare_summary_publication_artifact(
+            artifact,
+            &[],
+            &reviewgate_core::ConvergenceDelta::first_review("fixture-sha"),
+        )
+        .expect("summary publication keeps successful-angle findings");
+
+        assert_eq!(reconciled.status, ReviewStatus::ReviewError);
+        assert_eq!(reconciled.findings.len(), 1);
+        assert_eq!(reconciled.tracked_findings.len(), 1);
+        assert_eq!(
+            reconciled.tracked_findings[0].semantic_fingerprint,
+            semantic_fingerprint(&reconciled.findings[0])
+        );
     }
 
     #[test]
@@ -10050,11 +10104,36 @@ diff --git a/src/lib.rs b/src/lib.rs
             "The new regression guard covers retry exhaustion."
         );
 
-        let published_artifact: ReviewArtifact =
+        let mut published_artifact: ReviewArtifact =
             serde_json::from_str(&serde_json::to_string(&artifact).expect("serialize artifact"))
                 .expect("deserialize artifact");
-        validate_serialized_disposition_updates(&dir, &published_artifact, &context)
-            .expect("serialized update regrounds before publication");
+        published_artifact.score = None;
+        published_artifact.status = ReviewStatus::ReviewError;
+        published_artifact.angle_errors = vec![ReviewAngleError {
+            angle_id: "adversarial".to_string(),
+            angle_name: "Adversarial".to_string(),
+            kind: ReviewErrorKind::MalformedResponse,
+            retryable: true,
+            message: "The reviewer returned an invalid structured response.".to_string(),
+            model: "test".to_string(),
+        }];
+        let published = prepare_validated_summary_publication_artifact(
+            &dir,
+            published_artifact.clone(),
+            &context
+                .previous_state
+                .as_ref()
+                .expect("prior state")
+                .tracked_findings,
+            &context,
+        )
+        .expect("inconclusive serialized update regrounds before publication");
+        assert_eq!(published.status, ReviewStatus::ReviewError);
+        assert_eq!(
+            published.tracked_findings[0].disposition,
+            FindingDisposition::Fixed
+        );
+
         let mut tampered_artifact = published_artifact.clone();
         tampered_artifact.disposition_updates[0]
             .resolution
@@ -10063,27 +10142,20 @@ diff --git a/src/lib.rs b/src/lib.rs
             .expect("resolution grounding")
             .evidence[0]
             .excerpt = "retry_is_covered = forged".to_string();
-        let tampered_error =
-            validate_serialized_disposition_updates(&dir, &tampered_artifact, &context)
-                .expect_err("tampered serialized update must fail closed");
-        assert!(tampered_error.to_string().contains(
-            "serialized disposition updates do not match repository-grounded resolution evidence"
-        ));
-        let published = reconcile_findings_with_updates(
-            published_artifact.findings,
+        let tampered_error = prepare_validated_summary_publication_artifact(
+            &dir,
+            tampered_artifact,
             &context
                 .previous_state
                 .as_ref()
                 .expect("prior state")
                 .tracked_findings,
-            &context.convergence_delta,
-            &published_artifact.disposition_updates,
+            &context,
         )
-        .expect("publish path reapplies disposition updates");
-        assert_eq!(
-            published.tracked_findings[0].disposition,
-            FindingDisposition::Fixed
-        );
+        .expect_err("tampered inconclusive update must fail closed");
+        assert!(tampered_error.to_string().contains(
+            "serialized disposition updates do not match repository-grounded resolution evidence"
+        ));
         fs::remove_dir_all(&dir).ok();
     }
 
