@@ -14,7 +14,7 @@
 
 | # | Phase | Pattern | Status | PR |
 |---|---|---|---|---|
-| 0 | Technical foundations | Setup | completed | [#55](https://github.com/LVTD-LLC/reviewgate/pull/55) |
+| 0 | Technical foundations | Setup | in_progress | [#55](https://github.com/LVTD-LLC/reviewgate/pull/55); post-deploy verification pending |
 | 1 | Retarget the homepage for “AI code review tool” | Homepage boost | pending | – |
 | 2 | Build the internal-link spine and reusable Astro SEO layouts | Internal links | pending | – |
 | 3 | CodeRabbit alternatives | A — alternatives | pending | – |
@@ -183,6 +183,8 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:lvtd.dev` prop
 **Files:** `site/package.json`, `site/package-lock.json`, `site/astro.config.mjs`, `site/public/robots.txt`, `site/src/layouts/BaseLayout.astro`, `site/src/scripts/analytics.ts`, page/CTA components, `deployment/Dockerfile`, `.github/workflows/deploy.yml`, `.seo/config.json`, `.seo/link-inventory.md`, `docs/seo-sprint.md`, `CHANGELOG.md`.
 
 **Verification:** Astro check/build; generated sitemap index and robots return valid files; one H1 per page; unique title/description/canonical; JSON-LD parses; dependency audit is clean; production smoke check after deploy; GSC sitemap submission recorded; PostHog receives production pageview and intent events.
+
+**Post-deployment pending:** verify production, submit `sitemap-index.xml` through `sc-domain:lvtd.dev`, and confirm PostHog receives the expected anonymous events before changing the tracker status to `completed`.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 
