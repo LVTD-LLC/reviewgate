@@ -1,0 +1,63 @@
+---
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
+
+const plannedGuides = [
+  ["01", "Install the action", "Workflow setup, permissions, fork safety, and the OpenRouter secret."],
+  ["02", "Configure reviews", "Models, severity thresholds, built-in angles, prompts, and skills."],
+  ["03", "Close the loop", "Review JSON, canonical summaries, rereviews, and external coding agents."],
+];
+---
+
+<BaseLayout
+  title="Documentation coming soon - ReviewGate"
+  description="ReviewGate documentation is being assembled. Use the project README as the current installation and configuration reference."
+>
+  <main class="concept signal-site utility-site">
+    <SiteHeader current="docs" />
+
+    <section class="utility-hero" aria-label="Documentation status">
+      <div class="utility-copy">
+        <p class="signal-eyebrow">DOCUMENTATION / BUILD IN PROGRESS</p>
+        <h1>The manual is being <em>wired.</em></h1>
+        <p class="utility-lede">
+          Installation, configuration, review angles, artifacts, and agent-loop guides are being assembled. Until they land here, the repository README is the source of truth.
+        </p>
+        <div class="signal-actions">
+          <a class="signal-primary" href={`${repositoryUrl}#readme`}>Read the README <span aria-hidden="true">↗</span></a>
+          <a class="signal-secondary" href="/">Back to the product</a>
+        </div>
+      </div>
+
+      <aside class="utility-console" aria-label="Documentation release status">
+        <div class="console-topline">
+          <span>DOCSET / V0</span>
+          <span>QUEUE / 03</span>
+          <strong>WRITING</strong>
+        </div>
+        <div class="utility-status">
+          <p>PUBLICATION STATUS</p>
+          <strong>SOON_</strong>
+          <span>The product works today. The dedicated manual is catching up.</span>
+        </div>
+        <dl class="utility-queue">
+          {plannedGuides.map(([number, title, detail]) => (
+            <div>
+              <dt><span>{number}</span>{title}</dt>
+              <dd>{detail}</dd>
+            </div>
+          ))}
+        </dl>
+        <div class="console-footer">
+          <span>/docs</span>
+          <strong>STATUS / IN PROGRESS</strong>
+        </div>
+      </aside>
+    </section>
+
+    <SiteFooter />
+  </main>
+</BaseLayout>
