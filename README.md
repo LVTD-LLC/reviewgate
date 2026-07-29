@@ -600,6 +600,8 @@ The public contract is:
 - Branch names are never used as PR identity. A run for another PR with the same branch name, a stale SHA, a foreign repository, a non-PR event, or an in-progress run is never selected.
 - If no eligible run exists, ReviewGate posts a bounded `no_eligible_run` response and exits without requesting a review.
 - Redelivery of the same GitHub comment event is suppressed by a bot-owned marker keyed to `comment.id`. The documented concurrency group serializes duplicate deliveries before this check. A new later command has a new comment ID and intentionally requests another rereview.
+- If the canonical state already records a completed review for the exact current head, a later command returns `already_reviewed_current_head` without spending model time or rerunning the workflow.
+- On a new head, ReviewGate validates the prior state against the exact repository and PR, reviews the delta since the latest completed `last_valid_reviewed_sha`, and carries forward the finding dispositions described in [Rereview convergence](docs/rereview-convergence.md).
 - The acknowledgement reaction and final feedback update are best-effort after the idempotency marker exists. A reaction failure never blocks an otherwise valid rerun.
 
 The rereview job runs in the base repository context, does not check out PR code, and does not receive model secrets. It only requests a rerun of a previously approved ReviewGate `pull_request` run. `pull_request_target` is neither needed nor recommended.
@@ -698,7 +700,7 @@ Finding fields:
 | `classification` | `defect`, `security`, `reliability_risk`, `contract_ambiguity`, or `suggestion` | Finding kind. Contract ambiguities and suggestions are advisory. |
 | `evidence_gate_result` | `passed`, `failed`, or `not_required` | Deterministic evidence-gate outcome. Only `passed` can block. |
 | `blocking_reason` | `validated_defect`, `validated_security`, `validated_reliability_risk`, or null | Auditable deterministic reason the finding blocks. Advisory findings use null. |
-| `grounding` | object or null | Required before an eligible P0-P3 can block; contains the checked claim, causal path, test assessment, exact evidence (`new` for current-head lines, `old` for deleted diff lines), related tests, and P0-P1 reproduction/proof. |
+| `grounding` | object or null | Required before an eligible P0-P3 can block; contains a stable `semantic_key`, the checked claim, causal path, test assessment, exact evidence (`new` for current-head lines, `old` for deleted diff lines), related tests, P0-P1 reproduction/proof, and optional novelty/reopening evidence used by rereview convergence. |
 | `file` | string or null | Target file when known. |
 | `line` | integer or null | Right-side changed line for line findings when known. |
 | `title` | string | Short finding title. |

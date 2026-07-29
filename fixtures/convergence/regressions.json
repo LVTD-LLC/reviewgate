@@ -1,0 +1,88 @@
+{
+  "pr364_five_passes": [
+    {
+      "previous_sha": null,
+      "sha": "1111111111111111111111111111111111111111",
+      "changed_files": [".github/workflows/review.yml"],
+      "fixed_semantic_keys": [],
+      "findings": [
+        {
+          "id": "general:checkout-depth",
+          "semantic_key": "workflow.checkout_depth",
+          "file": ".github/workflows/review.yml",
+          "confidence": 0.99,
+          "instruction": "Remove fetch-depth."
+        }
+      ],
+      "expected_open": 1
+    },
+    {
+      "previous_sha": "1111111111111111111111111111111111111111",
+      "sha": "2222222222222222222222222222222222222222",
+      "changed_files": [".github/workflows/review.yml"],
+      "fixed_semantic_keys": ["workflow.checkout_depth"],
+      "findings": [],
+      "expected_open": 0
+    },
+    {
+      "previous_sha": "2222222222222222222222222222222222222222",
+      "sha": "3333333333333333333333333333333333333333",
+      "changed_files": ["README.md"],
+      "fixed_semantic_keys": [],
+      "findings": [
+        {
+          "id": "adversarial:checkout-depth",
+          "semantic_key": "workflow.checkout_depth",
+          "file": ".github/workflows/review.yml",
+          "confidence": 1.0,
+          "instruction": "Add fetch-depth."
+        }
+      ],
+      "expected_open": 0
+    },
+    {
+      "previous_sha": "3333333333333333333333333333333333333333",
+      "sha": "4444444444444444444444444444444444444444",
+      "changed_files": ["src/parser.rs"],
+      "fixed_semantic_keys": [],
+      "findings": [
+        {
+          "id": "general:parser-regression",
+          "semantic_key": "parser.new_regression",
+          "file": "src/parser.rs",
+          "confidence": 0.95,
+          "instruction": "Restore the parser guard.",
+          "novelty_evidence": "The sha-4 parser edit introduced this branch after the prior review."
+        }
+      ],
+      "expected_open": 1
+    },
+    {
+      "previous_sha": "4444444444444444444444444444444444444444",
+      "sha": "5555555555555555555555555555555555555555",
+      "changed_files": ["src/parser.rs"],
+      "fixed_semantic_keys": ["parser.new_regression"],
+      "findings": [],
+      "expected_open": 0
+    }
+  ],
+  "pr365_rejected_permission_recurrence": {
+    "seed_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "semantic_key": "workflow.package_permission",
+    "file": ".github/workflows/release.yml",
+    "rounds": [
+      {
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_files": ["README.md"],
+        "finding_id": "general:package-permission-reworded",
+        "expected_open": 0
+      },
+      {
+        "sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "changed_files": [".github/workflows/release.yml"],
+        "finding_id": "adversarial:package-permission-reworded-again",
+        "expected_open": 0
+      }
+    ]
+  }
+}

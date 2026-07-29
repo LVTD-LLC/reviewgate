@@ -1050,6 +1050,7 @@ mod tests {
             evidence_gate_result: reviewgate_core::EvidenceGateResult::Passed,
             blocking_reason: Some(reviewgate_core::BlockingReason::ValidatedDefect),
             grounding: Some(reviewgate_core::FindingGrounding {
+                semantic_key: "error_handling.changed_branch".to_string(),
                 claim: "The changed branch drops the error.".to_string(),
                 causal_path: "request -> changed branch -> silent success".to_string(),
                 test_assessment: "No test covers the error branch.".to_string(),
@@ -1063,6 +1064,8 @@ mod tests {
                 related_tests: vec![],
                 reproduction: Some("Trigger the error branch.".to_string()),
                 proof: None,
+                novelty_evidence: None,
+                reopening_evidence: None,
             }),
             file: Some("src/lib.rs".to_string()),
             line: Some(42),

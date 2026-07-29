@@ -1,11 +1,22 @@
 use std::collections::BTreeSet;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+mod convergence;
+
+pub use convergence::{
+    ConvergenceDelta, ConvergenceResult, FindingDisposition, FindingDispositionRecord,
+    LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_DISPOSITION_HISTORY, ReviewScope, TrackedFinding,
+    reconcile_findings, semantic_fingerprint,
+};
 
 pub const SUMMARY_MARKER: &str = "<!-- reviewgate-summary -->";
 pub const SUMMARY_STATE_PREFIX: &str = "<!-- reviewgate-state ";
 pub const SUMMARY_STATE_SUFFIX: &str = " -->";
+pub const MAX_SUMMARY_STATE_BYTES: usize = 32 * 1024;
+pub const MAX_TRACKED_FINDINGS: usize = 128;
 pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
 pub const DEFAULT_TARGET_SCORE: u8 = 5;
 pub const HIGH_CONFIDENCE_THRESHOLD: f64 = 0.85;
@@ -286,6 +297,8 @@ pub struct Finding {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct FindingGrounding {
+    #[serde(default)]
+    pub semantic_key: String,
     pub claim: String,
     pub causal_path: String,
     pub test_assessment: String,
@@ -297,6 +310,10 @@ pub struct FindingGrounding {
     pub reproduction: Option<String>,
     #[serde(default)]
     pub proof: Option<String>,
+    #[serde(default)]
+    pub novelty_evidence: Option<String>,
+    #[serde(default)]
+    pub reopening_evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1013,6 +1030,7 @@ impl SummaryCostRun {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SummaryState {
     pub version: u8,
+    pub scope: ReviewScope,
     pub last_reviewed_sha: String,
     #[serde(default)]
     pub last_valid_reviewed_sha: Option<String>,
@@ -1024,6 +1042,7 @@ pub struct SummaryState {
     pub run_count: u32,
     pub cumulative_cost_usd: f64,
     pub cost_history: Vec<SummaryCostRun>,
+    pub tracked_findings: Vec<TrackedFinding>,
 }
 
 impl SummaryState {
@@ -1032,6 +1051,72 @@ impl SummaryState {
         previous: Option<&SummaryState>,
         history_limit: usize,
     ) -> Result<Self, ReviewGateError> {
+        let scope = previous
+            .map(|state| state.scope.clone())
+            .unwrap_or(ReviewScope::Local);
+        let delta = previous.map_or_else(
+            || ConvergenceDelta::first_review(&artifact.reviewed_sha),
+            |state| ConvergenceDelta {
+                previous_reviewed_sha: Some(
+                    state
+                        .last_valid_reviewed_sha
+                        .clone()
+                        .unwrap_or_else(|| state.last_reviewed_sha.clone()),
+                ),
+                current_reviewed_sha: artifact.reviewed_sha.clone(),
+                changed_files: BTreeSet::new(),
+                external_contract_changed: false,
+            },
+        );
+        let tracked_findings = reconcile_findings(
+            artifact.findings.clone(),
+            previous
+                .map(|state| state.tracked_findings.as_slice())
+                .unwrap_or_default(),
+            &delta,
+        )?
+        .tracked_findings;
+        Self::for_artifact_with_convergence(
+            artifact,
+            previous,
+            history_limit,
+            scope,
+            tracked_findings,
+        )
+    }
+
+    pub fn for_artifact_with_convergence(
+        artifact: &ReviewArtifact,
+        previous: Option<&SummaryState>,
+        history_limit: usize,
+        scope: ReviewScope,
+        tracked_findings: Vec<TrackedFinding>,
+    ) -> Result<Self, ReviewGateError> {
+        if let Some(previous) = previous
+            && previous.scope != scope
+        {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "previous summary state scope does not match the current review target".to_string(),
+            ));
+        }
+        if artifact.status != ReviewStatus::ReviewError {
+            let artifact_fingerprints = artifact
+                .findings
+                .iter()
+                .map(semantic_fingerprint)
+                .collect::<BTreeSet<_>>();
+            let open_fingerprints = tracked_findings
+                .iter()
+                .filter(|tracked| tracked.disposition == FindingDisposition::StillOpen)
+                .map(|tracked| tracked.semantic_fingerprint.clone())
+                .collect::<BTreeSet<_>>();
+            if artifact_fingerprints != open_fingerprints {
+                return Err(ReviewGateError::InvalidSummaryState(
+                    "still-open convergence state does not match the published finding set"
+                        .to_string(),
+                ));
+            }
+        }
         let current_cost = artifact
             .cost_summary
             .as_ref()
@@ -1078,7 +1163,8 @@ impl SummaryState {
                 )
             };
         let mut state = SummaryState {
-            version: 1,
+            version: 2,
+            scope,
             last_reviewed_sha: artifact.reviewed_sha.clone(),
             last_valid_reviewed_sha,
             last_valid_score,
@@ -1092,7 +1178,15 @@ impl SummaryState {
                 .unwrap_or(0.0)
                 + current_cost,
             cost_history,
+            tracked_findings,
         };
+        for tracked in &mut state.tracked_findings {
+            if tracked.disposition_history.len() > MAX_DISPOSITION_HISTORY {
+                tracked
+                    .disposition_history
+                    .drain(0..tracked.disposition_history.len() - MAX_DISPOSITION_HISTORY);
+            }
+        }
         if state.reviewed_shas.len() > limit {
             state
                 .reviewed_shas
@@ -1103,15 +1197,38 @@ impl SummaryState {
     }
 
     pub fn validate(&self) -> Result<(), ReviewGateError> {
-        if self.version != 1 {
+        if self.version != 2 {
             return Err(ReviewGateError::InvalidSummaryState(format!(
                 "unsupported version {}",
                 self.version
             )));
         }
+        match &self.scope {
+            ReviewScope::Local => {}
+            ReviewScope::PullRequest {
+                repository,
+                pull_request_number,
+            } => {
+                if repository.trim().is_empty() || !repository.contains('/') {
+                    return Err(ReviewGateError::InvalidSummaryState(
+                        "pull request scope repository must be owner/name".to_string(),
+                    ));
+                }
+                if *pull_request_number == 0 {
+                    return Err(ReviewGateError::InvalidSummaryState(
+                        "pull request scope number must be positive".to_string(),
+                    ));
+                }
+            }
+        }
         if self.last_reviewed_sha.trim().is_empty() {
             return Err(ReviewGateError::InvalidSummaryState(
                 "last_reviewed_sha must not be empty".to_string(),
+            ));
+        }
+        if !self.reviewed_shas.contains(&self.last_reviewed_sha) {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "reviewed_shas must include last_reviewed_sha".to_string(),
             ));
         }
         if let Some(score) = self.last_valid_score {
@@ -1130,8 +1247,79 @@ impl SummaryState {
             ));
         }
         validate_estimated_cost(self.cumulative_cost_usd)?;
+        if self.tracked_findings.len() > MAX_TRACKED_FINDINGS {
+            return Err(ReviewGateError::InvalidSummaryState(format!(
+                "tracked finding count exceeds {MAX_TRACKED_FINDINGS}"
+            )));
+        }
         for run in &self.cost_history {
             run.validate()?;
+        }
+        let mut semantic_fingerprints = BTreeSet::new();
+        for tracked in &self.tracked_findings {
+            tracked.finding.validate().map_err(|error| {
+                ReviewGateError::InvalidSummaryState(format!(
+                    "tracked finding {} is invalid: {error}",
+                    tracked.finding.id
+                ))
+            })?;
+            if tracked.semantic_fingerprint != semantic_fingerprint(&tracked.finding) {
+                return Err(ReviewGateError::InvalidSummaryState(format!(
+                    "tracked finding {} semantic fingerprint is invalid",
+                    tracked.finding.id
+                )));
+            }
+            if !semantic_fingerprints.insert(tracked.semantic_fingerprint.as_str()) {
+                return Err(ReviewGateError::InvalidSummaryState(format!(
+                    "duplicate tracked semantic fingerprint {}",
+                    tracked.semantic_fingerprint
+                )));
+            }
+            if tracked.disposition_history.is_empty() {
+                return Err(ReviewGateError::InvalidSummaryState(format!(
+                    "tracked finding {} must include disposition history",
+                    tracked.finding.id
+                )));
+            }
+            if tracked.disposition_history.len() > MAX_DISPOSITION_HISTORY {
+                return Err(ReviewGateError::InvalidSummaryState(format!(
+                    "tracked finding {} disposition history exceeds {MAX_DISPOSITION_HISTORY}",
+                    tracked.finding.id
+                )));
+            }
+            if tracked
+                .disposition_history
+                .last()
+                .map(|record| record.disposition)
+                != Some(tracked.disposition)
+            {
+                return Err(ReviewGateError::InvalidSummaryState(format!(
+                    "tracked finding {} disposition does not match its latest record",
+                    tracked.finding.id
+                )));
+            }
+            for record in &tracked.disposition_history {
+                if record.evidence_summary.trim().is_empty()
+                    || record.actor.trim().is_empty()
+                    || record.reviewed_sha.trim().is_empty()
+                    || record.code_fingerprint.trim().is_empty()
+                {
+                    return Err(ReviewGateError::InvalidSummaryState(format!(
+                        "tracked finding {} has an incomplete disposition record",
+                        tracked.finding.id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_scope(&self, expected: &ReviewScope) -> Result<(), ReviewGateError> {
+        self.validate()?;
+        if &self.scope != expected {
+            return Err(ReviewGateError::InvalidSummaryState(
+                "summary state scope does not match the current review target".to_string(),
+            ));
         }
         Ok(())
     }
@@ -1141,6 +1329,8 @@ impl SummaryState {
 pub struct SummaryOptions {
     pub min_severity: Severity,
     pub cost_history_limit: usize,
+    pub scope: ReviewScope,
+    pub tracked_findings: Option<Vec<TrackedFinding>>,
 }
 
 impl Default for SummaryOptions {
@@ -1148,6 +1338,8 @@ impl Default for SummaryOptions {
         Self {
             min_severity: Severity::P4,
             cost_history_limit: DEFAULT_COST_HISTORY_LIMIT,
+            scope: ReviewScope::Local,
+            tracked_findings: None,
         }
     }
 }
@@ -1313,31 +1505,26 @@ pub fn extract_summary_state(summary: &str) -> Result<Option<SummaryState>, Revi
         ));
     };
     let state_end = state_start + relative_end;
-    let raw = &summary[state_start..state_end];
-    let mut state: SummaryState = serde_json::from_str(raw)
+    let encoded = &summary[state_start..state_end];
+    let raw = URL_SAFE_NO_PAD
+        .decode(encoded)
         .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
-    if state.last_valid_score.is_none()
-        && let Some(score) = extract_legacy_summary_score(summary)
-    {
-        state.last_valid_reviewed_sha = Some(state.last_reviewed_sha.clone());
-        state.last_valid_score = Some(score);
-        state.last_valid_status = Some(status_for_score(score));
-    }
+    let state: SummaryState = serde_json::from_slice(&raw)
+        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
     state.validate()?;
     Ok(Some(state))
 }
 
-fn extract_legacy_summary_score(summary: &str) -> Option<u8> {
-    let score = summary
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("<h2 align=\"left\">Confidence Score: ")?
-                .strip_suffix("/5</h2>")
-        })?
-        .trim()
-        .parse::<u8>()
-        .ok()?;
-    (score <= DEFAULT_TARGET_SCORE).then_some(score)
+pub fn encode_summary_state(state: &SummaryState) -> Result<String, ReviewGateError> {
+    state.validate()?;
+    let json = serde_json::to_vec(state)
+        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
+    if json.len() > MAX_SUMMARY_STATE_BYTES {
+        return Err(ReviewGateError::InvalidSummaryState(format!(
+            "encoded summary state exceeds {MAX_SUMMARY_STATE_BYTES} bytes"
+        )));
+    }
+    Ok(URL_SAFE_NO_PAD.encode(json))
 }
 
 pub fn render_summary(artifact: &ReviewArtifact) -> Result<String, ReviewGateError> {
@@ -1350,22 +1537,56 @@ pub fn render_summary_with_options(
     previous_state: Option<&SummaryState>,
 ) -> Result<String, ReviewGateError> {
     artifact.validate()?;
-    let state = SummaryState::for_artifact(artifact, previous_state, options.cost_history_limit)?;
-    let state_json = serde_json::to_string(&state)
-        .map_err(|error| ReviewGateError::InvalidSummaryState(error.to_string()))?;
+    if let Some(previous) = previous_state {
+        previous.validate_for_scope(&options.scope)?;
+    }
+    let tracked_findings = if let Some(tracked) = options.tracked_findings.clone() {
+        tracked
+    } else {
+        let delta = previous_state.map_or_else(
+            || ConvergenceDelta::first_review(&artifact.reviewed_sha),
+            |previous| ConvergenceDelta {
+                previous_reviewed_sha: Some(
+                    previous
+                        .last_valid_reviewed_sha
+                        .clone()
+                        .unwrap_or_else(|| previous.last_reviewed_sha.clone()),
+                ),
+                current_reviewed_sha: artifact.reviewed_sha.clone(),
+                changed_files: BTreeSet::new(),
+                external_contract_changed: false,
+            },
+        );
+        reconcile_findings(
+            artifact.findings.clone(),
+            previous_state
+                .map(|state| state.tracked_findings.as_slice())
+                .unwrap_or_default(),
+            &delta,
+        )?
+        .tracked_findings
+    };
+    let state = SummaryState::for_artifact_with_convergence(
+        artifact,
+        previous_state,
+        options.cost_history_limit,
+        options.scope.clone(),
+        tracked_findings,
+    )?;
+    let encoded_state = encode_summary_state(&state)?;
 
     let mut output = String::new();
-    render_summary_header(&mut output, &state_json);
+    render_summary_header(&mut output, &encoded_state);
     render_concise_summary_body(&mut output, artifact, &options, &state);
 
     Ok(output)
 }
 
-fn render_summary_header(output: &mut String, state_json: &str) {
+fn render_summary_header(output: &mut String, encoded_state: &str) {
     output.push_str(SUMMARY_MARKER);
     output.push_str("\n\n");
     output.push_str(SUMMARY_STATE_PREFIX);
-    output.push_str(state_json);
+    output.push_str(encoded_state);
     output.push_str(SUMMARY_STATE_SUFFIX);
     output.push_str("\n\n");
     output.push_str("# Review Gate Summary\n\n");
@@ -1700,7 +1921,18 @@ mod tests {
             classification: FindingClassification::Defect,
             evidence_gate_result: EvidenceGateResult::Passed,
             blocking_reason: None,
-            grounding: None,
+            grounding: Some(FindingGrounding {
+                semantic_key: format!("test.{id}"),
+                claim: "The invariant fixture is violated.".to_string(),
+                causal_path: "fixture -> deterministic score".to_string(),
+                test_assessment: "The current test covers the invariant.".to_string(),
+                evidence: vec![],
+                related_tests: vec![],
+                reproduction: None,
+                proof: Some("The fixture directly constructs the outcome.".to_string()),
+                novelty_evidence: None,
+                reopening_evidence: None,
+            }),
             file: None,
             line: None,
             title: "Invariant fixture".to_string(),
@@ -2501,7 +2733,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_summary_state_recovers_its_visible_score_for_an_inconclusive_rerun() {
+    fn obsolete_summary_state_is_rejected_instead_of_influencing_a_new_review() {
         let legacy = concat!(
             "<!-- reviewgate-summary -->\n\n",
             "<!-- reviewgate-state {\"version\":1,\"last_reviewed_sha\":\"legacy-sha\",",
@@ -2511,13 +2743,162 @@ mod tests {
             "<h2 align=\"left\">Confidence Score: 3/5</h2>\n"
         );
 
-        let state = extract_summary_state(legacy)
-            .expect("legacy state parses")
-            .expect("state exists");
+        assert!(extract_summary_state(legacy).is_err());
+    }
 
-        assert_eq!(state.last_valid_score, Some(3));
-        assert_eq!(state.last_valid_reviewed_sha.as_deref(), Some("legacy-sha"));
-        assert_eq!(state.last_valid_status, Some(ReviewStatus::NeedsChanges));
+    #[test]
+    fn convergence_state_is_bound_to_one_repository_and_pull_request() {
+        let artifact = scoring_artifact(vec![scoring_finding("bound", Severity::P2)]);
+        let convergence = reconcile_findings(
+            artifact.findings.clone(),
+            &[],
+            &ConvergenceDelta::first_review(&artifact.reviewed_sha),
+        )
+        .expect("first review reconciles");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 47,
+        };
+        let state = SummaryState::for_artifact_with_convergence(
+            &artifact,
+            None,
+            DEFAULT_COST_HISTORY_LIMIT,
+            scope.clone(),
+            convergence.tracked_findings,
+        )
+        .expect("bound state is valid");
+
+        state
+            .validate_for_scope(&scope)
+            .expect("matching target accepts state");
+        assert!(
+            state
+                .validate_for_scope(&ReviewScope::PullRequest {
+                    repository: "LVTD-LLC/reviewgate".to_string(),
+                    pull_request_number: 48,
+                })
+                .is_err()
+        );
+        assert!(
+            state
+                .validate_for_scope(&ReviewScope::PullRequest {
+                    repository: "attacker/fork".to_string(),
+                    pull_request_number: 47,
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn contradictory_or_incomplete_convergence_state_fails_closed() {
+        let artifact = scoring_artifact(vec![scoring_finding("state", Severity::P2)]);
+        let convergence = reconcile_findings(
+            artifact.findings.clone(),
+            &[],
+            &ConvergenceDelta::first_review(&artifact.reviewed_sha),
+        )
+        .expect("first review reconciles");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 47,
+        };
+
+        assert!(SummaryState::for_artifact_with_convergence(
+            &artifact,
+            None,
+            20,
+            scope.clone(),
+            vec![],
+        )
+        .is_err());
+
+        let mut state = SummaryState::for_artifact_with_convergence(
+            &artifact,
+            None,
+            20,
+            scope,
+            convergence.tracked_findings,
+        )
+        .expect("state builds");
+        state.tracked_findings[0].disposition = FindingDisposition::RejectedWithEvidence;
+
+        assert!(state.validate().is_err());
+    }
+
+    #[test]
+    fn encoded_convergence_state_cannot_break_the_hidden_comment_boundary() {
+        let mut finding = scoring_finding("comment-boundary", Severity::P2);
+        finding.title = "Untrusted --> <script>alert(1)</script>".to_string();
+        let artifact = scoring_artifact(vec![finding]);
+        let summary = render_summary(&artifact).expect("summary renders");
+        let encoded = summary
+            .split_once(SUMMARY_STATE_PREFIX)
+            .expect("state marker starts")
+            .1
+            .split_once(SUMMARY_STATE_SUFFIX)
+            .expect("state marker ends")
+            .0;
+
+        assert!(
+            encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        );
+        assert!(!summary.contains("<script>alert(1)</script>"));
+        let state = extract_summary_state(&summary)
+            .expect("state decodes")
+            .expect("state exists");
+        assert_eq!(
+            state.tracked_findings[0].finding.title,
+            "Untrusted --> <script>alert(1)</script>"
+        );
+    }
+
+    #[test]
+    fn convergence_state_rejects_unbounded_finding_count_and_encoded_size() {
+        let findings = (0..=MAX_TRACKED_FINDINGS)
+            .map(|index| scoring_finding(&format!("finding-{index}"), Severity::P2))
+            .collect::<Vec<_>>();
+        let artifact = scoring_artifact(findings);
+
+        assert!(render_summary(&artifact).is_err());
+
+        let mut oversized = scoring_finding("oversized", Severity::P2);
+        oversized.title = "x".repeat(MAX_SUMMARY_STATE_BYTES);
+        let artifact = scoring_artifact(vec![oversized]);
+
+        assert!(render_summary(&artifact).is_err());
+    }
+
+    #[test]
+    fn convergence_disposition_history_stays_bounded_across_rereviews() {
+        let finding = scoring_finding("bounded-history", Severity::P2);
+        let mut tracked = reconcile_findings(
+            vec![finding.clone()],
+            &[],
+            &ConvergenceDelta::first_review("sha-0"),
+        )
+        .expect("first review reconciles")
+        .tracked_findings;
+
+        for index in 1..=(MAX_DISPOSITION_HISTORY + 4) {
+            tracked = reconcile_findings(
+                vec![finding.clone()],
+                &tracked,
+                &ConvergenceDelta::head_changed(
+                    format!("sha-{}", index - 1),
+                    format!("sha-{index}"),
+                    [finding.file.clone().unwrap_or_default()],
+                ),
+            )
+            .expect("rereview reconciles")
+            .tracked_findings;
+        }
+
+        assert_eq!(
+            tracked[0].disposition_history.len(),
+            MAX_DISPOSITION_HISTORY
+        );
     }
 
     #[test]
@@ -3285,6 +3666,7 @@ mod tests {
     #[test]
     fn grounding_serializes_absent_proof_fields_as_schema_nulls() {
         let grounding = FindingGrounding {
+            semantic_key: "test.checked_claim".to_string(),
             claim: "Checked claim.".to_string(),
             causal_path: "change -> failure".to_string(),
             test_assessment: "No test covers the path.".to_string(),
@@ -3292,6 +3674,8 @@ mod tests {
             related_tests: vec![],
             reproduction: None,
             proof: None,
+            novelty_evidence: None,
+            reopening_evidence: None,
         };
 
         let value = serde_json::to_value(grounding).expect("grounding serializes");

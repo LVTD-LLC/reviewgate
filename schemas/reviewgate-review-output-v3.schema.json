@@ -269,9 +269,25 @@
     },
     "finding_grounding": {
       "type": "object",
-      "required": ["claim", "causal_path", "test_assessment", "evidence", "related_tests", "reproduction", "proof"],
+      "required": [
+        "semantic_key",
+        "claim",
+        "causal_path",
+        "test_assessment",
+        "evidence",
+        "related_tests",
+        "reproduction",
+        "proof",
+        "novelty_evidence",
+        "reopening_evidence"
+      ],
       "additionalProperties": false,
       "properties": {
+        "semantic_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable machine-readable root-cause identity. Reuse it across wording and line movement."
+        },
         "claim": { "type": "string", "minLength": 1 },
         "causal_path": {
           "type": "string",
@@ -293,7 +309,15 @@
           "items": { "$ref": "#/$defs/finding_evidence" }
         },
         "reproduction": { "type": ["string", "null"] },
-        "proof": { "type": ["string", "null"] }
+        "proof": { "type": ["string", "null"] },
+        "novelty_evidence": {
+          "type": ["string", "null"],
+          "description": "For a late new blocker, why it did not exist or could not be detected at the prior reviewed SHA."
+        },
+        "reopening_evidence": {
+          "type": ["string", "null"],
+          "description": "For a prior resolved or rejected semantic finding, the relevant code or contract change that justifies reopening."
+        }
       }
     },
     "finding_evidence": {

@@ -79,6 +79,7 @@ runs:
       if: ${{ inputs.mode == 'review' }}
       shell: bash
       env:
+        GH_TOKEN: ${{ github.token }}
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         REVIEWGATE_CONFIG: ${{ inputs.config }}
         REVIEWGATE_MODEL: ${{ inputs.model }}
