@@ -7,11 +7,14 @@ use std::process::Command as ProcessCommand;
 use std::process::Stdio;
 
 use anyhow::{Context, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand, ValueEnum};
 use reviewgate_core::{
-    CostComponent, CostSource, CostSummary, DEFAULT_TARGET_SCORE, EvidenceGateResult,
-    FindingClassification, FindingDisposition, FindingDispositionUpdate, FindingEvidenceSide,
-    HIGH_CONFIDENCE_THRESHOLD, LATE_BLOCKER_CONFIDENCE_THRESHOLD, ModelPreset, ModelPricing,
+    AGENT_DISPOSITIONS_SCHEMA_VERSION, AgentDisposition, AgentDispositionState,
+    AgentDispositionSubmission, AgentReviewResult, CostComponent, CostSource, CostSummary,
+    DEFAULT_TARGET_SCORE, EvidenceGateResult, FindingClassification, FindingDisposition,
+    FindingDispositionUpdate, FindingEvidenceSide, HIGH_CONFIDENCE_THRESHOLD,
+    LATE_BLOCKER_CONFIDENCE_THRESHOLD, MAX_AGENT_RESULT_BYTES, ModelPreset, ModelPricing,
     OPENROUTER_API_KEY_ENV, OPENROUTER_APP_CATEGORIES, OPENROUTER_APP_REFERER,
     OPENROUTER_APP_TITLE, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_MODELS_PATH, ReviewAngleError,
     ReviewAngleResult, ReviewArtifact, ReviewErrorKind, ReviewScope, ReviewStage, ReviewStatus,
@@ -24,8 +27,8 @@ use reviewgate_core::{
 use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingSummaryComment, InlineCommentDraft,
     RereviewTarget, SummaryCommentAction, WorkflowRunCandidate, find_rereview_status_comment,
-    plan_inline_comment_drafts, plan_summary_comment_publish, rereview_status_marker,
-    select_rereview_workflow_run, stale_finding_comment_ids,
+    inline_comment_finding_ids, plan_inline_comment_drafts, plan_summary_comment_publish,
+    rereview_status_marker, select_rereview_workflow_run, stale_finding_comment_ids,
 };
 
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
@@ -56,6 +59,9 @@ const MAX_GENERATED_FINDING_ID_CHARS: usize = 256;
 const MAX_REVIEW_ANGLE_INSTRUCTIONS_BYTES: usize = 80_000;
 const CONTEXT_FILE_TRUNCATED_MARKER: &str = "\n[truncated]\n";
 const REREVIEW_COMMAND: &str = "@reviewgate review";
+const AGENT_DISPOSITIONS_MARKER_PREFIX: &str = "<!-- reviewgate-agent-dispositions ";
+const AGENT_DISPOSITIONS_MARKER_SUFFIX: &str = " -->";
+const AGENT_RESULT_ARTIFACT_PREFIX: &str = "reviewgate-agent-result";
 const CURL_HTTP_STATUS_WRITE_OUT: &str = "%{stderr}reviewgate-http-status=%{http_code}\\n";
 
 type CliResult<T> = anyhow::Result<T>;
@@ -70,6 +76,34 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Print the current pull request head's validated agent result as JSON.
+    Check {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        pr: u64,
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long, default_value = "reviewgate.yml")]
+        workflow: String,
+    },
+    /// Submit a structured disposition for a finding on the current PR head.
+    Disposition {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        pr: u64,
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long, default_value = "reviewgate.yml")]
+        workflow: String,
+        #[arg(long)]
+        finding: String,
+        #[arg(long, value_enum)]
+        status: AgentDispositionArg,
+        #[arg(long)]
+        evidence: String,
+    },
     /// Validate fixture JSON, compute score/status, and render the PR summary.
     FixtureReview {
         #[arg(long)]
@@ -168,6 +202,15 @@ enum Command {
         #[arg(long, default_value = "ReviewGate")]
         name: String,
     },
+    /// Write the stable agent-facing result for the live pull request head.
+    PublishAgentResult {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -175,6 +218,35 @@ enum PresetArg {
     Cheap,
     Balanced,
     Strong,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AgentDispositionArg {
+    #[value(name = "accepted")]
+    Accepted,
+    #[value(name = "fixed")]
+    Fixed,
+    #[value(name = "rejected_with_evidence")]
+    RejectedWithEvidence,
+    #[value(name = "already_implemented")]
+    AlreadyImplemented,
+    #[value(name = "intentional_contract")]
+    IntentionalContract,
+    #[value(name = "needs_human")]
+    NeedsHuman,
+}
+
+impl From<AgentDispositionArg> for AgentDisposition {
+    fn from(value: AgentDispositionArg) -> Self {
+        match value {
+            AgentDispositionArg::Accepted => Self::Accepted,
+            AgentDispositionArg::Fixed => Self::Fixed,
+            AgentDispositionArg::RejectedWithEvidence => Self::RejectedWithEvidence,
+            AgentDispositionArg::AlreadyImplemented => Self::AlreadyImplemented,
+            AgentDispositionArg::IntentionalContract => Self::IntentionalContract,
+            AgentDispositionArg::NeedsHuman => Self::NeedsHuman,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +370,29 @@ fn main() -> CliResult<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Check {
+            repo,
+            pr,
+            repository,
+            workflow,
+        } => check_agent_result(repo, pr, repository, workflow),
+        Command::Disposition {
+            repo,
+            pr,
+            repository,
+            workflow,
+            finding,
+            status,
+            evidence,
+        } => submit_agent_disposition(
+            repo,
+            pr,
+            repository,
+            workflow,
+            finding,
+            status.into(),
+            evidence,
+        ),
         Command::FixtureReview {
             input,
             json_out,
@@ -364,6 +459,11 @@ fn main() -> CliResult<()> {
             min_severity,
         }),
         Command::PublishCheckRun { repo, input, name } => publish_check_run(repo, input, name),
+        Command::PublishAgentResult {
+            repo,
+            input,
+            output,
+        } => publish_agent_result(repo, input, output),
     }
 }
 
@@ -406,6 +506,492 @@ fn fixture_review(
     Ok(())
 }
 
+fn check_agent_result(
+    repo: PathBuf,
+    pr_number: u64,
+    repository: Option<String>,
+    workflow: String,
+) -> CliResult<()> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let repository = resolve_repository(&repo, repository)?;
+    let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
+    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow)?;
+    ensure_pull_request_head(&repo, &repository, pr_number, &head_sha)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn download_agent_result(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    head_sha: &str,
+    workflow: &str,
+) -> CliResult<AgentReviewResult> {
+    let workflow_id = resolve_recheck_workflow_id(repo, repository, workflow)?;
+    let target = RereviewTarget {
+        repository: repository.to_string(),
+        pull_request_number: pr_number,
+        head_sha: head_sha.to_string(),
+    };
+    let runs = fetch_workflow_run_candidates(repo, repository, &workflow_id.to_string(), head_sha)?;
+    let trusted_run = select_rereview_workflow_run(&runs, &target).with_context(|| {
+        format!(
+            "no completed {workflow:?} pull_request run exists for PR #{pr_number} at current head {head_sha}"
+        )
+    })?;
+    let artifact_name = agent_result_artifact_name(head_sha);
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("repos/{repository}/actions/artifacts?name={artifact_name}&per_page=100"),
+        ],
+    )?;
+    let run_id = select_agent_result_run(&raw, head_sha, &BTreeSet::from([trusted_run.id]))?;
+    let download_dir = unique_temp_path("reviewgate-agent-result", "download");
+    fs::create_dir_all(&download_dir)
+        .with_context(|| format!("failed to create {}", download_dir.display()))?;
+    let download_dir_string = download_dir.display().to_string();
+    let run_id_string = run_id.to_string();
+    let download = gh_dyn(
+        repo,
+        &[
+            "run",
+            "download",
+            &run_id_string,
+            "--repo",
+            repository,
+            "--name",
+            &artifact_name,
+            "--dir",
+            &download_dir_string,
+        ],
+    );
+    if let Err(error) = download {
+        let _ = fs::remove_dir_all(&download_dir);
+        return Err(error);
+    }
+    let result_path = download_dir.join("result.json");
+    let result = (|| {
+        let file = fs::File::open(&result_path)
+            .with_context(|| format!("failed to open {}", result_path.display()))?;
+        let mut raw = String::new();
+        file.take((MAX_AGENT_RESULT_BYTES + 1) as u64)
+            .read_to_string(&mut raw)
+            .with_context(|| format!("failed to read {}", result_path.display()))?;
+        if raw.len() > MAX_AGENT_RESULT_BYTES {
+            bail!("ReviewGate agent result exceeds {MAX_AGENT_RESULT_BYTES} bytes");
+        }
+        let result: AgentReviewResult = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse {}", result_path.display()))?;
+        result.validate()?;
+        validate_agent_result_scope(&result, repository, pr_number, head_sha)?;
+        Ok(result)
+    })();
+    let _ = fs::remove_dir_all(&download_dir);
+    result
+}
+
+fn submit_agent_disposition(
+    repo: PathBuf,
+    pr_number: u64,
+    repository: Option<String>,
+    workflow: String,
+    finding: String,
+    disposition: AgentDisposition,
+    evidence: String,
+) -> CliResult<()> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let repository = resolve_repository(&repo, repository)?;
+    let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
+    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow)?;
+    if !result
+        .findings
+        .iter()
+        .any(|candidate| candidate.semantic_fingerprint == finding)
+    {
+        bail!("finding {finding:?} does not exist in the current ReviewGate result");
+    }
+    let actor = gh_dyn(&repo, &["api", "user", "--jq", ".login"])?
+        .trim()
+        .to_string();
+    if actor.is_empty() || !fetch_actor_write_permission(&repo, &repository, &actor)? {
+        bail!("agent dispositions require repository write permission");
+    }
+    ensure_pull_request_head(&repo, &repository, pr_number, &head_sha)?;
+    let state = AgentDispositionState {
+        schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+        scope: ReviewScope::PullRequest {
+            repository: repository.clone(),
+            pull_request_number: pr_number,
+        },
+        reviewed_sha: head_sha,
+        submission: AgentDispositionSubmission {
+            semantic_fingerprint: finding.clone(),
+            disposition,
+            evidence,
+            actor,
+        },
+    };
+    state.validate()?;
+    let body = encode_agent_disposition_comment(&state)?;
+    let comment_id = create_issue_comment_with_id(&repo, &repository, pr_number, &body)?;
+    let post_write_target = match fetch_rereview_target(&repo, &repository, pr_number) {
+        Ok(target) => target,
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "recorded_unconfirmed",
+                    "reason": "head_check_failed",
+                    "repository": repository,
+                    "pull_request_number": pr_number,
+                    "reviewed_sha": state.reviewed_sha,
+                    "semantic_fingerprint": finding,
+                    "disposition": disposition,
+                    "comment_id": comment_id,
+                }))?
+            );
+            return Err(error.context(
+                    "agent disposition was created, but its post-write head check failed; inspect the receipt before retrying",
+                ));
+        }
+    };
+    if post_write_target.head_sha != state.reviewed_sha {
+        let removed = match delete_issue_comment(&repo, &repository, comment_id) {
+            Ok(()) => true,
+            Err(cleanup_error) => {
+                eprintln!(
+                    "ReviewGate warning: failed to remove stale disposition comment {comment_id}: {cleanup_error}"
+                );
+                false
+            }
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "rejected",
+                "reason": "stale_head",
+                "repository": repository,
+                "pull_request_number": pr_number,
+                "reviewed_sha": state.reviewed_sha,
+                "semantic_fingerprint": finding,
+                "comment_id": comment_id,
+                "comment_removed": removed,
+            }))?
+        );
+        bail!(
+            "pull request head changed from {} to {} while recording the agent disposition; retry on the current result",
+            state.reviewed_sha,
+            post_write_target.head_sha
+        );
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "status": "recorded",
+            "repository": repository,
+            "pull_request_number": pr_number,
+            "reviewed_sha": state.reviewed_sha,
+            "semantic_fingerprint": finding,
+            "disposition": disposition,
+            "comment_id": comment_id,
+        }))?
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentDispositionComment {
+    id: u64,
+    author_login: String,
+    author_association: String,
+    body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IssueCommentRecord {
+    id: u64,
+    author_login: Option<String>,
+    author_association: Option<String>,
+    body: String,
+}
+
+fn encode_agent_disposition_comment(state: &AgentDispositionState) -> CliResult<String> {
+    state.validate()?;
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(state)?);
+    let finding = &state.submission.semantic_fingerprint;
+    Ok(format!(
+        "{AGENT_DISPOSITIONS_MARKER_PREFIX}{payload}{AGENT_DISPOSITIONS_MARKER_SUFFIX}\nReviewGate agent disposition recorded for `{finding}`."
+    ))
+}
+
+fn extract_agent_disposition_state(body: &str) -> CliResult<Option<AgentDispositionState>> {
+    let Some(start) = body.find(AGENT_DISPOSITIONS_MARKER_PREFIX) else {
+        return Ok(None);
+    };
+    let payload = &body[start + AGENT_DISPOSITIONS_MARKER_PREFIX.len()..];
+    let Some(end) = payload.find(AGENT_DISPOSITIONS_MARKER_SUFFIX) else {
+        bail!("malformed ReviewGate agent disposition marker");
+    };
+    let decoded = URL_SAFE_NO_PAD
+        .decode(&payload[..end])
+        .context("invalid ReviewGate agent disposition encoding")?;
+    let state: AgentDispositionState =
+        serde_json::from_slice(&decoded).context("invalid ReviewGate agent disposition JSON")?;
+    state.validate()?;
+    Ok(Some(state))
+}
+
+fn agent_disposition_comments(records: &[IssueCommentRecord]) -> Vec<AgentDispositionComment> {
+    let mut comments = Vec::new();
+    for record in records {
+        if !record.body.contains(AGENT_DISPOSITIONS_MARKER_PREFIX) {
+            continue;
+        }
+        comments.push(AgentDispositionComment {
+            id: record.id,
+            author_login: record.author_login.clone().unwrap_or_default(),
+            author_association: record.author_association.clone().unwrap_or_default(),
+            body: record.body.clone(),
+        });
+    }
+    comments.sort_by_key(|comment| comment.id);
+    comments
+}
+
+fn apply_agent_disposition_comments(
+    state: &mut SummaryState,
+    comments: &[AgentDispositionComment],
+    authorized_actors: &BTreeSet<String>,
+) -> CliResult<()> {
+    for comment in comments {
+        if !authorized_actors.contains(&comment.author_login) {
+            continue;
+        }
+        let update = match extract_agent_disposition_state(&comment.body) {
+            Ok(Some(update)) => update,
+            Ok(None) => continue,
+            Err(error) => {
+                eprintln!(
+                    "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
+                    comment.id
+                );
+                continue;
+            }
+        };
+        if update.scope != state.scope || update.reviewed_sha != state.last_reviewed_sha {
+            continue;
+        }
+        if update.submission.actor != comment.author_login {
+            eprintln!(
+                "ReviewGate warning: ignored agent disposition comment {} whose actor does not match its GitHub author",
+                comment.id
+            );
+            continue;
+        }
+        let mut candidate = state.clone();
+        match update.apply_to_summary(&mut candidate, comment.id) {
+            Ok(()) => *state = candidate,
+            Err(error) => eprintln!(
+                "ReviewGate warning: ignored invalid agent disposition comment {}: {error}",
+                comment.id
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn authorized_disposition_actors(
+    repo: &Path,
+    repository: &str,
+    comments: &[AgentDispositionComment],
+) -> BTreeSet<String> {
+    let candidates = disposition_actor_candidates(comments);
+    resolve_authorized_disposition_actors(candidates, |actor| {
+        fetch_actor_write_permission(repo, repository, actor)
+    })
+}
+
+fn resolve_authorized_disposition_actors(
+    candidates: BTreeSet<String>,
+    mut has_write_permission: impl FnMut(&str) -> CliResult<bool>,
+) -> BTreeSet<String> {
+    candidates
+        .into_iter()
+        .filter(|actor| match has_write_permission(actor) {
+            Ok(authorized) => authorized,
+            Err(error) => {
+                eprintln!(
+                    "ReviewGate warning: ignored agent dispositions from {actor} because live permission verification failed: {error}"
+                );
+                false
+            }
+        })
+        .collect()
+}
+
+fn disposition_actor_candidates(comments: &[AgentDispositionComment]) -> BTreeSet<String> {
+    comments
+        .iter()
+        .filter(|comment| is_maintainer_association(&comment.author_association))
+        .map(|comment| comment.author_login.trim())
+        .filter(|login| !login.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
+    if let Some(repository) = repository {
+        if valid_repository_name(&repository) {
+            return Ok(repository);
+        }
+        bail!("repository must use owner/name format");
+    }
+    if let Ok(repository) = std::env::var("GITHUB_REPOSITORY")
+        && valid_repository_name(&repository)
+    {
+        return Ok(repository);
+    }
+    let repository = gh_dyn(
+        repo,
+        &[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ],
+    )?;
+    let repository = repository.trim().to_string();
+    if !valid_repository_name(&repository) {
+        bail!("could not resolve repository in owner/name format");
+    }
+    Ok(repository)
+}
+
+fn valid_repository_name(repository: &str) -> bool {
+    let mut parts = repository.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(owner), Some(name), None)
+            if !owner.is_empty()
+                && !name.is_empty()
+                && !repository.contains(char::is_whitespace)
+    )
+}
+
+fn select_agent_result_run(
+    raw: &str,
+    head_sha: &str,
+    trusted_run_ids: &BTreeSet<u64>,
+) -> CliResult<u64> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse Actions artifacts JSON")?;
+    let artifact_name = agent_result_artifact_name(head_sha);
+    let mut artifact_lists = Vec::new();
+    if value.get("artifacts").is_some() {
+        artifact_lists.push(&value);
+    } else if let Some(pages) = value.as_array() {
+        for page in pages {
+            if page.get("artifacts").is_some() {
+                artifact_lists.push(page);
+            } else if let Some(nested) = page.as_array() {
+                artifact_lists.extend(
+                    nested
+                        .iter()
+                        .filter(|entry| entry.get("artifacts").is_some()),
+                );
+            }
+        }
+    }
+    let mut candidates = Vec::new();
+    for list in artifact_lists {
+        let Some(artifacts) = list.get("artifacts").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for artifact in artifacts {
+            if artifact.get("name").and_then(serde_json::Value::as_str)
+                != Some(artifact_name.as_str())
+                || artifact
+                    .get("expired")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                || artifact
+                    .pointer("/workflow_run/head_sha")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(head_sha)
+            {
+                continue;
+            }
+            let Some(run_id) = artifact
+                .pointer("/workflow_run/id")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                continue;
+            };
+            if !trusted_run_ids.contains(&run_id) {
+                continue;
+            }
+            let created_at = artifact
+                .get("created_at")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            candidates.push((created_at.to_string(), run_id));
+        }
+    }
+    candidates
+        .into_iter()
+        .max()
+        .map(|(_, run_id)| run_id)
+        .with_context(|| format!("no ReviewGate agent result exists for current head {head_sha}"))
+}
+
+fn agent_result_artifact_name(head_sha: &str) -> String {
+    format!("{AGENT_RESULT_ARTIFACT_PREFIX}-{head_sha}")
+}
+
+fn ensure_pull_request_head(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    expected_head: &str,
+) -> CliResult<()> {
+    let current_head = fetch_rereview_target(repo, repository, pr_number)?.head_sha;
+    if current_head != expected_head {
+        bail!(
+            "pull request head changed while reading ReviewGate state: expected {expected_head}, current {current_head}"
+        );
+    }
+    Ok(())
+}
+
+fn validate_agent_result_scope(
+    result: &AgentReviewResult,
+    repository: &str,
+    pr_number: u64,
+    head_sha: &str,
+) -> CliResult<()> {
+    if result.reviewed_sha != head_sha {
+        bail!(
+            "ReviewGate result is stale: reviewed {}, current head is {head_sha}",
+            result.reviewed_sha
+        );
+    }
+    let expected = ReviewScope::PullRequest {
+        repository: repository.to_string(),
+        pull_request_number: pr_number,
+    };
+    if result.scope != expected {
+        bail!("ReviewGate result scope does not match {repository}#{pr_number}");
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct ReviewPrOptions {
     repo: PathBuf,
@@ -440,6 +1026,54 @@ struct PublishSummaryOptions {
     input: PathBuf,
     summary_out: PathBuf,
     min_severity: Option<String>,
+}
+
+fn parse_review_thread_ids(raw: &str) -> CliResult<BTreeMap<String, String>> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse review threads JSON")?;
+    let mut thread_ids = BTreeMap::new();
+    let pages = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    for page in pages {
+        let entries = if page
+            .pointer("/data/repository/pullRequest/reviewThreads/nodes")
+            .is_some()
+        {
+            vec![page]
+        } else {
+            page.as_array()
+                .map(|nested| nested.iter().collect())
+                .unwrap_or_default()
+        };
+        for entry in entries {
+            let Some(threads) = entry
+                .pointer("/data/repository/pullRequest/reviewThreads/nodes")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            for thread in threads {
+                let Some(thread_id) = thread.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(comments) = thread
+                    .pointer("/comments/nodes")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                for comment in comments {
+                    let body = comment
+                        .get("body")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    for finding_id in inline_comment_finding_ids(body) {
+                        thread_ids.insert(finding_id, thread_id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(thread_ids)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -687,11 +1321,13 @@ fn apply_convergence_policy(
 ) -> CliResult<Vec<TrackedFinding>> {
     if artifact.status == ReviewStatus::ReviewError {
         artifact.disposition_updates.clear();
-        return Ok(context
+        let tracked_findings = context
             .previous_state
             .as_ref()
             .map(|state| state.tracked_findings.clone())
-            .unwrap_or_default());
+            .unwrap_or_default();
+        artifact.tracked_findings = tracked_findings.clone();
+        return Ok(tracked_findings);
     }
     artifact.disposition_updates = disposition_updates.to_vec();
     let result = reconcile_findings_with_updates(
@@ -706,6 +1342,7 @@ fn apply_convergence_policy(
     )?;
     artifact.findings = result.findings;
     artifact.notes.extend(result.notes);
+    artifact.tracked_findings = result.tracked_findings.clone();
     recompute_artifact_outcome(artifact)?;
     Ok(result.tracked_findings)
 }
@@ -889,12 +1526,11 @@ fn parse_rereview_request(event_name: &str, event: &serde_json::Value) -> Rerevi
     if comment.get("body").and_then(serde_json::Value::as_str) != Some(REREVIEW_COMMAND) {
         return RereviewEventDecision::Ignore(RereviewIgnoreReason::CommandMismatch);
     }
-    if !matches!(
-        comment
-            .get("author_association")
-            .and_then(serde_json::Value::as_str),
-        Some("OWNER" | "MEMBER" | "COLLABORATOR")
-    ) {
+    if !comment
+        .get("author_association")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_maintainer_association)
+    {
         return RereviewEventDecision::Ignore(RereviewIgnoreReason::UnauthorizedActor);
     }
     let Some(issue) = event.get("issue") else {
@@ -929,6 +1565,10 @@ fn parse_rereview_request(event_name: &str, event: &serde_json::Value) -> Rerevi
         comment_id,
         actor_login: actor_login.to_string(),
     })
+}
+
+fn is_maintainer_association(association: &str) -> bool {
+    matches!(association, "OWNER" | "MEMBER" | "COLLABORATOR")
 }
 
 fn parse_rereview_target(
@@ -1616,7 +2256,8 @@ fn publish_start_signal(repo: PathBuf) -> CliResult<()> {
         return Ok(());
     };
     let repository = github_repository()?;
-    let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
+    let comment_records = fetch_issue_comment_records(&repo, &repository, pr_number)?;
+    let comments = summary_comments(&comment_records);
     let existing = reviewgate_github::find_summary_comment(&comments);
     let body = render_start_signal_body(existing)?;
     let plan = plan_summary_comment_publish(&comments, body);
@@ -1838,23 +2479,27 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     };
     let repository = github_repository()?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let comments = fetch_issue_comments(&repo, &repository, pr_number)?;
+    let comment_records = fetch_issue_comment_records(&repo, &repository, pr_number)?;
+    let comments = summary_comments(&comment_records);
     let scope = ReviewScope::PullRequest {
         repository: repository.clone(),
         pull_request_number: pr_number,
     };
-    let previous_state = reviewgate_github::find_summary_comment(&comments)
+    let mut previous_state = reviewgate_github::find_summary_comment(&comments)
         .and_then(|comment| recover_summary_state(&comment.body, "summary publish"));
-    if let Some(previous) = previous_state.as_ref() {
+    if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
+        let disposition_comments = agent_disposition_comments(&comment_records);
+        let authorized_actors =
+            authorized_disposition_actors(&repo, &repository, &disposition_comments);
+        apply_agent_disposition_comments(previous, &disposition_comments, &authorized_actors)?;
     }
-    let artifact = read_prepared_artifact(&options.input, &head_sha)?;
-    let tracked_findings = if artifact.status == ReviewStatus::ReviewError {
-        previous_state
-            .as_ref()
-            .map(|state| state.tracked_findings.clone())
-            .unwrap_or_default()
-    } else {
+    let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
+    let previous_tracked_findings = previous_state
+        .as_ref()
+        .map(|state| state.tracked_findings.as_slice())
+        .unwrap_or_default();
+    if artifact.status != ReviewStatus::ReviewError {
         let (diff, changed_files, delta) = if let Some(previous) = previous_state.as_ref() {
             collect_convergence_delta(&repo, previous, &head_sha)?
         } else {
@@ -1880,17 +2525,17 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
                 context_files: vec![],
             },
         )?;
-        reconcile_findings_with_updates(
-            artifact.findings.clone(),
-            previous_state
-                .as_ref()
-                .map(|state| state.tracked_findings.as_slice())
-                .unwrap_or_default(),
-            &delta,
-            &artifact.disposition_updates,
-        )?
-        .tracked_findings
-    };
+        artifact = reconcile_publication_artifact(artifact, previous_tracked_findings, &delta)?;
+    } else {
+        artifact.tracked_findings = previous_tracked_findings.to_vec();
+    }
+    fs::write(&options.input, serde_json::to_string_pretty(&artifact)?).with_context(|| {
+        format!(
+            "failed to persist reconciled artifact {}",
+            options.input.display()
+        )
+    })?;
+    let tracked_findings = artifact.tracked_findings.clone();
     let min_severity = parse_optional_severity(options.min_severity.as_deref(), "min_severity")?
         .unwrap_or(Severity::P4);
     let summary = render_summary_with_options(
@@ -1931,6 +2576,23 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     Ok(())
 }
 
+fn reconcile_publication_artifact(
+    mut artifact: ReviewArtifact,
+    previous_tracked_findings: &[TrackedFinding],
+    delta: &reviewgate_core::ConvergenceDelta,
+) -> CliResult<ReviewArtifact> {
+    let convergence = reconcile_findings_with_updates(
+        artifact.findings.clone(),
+        previous_tracked_findings,
+        delta,
+        &artifact.disposition_updates,
+    )?;
+    artifact.findings = convergence.findings;
+    artifact.tracked_findings = convergence.tracked_findings;
+    recompute_artifact_outcome(&mut artifact)?;
+    Ok(artifact)
+}
+
 fn validate_serialized_disposition_updates(
     repo: &Path,
     artifact: &ReviewArtifact,
@@ -1957,6 +2619,83 @@ fn validate_serialized_disposition_updates(
         );
     }
     Ok(())
+}
+
+fn publish_agent_result(repo: PathBuf, input: PathBuf, output: PathBuf) -> CliResult<()> {
+    if std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("pull_request") {
+        bail!("ReviewGate agent result requires a pull_request event");
+    }
+    if !github_token_available() {
+        bail!("ReviewGate agent result failed: GitHub token is empty");
+    }
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let event = read_github_event()?.context("ReviewGate agent result requires a GitHub event")?;
+    let pr_number =
+        pull_request_number(&event).context("ReviewGate agent result requires a PR number")?;
+    let repository = github_repository()?;
+    let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
+    let thread_ids = match fetch_review_thread_ids(&repo, &repository, pr_number) {
+        Ok(thread_ids) => thread_ids,
+        Err(error) => {
+            eprintln!(
+                "ReviewGate warning: inline thread IDs are unavailable in the agent result: {error}"
+            );
+            BTreeMap::new()
+        }
+    };
+    let result = project_agent_result_from_artifact_path(
+        &input,
+        &head_sha,
+        ReviewScope::PullRequest {
+            repository,
+            pull_request_number: pr_number,
+        },
+        thread_ids,
+    )?;
+    let encoded = serde_json::to_string_pretty(&result)?;
+    write_or_print(Some(output.clone()), &encoded, "agent result")?;
+    append_github_output("schema_version", &result.schema_version)?;
+    append_github_output("status", result.status.as_str())?;
+    append_github_output(
+        "score",
+        result
+            .score
+            .map(|score| score.to_string())
+            .as_deref()
+            .unwrap_or(""),
+    )?;
+    append_github_output("reviewed_sha", &result.reviewed_sha)?;
+    append_github_output("result_path", &output.display().to_string())?;
+    println!(
+        "Published ReviewGate agent result for {} ({}, score {}).",
+        result.reviewed_sha,
+        result.status.as_str(),
+        result
+            .score
+            .map(|score| score.to_string())
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    Ok(())
+}
+
+fn project_agent_result_from_artifact_path(
+    input: &Path,
+    current_head_sha: &str,
+    scope: ReviewScope,
+    thread_ids: BTreeMap<String, String>,
+) -> CliResult<AgentReviewResult> {
+    match read_prepared_artifact(input, current_head_sha) {
+        Ok(artifact) => {
+            AgentReviewResult::from_artifact(&artifact, scope, thread_ids).map_err(Into::into)
+        }
+        Err(error) => {
+            eprintln!(
+                "ReviewGate warning: internal review artifact is unavailable; publishing a terminal review_error result: {error}"
+            );
+            AgentReviewResult::artifact_validation_error(scope, current_head_sha)
+                .map_err(Into::into)
+        }
+    }
 }
 
 fn publish_check_run(repo: PathBuf, input: PathBuf, name: String) -> CliResult<()> {
@@ -2157,6 +2896,27 @@ fn fetch_issue_comments(
     repository: &str,
     pr_number: u64,
 ) -> CliResult<Vec<ExistingSummaryComment>> {
+    Ok(summary_comments(&fetch_issue_comment_records(
+        repo, repository, pr_number,
+    )?))
+}
+
+fn summary_comments(records: &[IssueCommentRecord]) -> Vec<ExistingSummaryComment> {
+    records
+        .iter()
+        .map(|record| ExistingSummaryComment {
+            id: record.id,
+            author_login: record.author_login.clone(),
+            body: record.body.clone(),
+        })
+        .collect()
+}
+
+fn fetch_issue_comment_records(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+) -> CliResult<Vec<IssueCommentRecord>> {
     let raw = gh_dyn(
         repo,
         &[
@@ -2166,10 +2926,10 @@ fn fetch_issue_comments(
             &format!("repos/{repository}/issues/{pr_number}/comments"),
         ],
     )?;
-    parse_issue_comments(&raw)
+    parse_issue_comment_records(&raw)
 }
 
-fn parse_issue_comments(raw: &str) -> CliResult<Vec<ExistingSummaryComment>> {
+fn parse_issue_comment_records(raw: &str) -> CliResult<Vec<IssueCommentRecord>> {
     let value: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse issue comments JSON")?;
     let mut comments = Vec::new();
@@ -2186,9 +2946,14 @@ fn parse_issue_comments(raw: &str) -> CliResult<Vec<ExistingSummaryComment>> {
             .pointer("/user/login")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
-        comments.push(ExistingSummaryComment {
+        let author_association = entry
+            .get("author_association")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        comments.push(IssueCommentRecord {
             id,
             author_login,
+            author_association,
             body,
         });
     }
@@ -2210,6 +2975,36 @@ fn fetch_pull_comments(
         ],
     )?;
     parse_pull_comments(&raw)
+}
+
+fn fetch_review_thread_ids(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+) -> CliResult<BTreeMap<String, String>> {
+    let (owner, name) = repository
+        .split_once('/')
+        .context("repository must use owner/name format")?;
+    let number = pr_number.to_string();
+    let query = r#"query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{id comments(first:1){nodes{body}}}pageInfo{hasNextPage endCursor}}}}}"#;
+    let raw = gh_dyn(
+        repo,
+        &[
+            "api",
+            "graphql",
+            "--paginate",
+            "--slurp",
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("owner={owner}"),
+            "-F",
+            &format!("name={name}"),
+            "-F",
+            &format!("number={number}"),
+        ],
+    )?;
+    parse_review_thread_ids(&raw)
 }
 
 fn parse_pull_comments(raw: &str) -> CliResult<Vec<ExistingInlineComment>> {
@@ -2355,6 +3150,24 @@ fn append_step_summary(summary: &str) -> CliResult<()> {
     file.write_all(summary.as_bytes())
         .with_context(|| format!("failed to write {}", path.display()))?;
     file.write_all(b"\n")
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn append_github_output(name: &str, value: &str) -> CliResult<()> {
+    let Some(path) = std::env::var_os("GITHUB_OUTPUT") else {
+        return Ok(());
+    };
+    if value.contains(['\r', '\n']) {
+        bail!("GitHub output {name} must be a single line");
+    }
+    let path = PathBuf::from(path);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{name}={value}")
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -2876,14 +3689,18 @@ fn load_previous_summary_state(
     else {
         return Ok(None);
     };
-    let comments = fetch_issue_comments(repo, repository, *pull_request_number)?;
+    let comment_records = fetch_issue_comment_records(repo, repository, *pull_request_number)?;
+    let comments = summary_comments(&comment_records);
     let Some(comment) = reviewgate_github::find_summary_comment(&comments) else {
         return Ok(None);
     };
-    let Some(state) = extract_summary_state(&comment.body)? else {
+    let Some(mut state) = extract_summary_state(&comment.body)? else {
         return Ok(None);
     };
     state.validate_for_scope(scope)?;
+    let disposition_comments = agent_disposition_comments(&comment_records);
+    let authorized_actors = authorized_disposition_actors(repo, repository, &disposition_comments);
+    apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_actors)?;
     Ok(Some(state))
 }
 
@@ -3738,6 +4555,7 @@ fn aggregate_angle_artifacts(
         angle_errors: vec![],
         findings,
         disposition_updates: vec![],
+        tracked_findings: vec![],
         notes,
     };
     artifact.validate()?;
@@ -5990,8 +6808,16 @@ review_angles:
         let check_run_start = action
             .find("- name: Publish ReviewGate check run")
             .expect("check run step exists");
+        let result_start = action
+            .find("- name: Publish ReviewGate agent result")
+            .expect("agent result step exists");
+        let upload_start = action
+            .find("- name: Upload ReviewGate agent result")
+            .expect("agent result upload exists");
         assert!(inline_start < summary_start);
         assert!(summary_start < check_run_start);
+        assert!(check_run_start < result_start);
+        assert!(result_start < upload_start);
 
         let findings_step = &action[inline_start..summary_start];
         let summary_step = &action[summary_start..check_run_start];
@@ -6011,6 +6837,11 @@ review_angles:
         assert!(check_run_step.contains("inputs.mode == 'review' && always()"));
         assert!(!check_run_step.contains("continue-on-error: true"));
         assert!(!check_run_step.contains(concat!("--gate", "-mode")));
+        assert!(action.contains("publish-agent-result"));
+        assert!(action.contains("reviewgate-agent-result"));
+        assert!(action.contains("actions/upload-artifact@"));
+        assert!(action.contains("result_path:"));
+        assert!(action.contains("reviewed_sha:"));
 
         let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
         assert!(dogfood_workflow.contains("checks: write"));
@@ -6020,6 +6851,452 @@ review_angles:
         assert!(!dogfood_workflow.contains("uses: ./"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
+    }
+
+    #[test]
+    fn missing_internal_artifact_projects_a_terminal_agent_result() {
+        let repo = unique_test_dir("reviewgate-agent-result-missing-artifact");
+        let input = repo.join("missing-review.json");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 49,
+        };
+
+        let result = project_agent_result_from_artifact_path(
+            &input,
+            "current-head",
+            scope.clone(),
+            BTreeMap::new(),
+        )
+        .expect("missing internal artifact still produces a terminal result");
+        fs::remove_dir_all(repo).ok();
+
+        assert_eq!(result.scope, scope);
+        assert_eq!(result.reviewed_sha, "current-head");
+        assert_eq!(result.status, ReviewStatus::ReviewError);
+        assert_eq!(result.score, None);
+        assert_eq!(result.angle_errors.len(), 1);
+        assert_eq!(result.angle_errors[0].angle_id, "artifact_validation");
+        assert!(!result.angle_errors[0].retryable);
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn malformed_internal_artifact_projects_the_same_sanitized_terminal_result() {
+        let repo = unique_test_dir("reviewgate-agent-result-malformed-artifact");
+        let input = repo.join("review.json");
+        fs::write(&input, r#"{"status":"provider secret: do not expose""#)
+            .expect("write malformed artifact");
+
+        let result = project_agent_result_from_artifact_path(
+            &input,
+            "current-head",
+            ReviewScope::PullRequest {
+                repository: "LVTD-LLC/reviewgate".to_string(),
+                pull_request_number: 49,
+            },
+            BTreeMap::new(),
+        )
+        .expect("malformed internal artifact still produces a terminal result");
+        fs::remove_dir_all(repo).ok();
+
+        let encoded = serde_json::to_string(&result).expect("serialize agent result");
+        assert_eq!(result.status, ReviewStatus::ReviewError);
+        assert_eq!(result.angle_errors[0].angle_id, "artifact_validation");
+        assert_eq!(
+            result.angle_errors[0].message,
+            "The review artifact failed deterministic validation."
+        );
+        assert!(!encoded.contains("provider secret"));
+    }
+
+    #[test]
+    fn maps_graphql_review_thread_ids_to_their_review_findings() {
+        let raw = serde_json::json!([{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "PRRT_alpha",
+                                    "comments": {
+                                        "nodes": [{
+                                            "body": reviewgate_github::inline_comment_marker("rg_alpha")
+                                        }]
+                                    }
+                                },
+                                {
+                                    "id": "PRRT_human",
+                                    "comments": {"nodes": [{"body": "human comment"}]}
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }])
+        .to_string();
+
+        assert_eq!(
+            parse_review_thread_ids(&raw).expect("threads"),
+            BTreeMap::from([("rg_alpha".to_string(), "PRRT_alpha".to_string())])
+        );
+    }
+
+    #[test]
+    fn selects_only_a_nonexpired_agent_result_for_the_exact_head() {
+        let raw = serde_json::json!({
+            "artifacts": [
+                {
+                    "id": 7,
+                    "name": "reviewgate-agent-result-stale",
+                    "expired": false,
+                    "created_at": "2026-07-29T10:00:00Z",
+                    "workflow_run": {"id": 70, "head_sha": "stale"}
+                },
+                {
+                    "id": 8,
+                    "name": "reviewgate-agent-result-current",
+                    "expired": true,
+                    "created_at": "2026-07-29T12:00:00Z",
+                    "workflow_run": {"id": 80, "head_sha": "current"}
+                },
+                {
+                    "id": 9,
+                    "name": "reviewgate-agent-result-current",
+                    "expired": false,
+                    "created_at": "2026-07-29T11:00:00Z",
+                    "workflow_run": {"id": 90, "head_sha": "current"}
+                },
+                {
+                    "id": 10,
+                    "name": "reviewgate-agent-result-current",
+                    "expired": false,
+                    "created_at": "2026-07-29T13:00:00Z",
+                    "workflow_run": {"id": 100, "head_sha": "current"}
+                }
+            ]
+        })
+        .to_string();
+
+        assert_eq!(
+            select_agent_result_run(&raw, "current", &BTreeSet::from([90]))
+                .expect("trusted exact result"),
+            90
+        );
+        assert!(
+            select_agent_result_run(&raw, "current", &BTreeSet::from([100]))
+                .expect("other explicitly trusted workflow")
+                == 100
+        );
+        assert!(select_agent_result_run(&raw, "current", &BTreeSet::from([101])).is_err());
+        assert!(select_agent_result_run(&raw, "missing", &BTreeSet::from([90])).is_err());
+    }
+
+    #[test]
+    fn rejects_an_agent_result_that_is_not_bound_to_the_requested_head_and_pr() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        artifact = artifact.with_computed_score().expect("score");
+        let result = AgentReviewResult::from_artifact(
+            &artifact,
+            ReviewScope::PullRequest {
+                repository: "LVTD-LLC/reviewgate".to_string(),
+                pull_request_number: 48,
+            },
+            BTreeMap::new(),
+        )
+        .expect("result");
+
+        assert!(
+            validate_agent_result_scope(&result, "LVTD-LLC/reviewgate", 48, "different").is_err()
+        );
+        assert!(
+            validate_agent_result_scope(&result, "LVTD-LLC/reviewgate", 49, &result.reviewed_sha)
+                .is_err()
+        );
+        validate_agent_result_scope(&result, "LVTD-LLC/reviewgate", 48, &result.reviewed_sha)
+            .expect("exact scope");
+    }
+
+    #[test]
+    fn disposition_comments_are_versioned_author_bound_and_require_live_write_permission() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        let artifact = artifact.with_computed_score().expect("score");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = scope.clone();
+        let fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        let update = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope,
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: fingerprint,
+                disposition: AgentDisposition::NeedsHuman,
+                evidence: "The repository contract is ambiguous.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        let body = encode_agent_disposition_comment(&update).expect("encoded");
+        assert_eq!(
+            extract_agent_disposition_state(&body)
+                .expect("decoded")
+                .expect("present"),
+            update
+        );
+
+        let untrusted = AgentDispositionComment {
+            id: 1,
+            author_login: "repair-agent".to_string(),
+            author_association: "CONTRIBUTOR".to_string(),
+            body: body.clone(),
+        };
+        assert!(disposition_actor_candidates(std::slice::from_ref(&untrusted)).is_empty());
+        apply_agent_disposition_comments(&mut state, &[untrusted], &BTreeSet::new())
+            .expect("ignored");
+        assert_ne!(
+            state.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+
+        let trusted = AgentDispositionComment {
+            id: 2,
+            author_login: "repair-agent".to_string(),
+            author_association: "COLLABORATOR".to_string(),
+            body,
+        };
+        assert_eq!(
+            disposition_actor_candidates(std::slice::from_ref(&trusted)),
+            BTreeSet::from(["repair-agent".to_string()])
+        );
+        let permission_checked = resolve_authorized_disposition_actors(
+            BTreeSet::from(["api-failure".to_string(), "repair-agent".to_string()]),
+            |actor| {
+                if actor == "api-failure" {
+                    bail!("simulated permission API failure");
+                }
+                Ok(true)
+            },
+        );
+        assert_eq!(
+            permission_checked,
+            BTreeSet::from(["repair-agent".to_string()])
+        );
+        apply_agent_disposition_comments(
+            &mut state,
+            std::slice::from_ref(&trusted),
+            &BTreeSet::new(),
+        )
+        .expect("live read permission ignored");
+        assert_ne!(
+            state.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+        let malformed = AgentDispositionComment {
+            id: 3,
+            author_login: "repair-agent".to_string(),
+            author_association: "COLLABORATOR".to_string(),
+            body: format!(
+                "{AGENT_DISPOSITIONS_MARKER_PREFIX}not-base64{AGENT_DISPOSITIONS_MARKER_SUFFIX}"
+            ),
+        };
+        apply_agent_disposition_comments(
+            &mut state,
+            &[malformed, trusted],
+            &BTreeSet::from(["repair-agent".to_string()]),
+        )
+        .expect("invalid comment isolated and live write permission applied");
+        assert_eq!(
+            state.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+    }
+
+    #[test]
+    fn every_disposition_survives_comment_transport_and_summary_publication() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        artifact.findings.truncate(1);
+        artifact = artifact.with_computed_score().expect("score");
+        let scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = scope.clone();
+        let fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        let dispositions = [
+            AgentDisposition::Accepted,
+            AgentDisposition::Fixed,
+            AgentDisposition::RejectedWithEvidence,
+            AgentDisposition::AlreadyImplemented,
+            AgentDisposition::IntentionalContract,
+            AgentDisposition::NeedsHuman,
+        ];
+        let mut records = dispositions
+            .iter()
+            .enumerate()
+            .map(|(index, disposition)| {
+                let update = AgentDispositionState {
+                    schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+                    scope: scope.clone(),
+                    reviewed_sha: state.last_reviewed_sha.clone(),
+                    submission: AgentDispositionSubmission {
+                        semantic_fingerprint: fingerprint.clone(),
+                        disposition: *disposition,
+                        evidence: format!("{disposition:?} verified on the reviewed head."),
+                        actor: "repair-agent".to_string(),
+                    },
+                };
+                IssueCommentRecord {
+                    id: (index + 10) as u64,
+                    author_login: Some("repair-agent".to_string()),
+                    author_association: Some("COLLABORATOR".to_string()),
+                    body: encode_agent_disposition_comment(&update).expect("encoded"),
+                }
+            })
+            .collect::<Vec<_>>();
+        let stale = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: scope.clone(),
+            reviewed_sha: "stale-head".to_string(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: fingerprint.clone(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "Stale evidence.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        records.push(IssueCommentRecord {
+            id: 20,
+            author_login: Some("repair-agent".to_string()),
+            author_association: Some("COLLABORATOR".to_string()),
+            body: encode_agent_disposition_comment(&stale).expect("stale encoded"),
+        });
+        let forged = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: fingerprint,
+                disposition: AgentDisposition::Fixed,
+                evidence: "Forged actor evidence.".to_string(),
+                actor: "different-actor".to_string(),
+            },
+        };
+        records.push(IssueCommentRecord {
+            id: 21,
+            author_login: Some("repair-agent".to_string()),
+            author_association: Some("COLLABORATOR".to_string()),
+            body: encode_agent_disposition_comment(&forged).expect("forged encoded"),
+        });
+
+        let comments = agent_disposition_comments(&records);
+        apply_agent_disposition_comments(
+            &mut state,
+            &comments,
+            &BTreeSet::from(["repair-agent".to_string()]),
+        )
+        .expect("transport replay");
+        let reconciled = reconcile_publication_artifact(
+            artifact,
+            &state.tracked_findings,
+            &reviewgate_core::ConvergenceDelta::unchanged(&state.last_reviewed_sha),
+        )
+        .expect("publication reconciliation");
+        let summary = render_summary_with_options(
+            &reconciled,
+            SummaryOptions {
+                scope,
+                tracked_findings: Some(reconciled.tracked_findings.clone()),
+                ..SummaryOptions::default()
+            },
+            Some(&state),
+        )
+        .expect("summary publication");
+        let published = extract_summary_state(&summary)
+            .expect("published state parses")
+            .expect("published state exists");
+        let submitted = published.tracked_findings[0]
+            .disposition_history
+            .iter()
+            .filter_map(|record| record.submitted_disposition)
+            .collect::<Vec<_>>();
+
+        assert_eq!(submitted, dispositions);
+        assert_eq!(
+            published.tracked_findings[0].disposition,
+            FindingDisposition::Disputed
+        );
+        assert_eq!(
+            published.tracked_findings[0]
+                .disposition_history
+                .last()
+                .and_then(|record| record.submission_id),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn late_disposition_reconciles_the_persisted_agent_artifact() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        let artifact = artifact.with_computed_score().expect("score");
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let target_fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        let update = AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: state.scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: target_fingerprint.clone(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "The repair is present on the reviewed head.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        };
+        update
+            .apply_to_summary(&mut state, 9001)
+            .expect("late disposition");
+
+        let reconciled = reconcile_publication_artifact(
+            artifact,
+            &state.tracked_findings,
+            &reviewgate_core::ConvergenceDelta::unchanged(&state.last_reviewed_sha),
+        )
+        .expect("publication reconciliation");
+
+        assert!(
+            reconciled
+                .findings
+                .iter()
+                .all(|finding| semantic_fingerprint(finding) != target_fingerprint)
+        );
+        assert_eq!(
+            reconciled.tracked_findings[0].disposition,
+            FindingDisposition::Fixed
+        );
+        assert_eq!(
+            reconciled.tracked_findings[0]
+                .disposition_history
+                .last()
+                .and_then(|record| record.submission_id),
+            Some(9001)
+        );
     }
 
     #[test]
@@ -6107,6 +7384,7 @@ review_angles:
             }],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -6143,6 +7421,7 @@ review_angles:
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec!["<untrusted note>".to_string()],
         };
 
@@ -6176,6 +7455,7 @@ review_angles:
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -6206,6 +7486,7 @@ review_angles:
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         fs::write(
@@ -6283,6 +7564,7 @@ review_angles:
                 angle_errors: vec![],
                 findings,
                 disposition_updates: vec![],
+                tracked_findings: vec![],
                 notes: vec![],
             };
 
@@ -6445,6 +7727,7 @@ Thanks {also not json}."#;
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7124,6 +8407,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let adversarial = ReviewArtifact {
@@ -7156,6 +8440,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 agent_instruction: "Handle and test the error path.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7205,6 +8490,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let mut aggregate = aggregate_angle_artifacts(
@@ -7260,6 +8546,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let mut aggregate = aggregate_angle_artifacts(
@@ -7327,6 +8614,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 },
             ],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7381,6 +8669,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 agent_instruction: "Keep generated IDs bounded.".to_string(),
             }],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -7412,6 +8701,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
         let general_angle = general_review_angle();
@@ -7637,6 +8927,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     ..finding
                 }],
                 disposition_updates: vec![],
+                tracked_findings: vec![],
                 notes: vec![],
             };
             let context = ReviewContext {
@@ -7967,6 +9258,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             angle_errors: vec![],
             findings: vec![false_p0, real_p2, advisory],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 
@@ -8054,6 +9346,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             findings: vec![finding],
             disposition_updates: vec![],
+            tracked_findings: vec![],
             notes: vec![],
         };
 

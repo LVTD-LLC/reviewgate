@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewgate.lvtd.dev/schemas/reviewgate-agent-dispositions-v1.schema.json",
+  "title": "ReviewGate Agent Dispositions v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope", "reviewed_sha", "submission"],
+  "properties": {
+    "schema_version": { "const": "reviewgate-agent-dispositions/v1" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "repository", "pull_request_number"],
+      "properties": {
+        "kind": { "const": "pull_request" },
+        "repository": { "type": "string", "minLength": 1 },
+        "pull_request_number": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "reviewed_sha": { "type": "string", "minLength": 1 },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_fingerprint", "disposition", "evidence", "actor"],
+      "properties": {
+        "semantic_fingerprint": { "type": "string", "minLength": 1 },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "fixed",
+            "rejected_with_evidence",
+            "already_implemented",
+            "intentional_contract",
+            "needs_human"
+          ]
+        },
+        "evidence": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "actor": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
