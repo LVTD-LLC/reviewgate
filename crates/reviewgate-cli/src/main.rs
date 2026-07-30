@@ -6196,6 +6196,12 @@ fn workflow_installs_invoked_tool_before_finding(
 }
 
 fn run_command_installs_tool(command: &str, tool: &str) -> bool {
+    if ["&&", "||", ";", "|", "\n"]
+        .iter()
+        .any(|separator| command.contains(separator))
+    {
+        return false;
+    }
     let tokens = command
         .split_whitespace()
         .map(|token| {
@@ -6277,7 +6283,11 @@ fn workflow_step_is_unconditional(
         })
         .unwrap_or(invocation_index);
     !lines[step_start..step_end].iter().any(|line| {
-        let condition = yaml_line_content(line).trim();
+        let condition = yaml_line_content(line)
+            .trim()
+            .strip_prefix("- ")
+            .unwrap_or_else(|| yaml_line_content(line).trim())
+            .trim_start();
         condition.starts_with("if:")
             && !matches!(
                 condition.trim_start_matches("if:").trim(),
@@ -8341,6 +8351,7 @@ review_angles:
         assert!(dogfood_workflow.contains("timeout-minutes: 20"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@v0"));
         assert!(!dogfood_workflow.contains("uses: ./"));
+        assert!(dogfood_workflow.contains("model: anthropic/claude-sonnet-4"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
@@ -11212,6 +11223,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.cross_job_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.metadata_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.conditional_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.chained_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.release_assertion.broken"));
         assert!(fixture_ids.contains("pr365.release_assertion.embedded_mismatch"));
@@ -11289,7 +11301,8 @@ diff --git a/src/lib.rs b/src/lib.rs
                     .iter()
                     .any(|finding| finding.is_blocking(5)),
                 expected_blocking,
-                "{name}"
+                "{name}: {:?}",
+                artifact.notes
             );
             if !expected_blocking {
                 assert!(

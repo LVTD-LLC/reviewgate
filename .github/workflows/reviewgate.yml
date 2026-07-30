@@ -59,7 +59,5 @@ jobs:
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml
-          # Keep repository dogfooding cost-free without weakening the public
-          # price-to-value default used by ReviewGate consumers.
-          model: openrouter/free
+          model: anthropic/claude-sonnet-4
           min_severity: ${{ inputs.min_severity || 'P4' }}

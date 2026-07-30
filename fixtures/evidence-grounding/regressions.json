@@ -667,16 +667,16 @@
     "name": "PR 365 conditional setup does not guarantee runner tooling",
     "fixture_id": "pr365.runner_tooling.conditional_broken",
     "files": {
-      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Install just\n        if: false\n        run: cargo install just\n      - run: just package\n"
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - if: false\n        run: cargo install just\n      - run: just package\n"
     },
-    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,8 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - name: Install just\n+        if: false\n+        run: cargo install just\n+      - run: just package\n",
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,7 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - if: false\n+        run: cargo install just\n+      - run: just package\n",
     "finding": {
       "id": "pr365-runner-tool-conditional-real",
       "scope": "line",
       "severity": "P1",
       "confidence": 0.99,
       "file": ".github/workflows/release.yml",
-      "line": 8,
+      "line": 7,
       "title": "Release invokes conditionally unavailable runner tooling",
       "detail": "The install step is disabled while the invocation is unconditional.",
       "agent_instruction": "Make setup execute whenever just package executes.",
@@ -686,11 +686,44 @@
         "causal_path": "false setup condition -> skipped install -> just package -> command not found",
         "test_assessment": "The invocation is unconditional and the only setup step has if: false.",
         "evidence": [
-          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "if: false", "reason": "The setup step is disabled"},
-          {"path": ".github/workflows/release.yml", "side": "new", "line": 8, "excerpt": "- run: just package", "reason": "The invocation still executes"}
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- if: false", "reason": "The setup step is disabled on its sequence-entry line"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 7, "excerpt": "- run: just package", "reason": "The invocation still executes"}
         ],
         "related_tests": [],
         "reproduction": "Run the release job and observe the install skip before just package.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 chained setup does not install the invoked runner tool",
+    "fixture_id": "pr365.runner_tooling.chained_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install cargo-nextest && echo just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,7 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install cargo-nextest && echo just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-chained-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The prior chained command installs cargo-nextest and only prints the word just, so just remains unavailable.",
+      "agent_instruction": "Install just with its own executable setup step before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "release job -> install cargo-nextest -> echo just -> just package -> command not found",
+        "test_assessment": "The installer operand is cargo-nextest, not just.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install cargo-nextest && echo just", "reason": "The only installer targets cargo-nextest"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The invocation has no executable setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe that the chained command does not install just before invocation.",
         "proof": null
       }
     },
