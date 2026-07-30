@@ -625,6 +625,7 @@ fn review_context(case: &EvidenceGroundingCase, case_id: &str) -> ReviewContext 
             .unwrap_or(u32::MAX),
         data_integrity_review_needed: false,
         context_files: vec![],
+        semantic_context: None,
     }
 }
 

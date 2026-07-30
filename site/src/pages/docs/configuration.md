@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/DocsLayout.astro
 title: "Configure ReviewGate"
-description: "Configure ReviewGate severity, models, timeouts, custom review angles, prompt files, skill-backed reviews, and environment variables."
+description: "Configure ReviewGate severity, semantic context, models, timeouts, custom review angles, prompt files, skill-backed reviews, and environment variables."
 heading: "Configure ReviewGate"
 lede: "Keep the fixed 5/5 gate while selecting which findings publish inline, which review angles run, and which model and time budgets the runtime uses."
 eyebrow: "REFERENCE / CONFIGURATION"
@@ -15,7 +15,7 @@ ReviewGate has three user-facing configuration surfaces:
 2. repository configuration in `.reviewgate.yml`;
 3. CLI flags and environment variables for local runs.
 
-Use Action inputs for workflow/runtime values such as model, timeouts, config path, and inline severity. Use `.reviewgate.yml` for repository-owned review angles and direct-CLI severity defaults. Use environment variables for credentials and GitHub event context.
+Use Action inputs for workflow/runtime values such as model, timeouts, config path, and inline severity. Use `.reviewgate.yml` for repository-owned semantic context, review angles, and direct-CLI severity defaults. Use environment variables for credentials and GitHub event context.
 
 The passing target is always `5/5`. There is no supported target-score or report-only mode.
 
@@ -24,6 +24,7 @@ The passing target is always `5/5`. There is no supported target-score or report
 When `.reviewgate.yml` is absent:
 
 - `min_severity` defaults to `P4`;
+- semantic context is disabled;
 - the built-in `general` angle runs;
 - the built-in `adversarial` angle runs;
 - the balanced model is selected unless the caller overrides it;
@@ -58,6 +59,18 @@ reviewgate review-pr --repo . --min-severity P2
 `min_severity` controls the lowest severity eligible for inline PR publication and the inline-eligible count in summaries. It does **not** change which validated findings affect the fixed score. A validated blocking `P3` can still lower the score even when `min_severity: P2` hides it from inline publication; the finding remains in JSON.
 
 Severity ordering is `P0` most severe through `P4` advisory.
+
+## Add ephemeral repository context
+
+Set `deep: true` when the reviewer should receive bounded context beyond changed files:
+
+```yaml
+deep: true
+```
+
+ReviewGate builds this context once for the exact checked-out PR head and shares it across every angle. It uses tree-sitter to identify changed Rust definitions, then invokes `rg` directly with fixed arguments to find related definitions, references, tests, and configuration. Unsupported text formats and deleted identifiers use the same bounded text-search fallback.
+
+The context is in memory only. ReviewGate does not create a repository index, use embeddings, execute PR code, or persist excerpt source in the review artifact. Artifact metrics record paths, line ranges, reasons, relations, byte counts, truncation, and the reviewed SHA. If the checkout does not equal the PR head or `rg` is unavailable, the artifact reports semantic context as unavailable and the ordinary review still runs.
 
 ## Add custom review angles
 

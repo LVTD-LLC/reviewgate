@@ -81,7 +81,7 @@ Important current limitations:
 
 - The live review path defaults to the built-in `general` and `adversarial` review angles, and `.reviewgate.yml` can override the angle list.
 - Config parsing intentionally supports the documented scalar and review angle fields, not arbitrary YAML features.
-- Full-repository indexing is out of scope for v0. ReviewGate uses the PR diff, changed file list, PR title/body, and bounded context from common instruction files.
+- Persistent full-repository indexing is out of scope for v0. By default ReviewGate uses the PR diff, changed file list, PR title/body, and bounded context from common instruction files. Repositories can opt into ephemeral semantic context for the exact checked-out head with `deep: true`.
 - Inline comments are best-effort. If GitHub rejects an inline comment or no right-side diff anchor exists, the complete finding remains in JSON.
 - Review scores below `5/5` do not fail the GitHub Actions job. Validated blockers report `needs_changes` and publish a failing ReviewGate check-run conclusion.
 
@@ -123,6 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -201,6 +202,7 @@ The built-in default model is `deepseek/deepseek-v4-flash`. The Rust model prese
 ReviewGate downloads its version-pinned Linux X64 release binary and verifies its GitHub build-provenance attestation before executing it. Normal action startup does not install Rust or compile source. The supported action runner is GitHub's `ubuntu-latest` Linux X64 image. Self-hosted and other Linux distributions are not supported yet. The runner provides:
 
 - Git;
+- ripgrep (`rg`) for opt-in `deep: true` semantic context;
 - `curl`;
 - GitHub CLI `gh` with attestation support;
 - `tar` and GNU `date`.
@@ -215,6 +217,7 @@ For local development on a fresh machine:
 - Rustup and Cargo.
 - Rust toolchain `1.96.0` with `rustfmt` and `clippy`.
 - `curl` for live OpenRouter calls from the CLI.
+- `rg` (ripgrep) when `.reviewgate.yml` enables `deep: true`.
 - `jq` for inspecting generated JSON in examples.
 - GitHub CLI `gh` for `recheck` and GitHub publishing commands.
 - Node.js 24 and npm for the Astro marketing site.
@@ -225,7 +228,7 @@ For local development on a fresh machine:
 Install common tools on macOS with Homebrew:
 
 ```bash
-brew install git jq gh rustup-init node docker
+brew install git jq gh ripgrep rustup-init node docker
 rustup-init
 rustup toolchain install 1.96.0 --component rustfmt --component clippy
 cargo install cargo-audit --locked
@@ -235,7 +238,7 @@ Install common tools on Ubuntu:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y curl git jq build-essential
+sudo apt-get install -y curl git jq ripgrep build-essential
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install 1.96.0 --component rustfmt --component clippy
 cargo install cargo-audit --locked
@@ -761,7 +764,7 @@ Optional top-level fields:
 | --- | --- | --- |
 | `estimated_cost_usd` | number or null | Current run estimated cost. |
 | `cost_summary` | object or null | Current cost plus per-component cost details. |
-| `metrics` | object or null | Finding counts, severity counts, inline candidate count, analyzed line count, cost source, and optional queue/startup/model/publish timings. |
+| `metrics` | object or null | Finding counts, severity counts, inline candidate count, analyzed line count, cost source, optional queue/startup/model/publish timings, and opt-in semantic-context selection metadata. Semantic excerpt source is not duplicated in the artifact. |
 | `review_stages` | array | Review stages that ran or were selected for reporting. |
 | `angle_results` | array | Per-angle score and status derived from the angle-owned `finding_ids`, plus verdict and model. |
 | `angle_errors` | array | Sanitized typed failures with angle, kind, retryability, message, and model. |
@@ -830,10 +833,11 @@ jq -r '
 
 ReviewGate looks for `.reviewgate.yml` by default. You can pass a different path with the action `config` input or CLI `--config`.
 
-`.reviewgate.yml` supports `min_severity` and optional `review_angles`.
+`.reviewgate.yml` supports `min_severity`, optional `review_angles`, and opt-in ephemeral semantic context.
 
 ```yaml
 min_severity: P2
+deep: true
 review_angles:
   - id: general
     name: General
@@ -847,6 +851,7 @@ review_angles:
 | Key | Values | Default | Effect |
 | --- | --- | --- | --- |
 | `min_severity` | `P0`, `P1`, `P2`, `P3`, `P4` | `P4` | Lowest severity published as inline PR comments and counted as inline-eligible in summaries. |
+| `deep` | `true`, `false` | `false` | Builds bounded semantic context once for the exact reviewed head using tree-sitter for changed Rust definitions and `rg`-based text fallback/references. Selected excerpts are shared by all review angles and discarded after the run. |
 | `review_angles` | YAML list | Built-in `general` and `adversarial` angles | Replaces the default review angle list when present. |
 
 Each configured review angle requires `id` plus exactly one instruction source.
@@ -1314,6 +1319,7 @@ ReviewGate assumes all review inputs are untrusted:
 Security constraints:
 
 - Do not execute code from the pull request under review.
+- Semantic context invokes `rg` directly with fixed arguments, rejects symlinked or repository-external paths, and enforces count, byte, file-size, output, and wall-time budgets. It does not execute repository code or persist a source index.
 - Do not use `pull_request_target` for untrusted fork workflows.
 - Keep GitHub token permissions least-privilege.
 - Do not log OpenRouter keys, GitHub tokens, request headers, or raw secrets.
@@ -1368,6 +1374,7 @@ Use:
 ```yaml
 - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
   with:
+    ref: ${{ github.event.pull_request.head.sha }}
     fetch-depth: 0
     persist-credentials: false
 ```

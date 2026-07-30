@@ -86,6 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 

@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Added opt-in `deep: true` semantic repository context: ReviewGate now extracts changed Rust definitions with tree-sitter, discovers bounded repository-wide definitions/references/tests/configuration with direct `rg` calls and a universal text fallback, shares cited excerpts across review angles, and records exact-head selection metadata without persisting source or an index.
 - Shortened the homepage AI setup prompt into a concise agent bootstrap that links to the docs, `llms.txt`, repository, and README while retaining model-selection and secret-safety guidance.
 - Corrected the standalone CLI release sequence after `v0.7.0` was tagged before its macOS packaging workflow merged: runtime tags now publish and verify Linux X64 and macOS Apple Silicon/Intel archives before a follow-up change advances the Action pin.
 - Simplified the blog index into a responsive field-note ledger with restrained copy, full-row article links, clear publication dates, and divider-based hierarchy.

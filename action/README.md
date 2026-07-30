@@ -36,9 +36,10 @@ OPENROUTER_API_KEY
 
 The action must update the existing PR summary comment containing `<!-- reviewgate-summary -->` instead of creating duplicate summary comments on every commit.
 
-The optional `.reviewgate.yml` config can define review angles with exactly one instruction source per angle:
+The optional `.reviewgate.yml` config can enable ephemeral semantic repository context and define review angles with exactly one instruction source per angle:
 
 ```yaml
+deep: true
 review_angles:
   - id: correctness
     name: Correctness
@@ -49,6 +50,8 @@ review_angles:
 ```
 
 Use `prompt` for short inline text, `prompt_file` for repo-relative prompt files, and `skill` for a repo-relative skill directory containing `SKILL.md` or a direct `SKILL.md` path. Skill-backed angles pass skill instructions to the reviewing model; ReviewGate does not execute repository scripts, skill tools, or pull request code.
+
+`deep` defaults to `false`. When enabled, ReviewGate extracts changed Rust definitions with tree-sitter and uses bounded direct `rg` calls plus a universal text fallback to add cited repository context once per exact-head review run. It does not persist a source index.
 
 ## Inputs
 
