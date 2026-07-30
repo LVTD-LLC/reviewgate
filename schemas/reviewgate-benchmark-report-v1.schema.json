@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewgate.lvtd.dev/schemas/reviewgate-benchmark-report-v1.schema.json",
+  "title": "ReviewGate benchmark report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_name",
+    "mode",
+    "passed",
+    "corpus",
+    "configurations",
+    "comparison",
+    "threshold_results"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reviewgate-benchmark-report/v1"
+    },
+    "manifest_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "deterministic",
+        "live"
+      ]
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "corpus": {
+      "$ref": "#/$defs/corpus"
+    },
+    "configurations": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/configurationReport"
+      }
+    },
+    "comparison": {
+      "$ref": "#/$defs/comparison"
+    },
+    "threshold_results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/threshold"
+      }
+    }
+  },
+  "$defs": {
+    "nullableNumber": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "minimum_case_count",
+        "blinded",
+        "repetitions",
+        "languages",
+        "risk_classes",
+        "source_ids"
+      ],
+      "properties": {
+        "case_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minimum_case_count": {
+          "type": "integer",
+          "minimum": 30
+        },
+        "blinded": {
+          "type": "boolean"
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10
+        },
+        "languages": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "risk_classes": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "source_ids": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "expected_serious_defects",
+        "observed_blockers",
+        "true_positives",
+        "false_positives",
+        "false_negatives",
+        "true_negatives",
+        "blocking_precision",
+        "serious_defect_recall",
+        "false_blockers_per_case",
+        "contradiction_rate"
+      ],
+      "properties": {
+        "case_count": {
+          "type": "integer"
+        },
+        "expected_serious_defects": {
+          "type": "integer"
+        },
+        "observed_blockers": {
+          "type": "integer"
+        },
+        "true_positives": {
+          "type": "integer"
+        },
+        "false_positives": {
+          "type": "integer"
+        },
+        "false_negatives": {
+          "type": "integer"
+        },
+        "true_negatives": {
+          "type": "integer"
+        },
+        "blocking_precision": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "serious_defect_recall": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "false_blockers_per_case": {
+          "type": "number"
+        },
+        "contradiction_rate": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "caseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "name",
+        "provenance",
+        "expected_blocking",
+        "review_complete",
+        "observed_blocking",
+        "true_blockers",
+        "false_blockers",
+        "missed_serious_defects",
+        "contradicted_non_findings",
+        "unexpected_blockers",
+        "duplicate_findings"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "expected_blocking": {
+          "type": "boolean"
+        },
+        "review_complete": {
+          "type": "boolean"
+        },
+        "observed_blocking": {
+          "type": "boolean"
+        },
+        "true_blockers": {
+          "type": "integer"
+        },
+        "false_blockers": {
+          "type": "integer"
+        },
+        "missed_serious_defects": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "contradicted_non_findings": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "unexpected_blockers": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "duplicate_findings": {
+          "$ref": "#/$defs/stringArray"
+        }
+      }
+    },
+    "configurationReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "pipeline",
+        "metrics",
+        "completion_rate",
+        "rereview_stability",
+        "rereview_convergence",
+        "duplicate_finding_count",
+        "estimated_cost_usd",
+        "spent_cost_usd",
+        "mean_latency_ms",
+        "agent_time_ms",
+        "agent_time_coverage",
+        "cases"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "baseline",
+            "candidate"
+          ]
+        },
+        "pipeline": {
+          "enum": [
+            "raw_model",
+            "evidence_gate"
+          ]
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "completion_rate": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "rereview_stability": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "rereview_convergence": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "duplicate_finding_count": {
+          "type": "integer"
+        },
+        "estimated_cost_usd": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "spent_cost_usd": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "mean_latency_ms": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "agent_time_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "agent_time_coverage": {
+          "type": "integer"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/caseReport"
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_id",
+        "candidate_id",
+        "blocking_precision_delta",
+        "serious_defect_recall_delta",
+        "false_blockers_per_case_delta",
+        "contradiction_rate_delta",
+        "rereview_stability_delta",
+        "estimated_cost_usd_delta",
+        "mean_latency_ms_delta"
+      ],
+      "properties": {
+        "baseline_id": {
+          "type": "string"
+        },
+        "candidate_id": {
+          "type": "string"
+        },
+        "blocking_precision_delta": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "serious_defect_recall_delta": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "false_blockers_per_case_delta": {
+          "type": "number"
+        },
+        "contradiction_rate_delta": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "rereview_stability_delta": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "estimated_cost_usd_delta": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "mean_latency_ms_delta": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "passed",
+        "actual",
+        "required"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "actual": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "required": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

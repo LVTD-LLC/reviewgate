@@ -1,0 +1,41 @@
+{
+  "schema_version": "reviewgate-benchmark-manifest/v1",
+  "name": "ReviewGate measured replacement gate",
+  "blinded": true,
+  "minimum_case_count": 30,
+  "repetitions": 2,
+  "thresholds": {
+    "minimum_blocking_precision": 0.95,
+    "minimum_serious_defect_recall": 0.95,
+    "maximum_false_blockers_per_case": 0.05,
+    "maximum_contradiction_rate": 0.05,
+    "minimum_rereview_stability": 1.0,
+    "minimum_completion_rate": 1.0,
+    "maximum_live_cost_usd": 10.0,
+    "maximum_mean_latency_ms": 300000
+  },
+  "configurations": [
+    {
+      "id": "baseline",
+      "role": "baseline",
+      "pipeline": "raw_model"
+    },
+    {
+      "id": "candidate",
+      "role": "candidate",
+      "pipeline": "evidence_gate"
+    }
+  ],
+  "sources": [
+    {
+      "id": "grounding-regressions",
+      "kind": "evidence_grounding",
+      "path": "fixtures/evidence-grounding/regressions.json"
+    },
+    {
+      "id": "reviewgate-pr-53",
+      "kind": "evidence_grounding",
+      "path": "fixtures/evaluation/pr-53.json"
+    }
+  ]
+}

@@ -1,0 +1,266 @@
+{
+  "provenance": {
+    "repository": "https://github.com/LVTD-LLC/reviewgate",
+    "pull_request": 53,
+    "base_sha": "f39293e40859a778a0c25ebfcd64e7fedbe3c058",
+    "head_sha": "0d0ba08e4f7211f1d10141bb8cd7b362bf77d934",
+    "fix_sha": "cfcd1190722e632cca6ea2f39f0bcc976c9e155b",
+    "license": "Apache-2.0",
+    "external_comparison": {
+      "reviewer": "Greptile",
+      "availability": "unavailable",
+      "reason": "invoked_no_public_result"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr53.release-publish-repository-context",
+      "name": "Release publishing commands lack repository context",
+      "language": "yaml+shell",
+      "risk_class": "release",
+      "files": {
+        ".github/workflows/release-runtime.yml": "publish:\n  needs: verify\n  permissions:\n    contents: write\n  runs-on: ubuntu-latest\n  env:\n    RELEASE_TAG: ${{ github.ref_name }}\n  steps:\n    - name: Publish verified runtime\n      shell: bash\n      env:\n        GH_TOKEN: ${{ github.token }}\n      run: |\n        set -euo pipefail\n        if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then\n          gh release create \"$RELEASE_TAG\" --draft --verify-tag\n        fi\n        gh release upload \"$RELEASE_TAG\" reviewgate.tar.gz --clobber\n"
+      },
+      "diff": "diff --git a/.github/workflows/release-runtime.yml b/.github/workflows/release-runtime.yml\n--- /dev/null\n+++ b/.github/workflows/release-runtime.yml\n@@ -0,0 +1,18 @@\n+publish:\n+  needs: verify\n+  permissions:\n+    contents: write\n+  runs-on: ubuntu-latest\n+  env:\n+    RELEASE_TAG: ${{ github.ref_name }}\n+  steps:\n+    - name: Publish verified runtime\n+      shell: bash\n+      env:\n+        GH_TOKEN: ${{ github.token }}\n+      run: |\n+        set -euo pipefail\n+        if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then\n+          gh release create \"$RELEASE_TAG\" --draft --verify-tag\n+        fi\n+        gh release upload \"$RELEASE_TAG\" reviewgate.tar.gz --clobber\n",
+      "finding": {
+        "id": "pr53-release-context",
+        "scope": "line",
+        "severity": "P1",
+        "confidence": 0.99,
+        "classification": "defect",
+        "evidence_gate_result": "passed",
+        "file": ".github/workflows/release-runtime.yml",
+        "line": 15,
+        "title": "Release commands cannot resolve their repository",
+        "detail": "The publish job has neither a checkout nor explicit repository context for gh.",
+        "agent_instruction": "Bind every gh release command to the target repository.",
+        "grounding": {
+          "semantic_key": "release-publish-repository-context",
+          "claim": "The publish job runs gh release commands without a checkout, GH_REPO, or --repo.",
+          "causal_path": "tag workflow -> publish job -> gh repository discovery -> release publication failure",
+          "test_assessment": "The captured job has no checkout or explicit repository option.",
+          "evidence": [
+            {
+              "path": ".github/workflows/release-runtime.yml",
+              "side": "new",
+              "line": 15,
+              "excerpt": "        if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then",
+              "reason": "The first gh release command depends on repository discovery."
+            }
+          ],
+          "related_tests": [],
+          "reproduction": "Run the publish job in a workspace without a Git checkout.",
+          "proof": null
+        }
+      },
+      "expected_blocking": true,
+      "configuration_findings": {
+        "baseline": [],
+        "candidate": [
+          {
+            "id": "pr53-release-context",
+            "scope": "line",
+            "severity": "P1",
+            "confidence": 0.99,
+            "classification": "defect",
+            "evidence_gate_result": "passed",
+            "file": ".github/workflows/release-runtime.yml",
+            "line": 15,
+            "title": "Release commands cannot resolve their repository",
+            "detail": "The publish job has neither a checkout nor explicit repository context for gh.",
+            "agent_instruction": "Bind every gh release command to the target repository.",
+            "grounding": {
+              "semantic_key": "release-publish-repository-context",
+              "claim": "The publish job runs gh release commands without a checkout, GH_REPO, or --repo.",
+              "causal_path": "tag workflow -> publish job -> gh repository discovery -> release publication failure",
+              "test_assessment": "The captured job has no checkout or explicit repository option.",
+              "evidence": [
+                {
+                  "path": ".github/workflows/release-runtime.yml",
+                  "side": "new",
+                  "line": 15,
+                  "excerpt": "        if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then",
+                  "reason": "The first gh release command depends on repository discovery."
+                }
+              ],
+              "related_tests": [],
+              "reproduction": "Run the publish job in a workspace without a Git checkout.",
+              "proof": null
+            }
+          }
+        ]
+      },
+      "provenance": {
+        "original_path": ".github/workflows/release-runtime.yml",
+        "original_line": 112,
+        "discussion": "https://github.com/LVTD-LLC/reviewgate/pull/53#discussion_r3677277571"
+      }
+    },
+    {
+      "case_id": "pr53.queue-timestamps-null-safe",
+      "name": "Null queue timestamps abort runtime installation",
+      "language": "yaml+shell",
+      "risk_class": "reliability",
+      "files": {
+        "action.yml": "queue_ms=\"\"\nrun_times=\"$(gh api \"repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\" \\\n  --jq '[.created_at, .run_started_at] | @tsv' 2>/dev/null || true)\"\nif [ -n \"$run_times\" ]; then\n  IFS=$'\\t' read -r created_at run_started_at <<< \"$run_times\"\n  created_ms=\"$(date -d \"$created_at\" +%s%3N)\"\n  run_started_ms=\"$(date -d \"$run_started_at\" +%s%3N)\"\n  if [ \"$run_started_ms\" -ge \"$created_ms\" ]; then\n    queue_ms=$((run_started_ms - created_ms))\n  fi\nfi\n"
+      },
+      "diff": "diff --git a/action.yml b/action.yml\n--- /dev/null\n+++ b/action.yml\n@@ -0,0 +1,11 @@\n+queue_ms=\"\"\n+run_times=\"$(gh api \"repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\" \\\n+  --jq '[.created_at, .run_started_at] | @tsv' 2>/dev/null || true)\"\n+if [ -n \"$run_times\" ]; then\n+  IFS=$'\\t' read -r created_at run_started_at <<< \"$run_times\"\n+  created_ms=\"$(date -d \"$created_at\" +%s%3N)\"\n+  run_started_ms=\"$(date -d \"$run_started_at\" +%s%3N)\"\n+  if [ \"$run_started_ms\" -ge \"$created_ms\" ]; then\n+    queue_ms=$((run_started_ms - created_ms))\n+  fi\n+fi\n",
+      "finding": {
+        "id": "pr53-null-timestamps",
+        "scope": "line",
+        "severity": "P1",
+        "confidence": 0.99,
+        "classification": "reliability_risk",
+        "evidence_gate_result": "passed",
+        "file": "action.yml",
+        "line": 6,
+        "title": "Missing timestamps abort setup under set -e",
+        "detail": "A non-empty TSV containing null or blank values reaches GNU date and exits the step.",
+        "agent_instruction": "Validate both timestamps before converting them.",
+        "grounding": {
+          "semantic_key": "queue-timestamps-null-safe",
+          "claim": "The action converts unvalidated API timestamps with date under set -e.",
+          "causal_path": "GitHub run response -> nullable timestamp -> date conversion -> action setup abort",
+          "test_assessment": "The captured code checks only whether the combined TSV is non-empty.",
+          "evidence": [
+            {
+              "path": "action.yml",
+              "side": "new",
+              "line": 6,
+              "excerpt": "  created_ms=\"$(date -d \"$created_at\" +%s%3N)\"",
+              "reason": "The conversion is attempted without validating created_at."
+            }
+          ],
+          "related_tests": [],
+          "reproduction": "Return null for either timestamp from the Actions run API.",
+          "proof": null
+        }
+      },
+      "expected_blocking": true,
+      "configuration_findings": {
+        "baseline": [],
+        "candidate": [
+          {
+            "id": "pr53-null-timestamps",
+            "scope": "line",
+            "severity": "P1",
+            "confidence": 0.99,
+            "classification": "reliability_risk",
+            "evidence_gate_result": "passed",
+            "file": "action.yml",
+            "line": 6,
+            "title": "Missing timestamps abort setup under set -e",
+            "detail": "A non-empty TSV containing null or blank values reaches GNU date and exits the step.",
+            "agent_instruction": "Validate both timestamps before converting them.",
+            "grounding": {
+              "semantic_key": "queue-timestamps-null-safe",
+              "claim": "The action converts unvalidated API timestamps with date under set -e.",
+              "causal_path": "GitHub run response -> nullable timestamp -> date conversion -> action setup abort",
+              "test_assessment": "The captured code checks only whether the combined TSV is non-empty.",
+              "evidence": [
+                {
+                  "path": "action.yml",
+                  "side": "new",
+                  "line": 6,
+                  "excerpt": "  created_ms=\"$(date -d \"$created_at\" +%s%3N)\"",
+                  "reason": "The conversion is attempted without validating created_at."
+                }
+              ],
+              "related_tests": [],
+              "reproduction": "Return null for either timestamp from the Actions run API.",
+              "proof": null
+            }
+          }
+        ]
+      },
+      "provenance": {
+        "original_path": "action.yml",
+        "original_line": 115,
+        "discussion": "https://github.com/LVTD-LLC/reviewgate/pull/53#discussion_r3677277594"
+      }
+    },
+    {
+      "case_id": "pr53.skill-runtime-phases-complete",
+      "name": "Public agent skill omits queue and publish timing phases",
+      "language": "markdown+jq",
+      "risk_class": "contract",
+      "files": {
+        "skills/check-reviewgate/SKILL.md": "jq -r '\n  \"schema: \\(.schema_version)\",\n  \"status: \\(.status)\",\n  \"score: \\(if .score == null then \"unavailable\" else \"\\(.score)/5\" end)\",\n  \"reviewed_sha: \\(.reviewed_sha)\",\n  \"runtime: \\(if .timings == null then \"unavailable\" else \"\\(.timings.model_ms)ms model, \\(.timings.startup_ms)ms startup\" end)\",\n  \"open blockers: \\([.findings[] | select(.disposition == \"still_open\" and .blocking_reason != null)] | length)\"\n' \"$RESULT_FILE\"\n"
+      },
+      "diff": "diff --git a/skills/check-reviewgate/SKILL.md b/skills/check-reviewgate/SKILL.md\n--- /dev/null\n+++ b/skills/check-reviewgate/SKILL.md\n@@ -0,0 +1,8 @@\n+jq -r '\n+  \"schema: \\(.schema_version)\",\n+  \"status: \\(.status)\",\n+  \"score: \\(if .score == null then \"unavailable\" else \"\\(.score)/5\" end)\",\n+  \"reviewed_sha: \\(.reviewed_sha)\",\n+  \"runtime: \\(if .timings == null then \"unavailable\" else \"\\(.timings.model_ms)ms model, \\(.timings.startup_ms)ms startup\" end)\",\n+  \"open blockers: \\([.findings[] | select(.disposition == \"still_open\" and .blocking_reason != null)] | length)\"\n+' \"$RESULT_FILE\"\n",
+      "finding": {
+        "id": "pr53-skill-timings",
+        "scope": "line",
+        "severity": "P2",
+        "confidence": 0.98,
+        "classification": "defect",
+        "evidence_gate_result": "passed",
+        "file": "skills/check-reviewgate/SKILL.md",
+        "line": 6,
+        "title": "Agent timing output drops two public phases",
+        "detail": "The public result contract has queue, startup, model, and publish phases but the skill prints only two.",
+        "agent_instruction": "Report all four timing phases from the agent result.",
+        "grounding": {
+          "semantic_key": "skill-runtime-phases-complete",
+          "claim": "The public check skill omits queue_ms and publish_ms from its runtime output.",
+          "causal_path": "agent result timings -> public skill jq projection -> incomplete operator output",
+          "test_assessment": "The captured jq projection names only model_ms and startup_ms.",
+          "evidence": [
+            {
+              "path": "skills/check-reviewgate/SKILL.md",
+              "side": "new",
+              "line": 6,
+              "excerpt": "  \"runtime: \\(if .timings == null then \"unavailable\" else \"\\(.timings.model_ms)ms model, \\(.timings.startup_ms)ms startup\" end)\",",
+              "reason": "The public formatter excludes queue_ms and publish_ms."
+            }
+          ],
+          "related_tests": [],
+          "reproduction": null,
+          "proof": "The format string contains only model_ms and startup_ms."
+        }
+      },
+      "expected_blocking": true,
+      "configuration_findings": {
+        "baseline": [],
+        "candidate": [
+          {
+            "id": "pr53-skill-timings",
+            "scope": "line",
+            "severity": "P2",
+            "confidence": 0.98,
+            "classification": "defect",
+            "evidence_gate_result": "passed",
+            "file": "skills/check-reviewgate/SKILL.md",
+            "line": 6,
+            "title": "Agent timing output drops two public phases",
+            "detail": "The public result contract has queue, startup, model, and publish phases but the skill prints only two.",
+            "agent_instruction": "Report all four timing phases from the agent result.",
+            "grounding": {
+              "semantic_key": "skill-runtime-phases-complete",
+              "claim": "The public check skill omits queue_ms and publish_ms from its runtime output.",
+              "causal_path": "agent result timings -> public skill jq projection -> incomplete operator output",
+              "test_assessment": "The captured jq projection names only model_ms and startup_ms.",
+              "evidence": [
+                {
+                  "path": "skills/check-reviewgate/SKILL.md",
+                  "side": "new",
+                  "line": 6,
+                  "excerpt": "  \"runtime: \\(if .timings == null then \"unavailable\" else \"\\(.timings.model_ms)ms model, \\(.timings.startup_ms)ms startup\" end)\",",
+                  "reason": "The public formatter excludes queue_ms and publish_ms."
+                }
+              ],
+              "related_tests": [],
+              "reproduction": null,
+              "proof": "The format string contains only model_ms and startup_ms."
+            }
+          }
+        ]
+      },
+      "provenance": {
+        "original_path": "skills/check-reviewgate/SKILL.md",
+        "original_line": 56,
+        "discussion": "https://github.com/LVTD-LLC/reviewgate/pull/53#discussion_r3677277605"
+      }
+    }
+  ]
+}
