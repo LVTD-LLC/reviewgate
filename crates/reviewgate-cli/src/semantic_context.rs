@@ -108,7 +108,7 @@ pub(crate) fn collect_semantic_context(
     for relative in changed_files {
         let deleted_symbols = deleted_lines
             .get(relative)
-            .map(|lines| extract_text_changed_symbols(relative, "", lines, diff))
+            .map(|lines| extract_deleted_symbols(relative, lines, diff))
             .unwrap_or_default();
         if !deleted_symbols.is_empty() {
             used_text_fallback = true;
@@ -321,6 +321,30 @@ pub(crate) fn collect_semantic_context(
         excerpts: excerpt_reports,
     };
     SemanticContext { report, excerpts }
+}
+
+fn extract_deleted_symbols(path: &str, lines: &[AddedLine], diff: &str) -> Vec<String> {
+    if !path.ends_with(".rs") {
+        return extract_text_changed_symbols(path, "", lines, diff);
+    }
+
+    let mut symbols = Vec::new();
+    for line in lines {
+        let tokens = identifiers(&line.text);
+        for (index, token) in tokens.iter().enumerate() {
+            if matches!(
+                token.as_str(),
+                "fn" | "struct" | "enum" | "trait" | "type" | "const" | "static" | "mod"
+            ) && let Some(name) = tokens.get(index + 1)
+                && stable_identifier(name)
+            {
+                symbols.push(name.clone());
+            }
+        }
+    }
+    symbols.sort();
+    symbols.dedup();
+    symbols
 }
 
 fn extract_rust_changed_symbols(source: &str, changed_lines: &BTreeSet<usize>) -> Vec<String> {
@@ -762,8 +786,9 @@ mod tests {
     use std::fs;
 
     use super::{
-        SemanticContextStatus, collect_semantic_context, extract_rust_changed_symbols,
-        extract_text_changed_symbols, parse_added_lines, parse_deleted_lines,
+        SemanticContextStatus, collect_semantic_context, extract_deleted_symbols,
+        extract_rust_changed_symbols, extract_text_changed_symbols, parse_added_lines,
+        parse_deleted_lines,
     };
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {
@@ -822,7 +847,7 @@ pub fn changed(value: bool) -> bool {
 +pub fn new_handler() {}
 "#;
         let deleted = parse_deleted_lines(diff);
-        let symbols = extract_text_changed_symbols("src/lib.rs", "", &deleted["src/lib.rs"], diff);
+        let symbols = extract_deleted_symbols("src/lib.rs", &deleted["src/lib.rs"], diff);
 
         assert!(symbols.contains(&"old_handler".to_string()));
     }
