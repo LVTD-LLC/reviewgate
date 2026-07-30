@@ -2,6 +2,7 @@
 import SiteFooter from "../components/SiteFooter.astro";
 import SiteHeader from "../components/SiteHeader.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
+import agentSetupPrompt from "../content/agent-setup-prompt.txt?raw";
 
 const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
 const siteUrl = "https://reviewgate.lvtd.dev";
@@ -130,6 +131,41 @@ const signalLoop = [
       <span>STRUCTURED JSON</span>
     </div>
 
+    <section class="agent-setup" id="agent-setup" aria-labelledby="agent-setup-title">
+      <div class="agent-setup-copy">
+        <p>SET UP WITH YOUR AI AGENT</p>
+        <h2 id="agent-setup-title">One prompt. Local CLI and CI.</h2>
+        <p>
+          Give your coding agent the complete setup brief. It will ask you to choose a model before touching your repository.
+        </p>
+        <button
+          class="signal-primary agent-copy-button"
+          type="button"
+          data-copy-agent-prompt
+          data-analytics-event="install_intent_clicked"
+          data-analytics-location="homepage_agent_setup"
+        >
+          <span data-copy-label>Copy setup prompt</span>
+          <span aria-hidden="true">COPY</span>
+        </button>
+        <p class="agent-copy-status" data-copy-status aria-live="polite"></p>
+      </div>
+
+      <div class="agent-prompt-preview">
+        <div class="agent-prompt-topline">
+          <span>AGENT SETUP BRIEF</span>
+          <span>CLI + GITHUB ACTION</span>
+        </div>
+        <p>
+          Ask for the model first. Suggest <code>openrouter/free</code> or the default <code>deepseek/deepseek-v4-flash</code>.
+        </p>
+        <details>
+          <summary>Read the full prompt</summary>
+          <pre data-agent-prompt>{agentSetupPrompt.trim()}</pre>
+        </details>
+      </div>
+    </section>
+
     <section class="signal-loop" id="signal-loop" aria-label="How ReviewGate works">
       <div class="signal-loop-heading">
         <p>THE CONVERGENCE LOOP</p>
@@ -148,3 +184,67 @@ const signalLoop = [
     <SiteFooter />
   </main>
 </BaseLayout>
+
+<script>
+  const copyButton = document.querySelector<HTMLButtonElement>("[data-copy-agent-prompt]");
+  const promptElement = document.querySelector<HTMLElement>("[data-agent-prompt]");
+  const copyLabel = document.querySelector<HTMLElement>("[data-copy-label]");
+  const copyStatus = document.querySelector<HTMLElement>("[data-copy-status]");
+
+  const copyPrompt = async (value: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {
+        // Some embedded browsers expose the API but deny clipboard permission.
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    const legacyDocument = document as unknown as {
+      execCommand(command: string): boolean;
+    };
+    const copied = legacyDocument.execCommand("copy");
+    textarea.remove();
+
+    if (!copied) {
+      throw new Error("Clipboard access was unavailable");
+    }
+  };
+
+  copyButton?.addEventListener("click", async () => {
+    const prompt = promptElement?.textContent?.trim();
+
+    if (!prompt || !copyLabel || !copyStatus) {
+      return;
+    }
+
+    copyButton.disabled = true;
+
+    try {
+      await copyPrompt(prompt);
+      copyLabel.textContent = "Prompt copied";
+      copyStatus.textContent = "Paste it into your coding agent to begin.";
+      const plausible = (
+        window as Window & { plausible?: (event: string) => void }
+      ).plausible;
+      plausible?.("Agent setup prompt copied");
+    } catch {
+      copyLabel.textContent = "Copy failed";
+      copyStatus.textContent = "Open the full prompt and copy it manually.";
+    } finally {
+      window.setTimeout(() => {
+        copyLabel.textContent = "Copy setup prompt";
+        copyStatus.textContent = "";
+        copyButton.disabled = false;
+      }, 4000);
+    }
+  });
+</script>
