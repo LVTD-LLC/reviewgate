@@ -1126,6 +1126,72 @@
     "expected_blocking": true
   },
   {
+    "name": "PR 365 unrelated job Cargo environment preserves runner tooling repair",
+    "fixture_id": "pr365.runner_tooling.unrelated_job_env_repaired",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  prepare:\n    env:\n      CARGO_HOME: /tmp/prepare-cargo\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo prepare\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,12 @@\n jobs:\n+  prepare:\n+    env:\n+      CARGO_HOME: /tmp/prepare-cargo\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: echo prepare\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-unrelated-job-env-repaired",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 12,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The release job invokes just without installing it first.",
+      "agent_instruction": "Install just before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "release job -> just package",
+        "test_assessment": "The release job uses the default Cargo environment and installs just before invocation.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 11, "excerpt": "- run: cargo install just", "reason": "The same release job installs just"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 12, "excerpt": "- run: just package", "reason": "The release step invokes just after setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe the isolated prepare-job environment has no effect.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 path-shaped Cargo package does not guarantee runner tooling",
+    "fixture_id": "pr365.runner_tooling.path_package_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install /tmp/just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install /tmp/just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-path-package-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "Cargo does not accept a local path as the positional crate name, so setup fails.",
+      "agent_instruction": "Use the verified cargo install just form before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just after an invalid Cargo install form.",
+        "causal_path": "invalid path-shaped crate operand -> failed setup -> just command unavailable",
+        "test_assessment": "Local Cargo installation requires an explicit --path contract.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install /tmp/just", "reason": "The path is not a valid positional crate name"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The unavailable executable is invoked afterward"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run cargo install /tmp/just and observe Cargo reject the positional path.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 embedded action version mismatch remains blocking",
     "fixture_id": "pr365.release_assertion.embedded_mismatch",
     "files": {

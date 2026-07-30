@@ -6181,10 +6181,21 @@ fn workflow_installs_invoked_tool_before_finding(
     let Some(job_start) = enclosing_workflow_job_start(&lines, invocation_index) else {
         return false;
     };
-    if lines.iter().any(|line| {
+    let Some(jobs_index) = lines
+        .iter()
+        .position(|line| yaml_line_content(line).trim() == "jobs:")
+    else {
+        return false;
+    };
+    let cargo_root_is_overridden = |line: &&str| {
         let content = yaml_line_content(line);
         content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
-    }) {
+    };
+    if lines[..jobs_index].iter().any(cargo_root_is_overridden)
+        || lines[job_start..invocation_index]
+            .iter()
+            .any(cargo_root_is_overridden)
+    {
         return false;
     }
     (job_start..invocation_index).any(|index| {
@@ -6248,7 +6259,7 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
         return false;
     };
     let package = &package_tokens[package_index];
-    (package == tool || package.rsplit('/').next() == Some(tool))
+    package == tool
         && package_tokens[package_index + 1..].iter().all(|token| {
             matches!(
                 token.as_str(),
@@ -11261,6 +11272,8 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.install_root_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.cross_installer_flag_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.install_root_env_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.unrelated_job_env_repaired"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.path_package_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
