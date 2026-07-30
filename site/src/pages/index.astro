@@ -6,6 +6,7 @@ import agentSetupPrompt from "../content/agent-setup-prompt.txt?raw";
 
 const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
 const siteUrl = "https://reviewgate.lvtd.dev";
+const encodedAgentSetupPrompt = encodeURIComponent(agentSetupPrompt.trim());
 
 const jsonLd = [
   {
@@ -65,14 +66,17 @@ const signalLoop = [
           ReviewGate turns every agent-written pull request into a visible score, one living review summary, and a machine-readable fix list.
         </p>
         <div class="signal-actions">
-          <a
-            class="signal-primary"
-            href="/docs"
+          <button
+            class="signal-primary agent-copy-button"
+            type="button"
+            data-copy-agent-prompt
+            data-agent-setup-prompt={encodedAgentSetupPrompt}
             data-analytics-event="install_intent_clicked"
             data-analytics-location="homepage_hero"
           >
-            Install ReviewGate <span aria-hidden="true">↗</span>
-          </a>
+            <span data-copy-label aria-live="polite">Copy setup prompt</span>
+            <span data-copy-action aria-hidden="true">COPY</span>
+          </button>
           <a
             class="signal-secondary"
             href={repositoryUrl}
@@ -131,41 +135,6 @@ const signalLoop = [
       <span>STRUCTURED JSON</span>
     </div>
 
-    <section class="agent-setup" id="agent-setup" aria-labelledby="agent-setup-title">
-      <div class="agent-setup-copy">
-        <p>SET UP WITH YOUR AI AGENT</p>
-        <h2 id="agent-setup-title">One prompt. Local CLI and CI.</h2>
-        <p>
-          Give your coding agent the complete setup brief. It will ask you to choose a model before touching your repository.
-        </p>
-        <button
-          class="signal-primary agent-copy-button"
-          type="button"
-          data-copy-agent-prompt
-          data-analytics-event="install_intent_clicked"
-          data-analytics-location="homepage_agent_setup"
-        >
-          <span data-copy-label>Copy setup prompt</span>
-          <span aria-hidden="true">COPY</span>
-        </button>
-        <p class="agent-copy-status" data-copy-status aria-live="polite"></p>
-      </div>
-
-      <div class="agent-prompt-preview">
-        <div class="agent-prompt-topline">
-          <span>AGENT SETUP BRIEF</span>
-          <span>CLI + GITHUB ACTION</span>
-        </div>
-        <p>
-          Ask for the model first. Suggest <code>openrouter/free</code> or the default <code>deepseek/deepseek-v4-flash</code>.
-        </p>
-        <details>
-          <summary>Read the full prompt</summary>
-          <pre data-agent-prompt>{agentSetupPrompt.trim()}</pre>
-        </details>
-      </div>
-    </section>
-
     <section class="signal-loop" id="signal-loop" aria-label="How ReviewGate works">
       <div class="signal-loop-heading">
         <p>THE CONVERGENCE LOOP</p>
@@ -187,9 +156,8 @@ const signalLoop = [
 
 <script>
   const copyButton = document.querySelector<HTMLButtonElement>("[data-copy-agent-prompt]");
-  const promptElement = document.querySelector<HTMLElement>("[data-agent-prompt]");
   const copyLabel = document.querySelector<HTMLElement>("[data-copy-label]");
-  const copyStatus = document.querySelector<HTMLElement>("[data-copy-status]");
+  const copyAction = document.querySelector<HTMLElement>("[data-copy-action]");
 
   const copyPrompt = async (value: string) => {
     if (navigator.clipboard && window.isSecureContext) {
@@ -220,9 +188,9 @@ const signalLoop = [
   };
 
   copyButton?.addEventListener("click", async () => {
-    const prompt = promptElement?.textContent?.trim();
+    const prompt = decodeURIComponent(copyButton.dataset.agentSetupPrompt ?? "");
 
-    if (!prompt || !copyLabel || !copyStatus) {
+    if (!prompt || !copyLabel || !copyAction) {
       return;
     }
 
@@ -231,18 +199,18 @@ const signalLoop = [
     try {
       await copyPrompt(prompt);
       copyLabel.textContent = "Prompt copied";
-      copyStatus.textContent = "Paste it into your coding agent to begin.";
+      copyAction.textContent = "COPIED";
       const plausible = (
         window as Window & { plausible?: (event: string) => void }
       ).plausible;
       plausible?.("Agent setup prompt copied");
     } catch {
       copyLabel.textContent = "Copy failed";
-      copyStatus.textContent = "Open the full prompt and copy it manually.";
+      copyAction.textContent = "RETRY";
     } finally {
       window.setTimeout(() => {
         copyLabel.textContent = "Copy setup prompt";
-        copyStatus.textContent = "";
+        copyAction.textContent = "COPY";
         copyButton.disabled = false;
       }, 4000);
     }
