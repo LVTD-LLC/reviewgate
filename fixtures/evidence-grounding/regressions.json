@@ -601,9 +601,9 @@
     "name": "PR 365 setup in another job does not repair runner tooling",
     "fixture_id": "pr365.runner_tooling.cross_job_broken",
     "files": {
-      ".github/workflows/release.yml": "jobs:\n  prepare:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: just package\n"
+      ".github/workflows/release.yml": "jobs:\n  prepare:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n  release: # publish artifacts\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: just package\n"
     },
-    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,10 @@\n jobs:\n+  prepare:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: actions/checkout@v4\n+      - run: just package\n",
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,10 @@\n jobs:\n+  prepare:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+  release: # publish artifacts\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: actions/checkout@v4\n+      - run: just package\n",
     "finding": {
       "id": "pr365-runner-tool-cross-job-real",
       "scope": "line",
@@ -625,6 +625,72 @@
         ],
         "related_tests": [],
         "reproduction": "Run the release job after prepare and observe that just is unavailable on the release job's fresh runner.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 setup wording does not install runner tooling",
+    "fixture_id": "pr365.runner_tooling.metadata_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Echo install just guidance\n        run: echo install just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,7 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - name: Echo install just guidance\n+        run: echo install just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-metadata-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 7,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The prior echo mentions installation but does not execute an installer, so just remains unavailable.",
+      "agent_instruction": "Install just with an executable setup step before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "release job -> echo only -> just package -> command not found",
+        "test_assessment": "No executable setup command installs just.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "run: echo install just", "reason": "This step only prints text"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 7, "excerpt": "- run: just package", "reason": "The invocation has no executable setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe that echo does not install just before invocation.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 conditional setup does not guarantee runner tooling",
+    "fixture_id": "pr365.runner_tooling.conditional_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Install just\n        if: false\n        run: cargo install just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,8 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - name: Install just\n+        if: false\n+        run: cargo install just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-conditional-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 8,
+      "title": "Release invokes conditionally unavailable runner tooling",
+      "detail": "The install step is disabled while the invocation is unconditional.",
+      "agent_instruction": "Make setup execute whenever just package executes.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without a guaranteed installation.",
+        "causal_path": "false setup condition -> skipped install -> just package -> command not found",
+        "test_assessment": "The invocation is unconditional and the only setup step has if: false.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "if: false", "reason": "The setup step is disabled"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 8, "excerpt": "- run: just package", "reason": "The invocation still executes"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe the install skip before just package.",
         "proof": null
       }
     },
@@ -662,6 +728,41 @@
       }
     },
     "expected_blocking": false
+  },
+  {
+    "name": "PR 365 embedded action version mismatch remains blocking",
+    "fixture_id": "pr365.release_assertion.embedded_mismatch",
+    "files": {
+      ".github/workflows/release.yml": "steps:\n  - uses: owner/runtime@v0.7.0\n",
+      "tests/release_contract.rs": "fn runtime_pin_matches_release() {\n    assert_eq!(runtime_version(), \"v0.6.3\");\n}\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,2 @@\n steps:\n+  - uses: owner/runtime@v0.7.0\n",
+    "finding": {
+      "id": "pr365-embedded-version-mismatch-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 2,
+      "title": "Action pin and release assertion disagree",
+      "detail": "The workflow invokes v0.7.0 while the checked release assertion still requires v0.6.3.",
+      "agent_instruction": "Update the release assertion to the action's v0.7.0 contract.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.stale_release_assertion",
+        "claim": "The checked workflow and release assertion require different versions.",
+        "causal_path": "action v0.7.0 -> assertion v0.6.3 -> deterministic test failure",
+        "test_assessment": "The exact assertion remains on v0.6.3.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 2, "excerpt": "- uses: owner/runtime@v0.7.0", "reason": "The changed action reference embeds v0.7.0"}
+        ],
+        "related_tests": [
+          {"path": "tests/release_contract.rs", "side": "new", "line": 2, "excerpt": "assert_eq!(runtime_version(), \"v0.6.3\");", "reason": "The assertion still requires v0.6.3"}
+        ],
+        "reproduction": "Run the release-contract test and observe the v0.7.0 versus v0.6.3 mismatch.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
   },
   {
     "name": "PR 365 release assertion repair clears the blocker",

@@ -6135,7 +6135,7 @@ fn contradicts_checked_contract(
         return Ok(true);
     }
     if (claim.contains("different versions") || claim.contains("different version"))
-        && checked_contract_versions(finding).len() == 1
+        && checked_contract_versions_match(finding)
     {
         return Ok(true);
     }
@@ -6154,10 +6154,11 @@ fn workflow_installs_invoked_tool_before_finding(
         return false;
     };
     let lines = workflow.lines().collect::<Vec<_>>();
-    let Some(invocation) = lines.get(line_number.saturating_sub(1) as usize) else {
+    let invocation_index = line_number.saturating_sub(1) as usize;
+    let Some(invocation) = lines.get(invocation_index) else {
         return false;
     };
-    let Some(command) = invocation
+    let Some(command) = yaml_line_content(invocation)
         .split_once("run:")
         .map(|(_, command)| command.trim())
     else {
@@ -6177,57 +6178,154 @@ fn workflow_installs_invoked_tool_before_finding(
         return false;
     };
     let tool = tool.to_ascii_lowercase();
-    let invocation_index = line_number.saturating_sub(1) as usize;
-    let job_start = (0..invocation_index)
-        .rev()
-        .find(|index| {
-            let line = lines[*index];
-            yaml_indent(line) == 2
-                && line.trim_end().ends_with(':')
-                && !line.trim_start().starts_with('#')
-        })
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    lines
-        .iter()
-        .take(invocation_index)
-        .skip(job_start)
-        .map(|line| {
-            line.split('#')
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase()
-        })
-        .any(|line| {
-            line.contains(&format!("install {tool}"))
-                || line.contains(&format!("setup-{tool}"))
-                || line.contains(&format!("{tool}-action"))
-        })
+    let Some(job_start) = enclosing_workflow_job_start(&lines, invocation_index) else {
+        return false;
+    };
+    (job_start..invocation_index).any(|index| {
+        let content = yaml_line_content(lines[index]).trim_start();
+        let run_setup = content
+            .split_once("run:")
+            .is_some_and(|(_, command)| run_command_installs_tool(command, &tool));
+        let action_setup = content.split_once("uses:").is_some_and(|(_, action)| {
+            let action = action.to_ascii_lowercase();
+            action.contains(&format!("setup-{tool}")) || action.contains(&format!("{tool}-action"))
+        });
+        let setup_matches = run_setup || action_setup;
+        setup_matches && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
+    })
 }
 
-fn checked_contract_versions(finding: &reviewgate_core::Finding) -> BTreeSet<String> {
-    let Some(grounding) = finding.grounding.as_ref() else {
-        return BTreeSet::new();
-    };
-    grounding
-        .evidence
-        .iter()
-        .chain(&grounding.related_tests)
-        .flat_map(|evidence| evidence.excerpt.split_whitespace())
+fn run_command_installs_tool(command: &str, tool: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
         .map(|token| {
             token
                 .trim_matches(|character: char| {
-                    !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '_')
+                    !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_' | '/')
                 })
                 .to_ascii_lowercase()
         })
-        .filter(|token| {
-            token
-                .strip_prefix('v')
-                .and_then(|version| version.bytes().next())
-                .is_some_and(|byte| byte.is_ascii_digit())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let offset = usize::from(tokens.first().is_some_and(|token| token == "sudo"));
+    let Some(installer) = tokens.get(offset).map(String::as_str) else {
+        return false;
+    };
+    if !matches!(
+        installer,
+        "cargo" | "brew" | "apt" | "apt-get" | "npm" | "pnpm" | "yarn" | "pip" | "pip3"
+    ) {
+        return false;
+    }
+    let command_tokens = &tokens[offset + 1..];
+    command_tokens.iter().any(|token| token == "install")
+        && command_tokens
+            .iter()
+            .any(|token| token == tool || token.rsplit('/').next() == Some(tool))
+}
+
+fn yaml_line_content(line: &str) -> &str {
+    line.split('#').next().unwrap_or_default().trim_end()
+}
+
+fn enclosing_workflow_job_start(lines: &[&str], invocation_index: usize) -> Option<usize> {
+    let jobs_index = (0..invocation_index)
+        .rev()
+        .find(|index| yaml_line_content(lines[*index]).trim() == "jobs:")?;
+    let jobs_indent = yaml_indent(lines[jobs_index]);
+    let job_indent = lines
+        .iter()
+        .enumerate()
+        .take(invocation_index)
+        .skip(jobs_index + 1)
+        .filter_map(|(_, line)| {
+            let content = yaml_line_content(line).trim();
+            let indent = yaml_indent(line);
+            (!content.is_empty() && indent > jobs_indent).then_some(indent)
         })
-        .collect()
+        .min()?;
+    (jobs_index + 1..invocation_index)
+        .rev()
+        .find(|index| {
+            let content = yaml_line_content(lines[*index]).trim();
+            yaml_indent(lines[*index]) == job_indent && content.ends_with(':')
+        })
+        .map(|index| index + 1)
+}
+
+fn workflow_step_is_unconditional(
+    lines: &[&str],
+    job_start: usize,
+    setup_index: usize,
+    invocation_index: usize,
+) -> bool {
+    let step_start = (job_start..=setup_index)
+        .rev()
+        .find(|index| {
+            yaml_line_content(lines[*index])
+                .trim_start()
+                .starts_with("- ")
+        })
+        .unwrap_or(setup_index);
+    let step_indent = yaml_indent(lines[step_start]);
+    let step_end = (step_start + 1..invocation_index)
+        .find(|index| {
+            yaml_indent(lines[*index]) == step_indent
+                && yaml_line_content(lines[*index])
+                    .trim_start()
+                    .starts_with("- ")
+        })
+        .unwrap_or(invocation_index);
+    !lines[step_start..step_end].iter().any(|line| {
+        let condition = yaml_line_content(line).trim();
+        condition.starts_with("if:")
+            && !matches!(
+                condition.trim_start_matches("if:").trim(),
+                "true" | "${{ true }}"
+            )
+    })
+}
+
+fn checked_contract_versions_match(finding: &reviewgate_core::Finding) -> bool {
+    let Some(grounding) = finding.grounding.as_ref() else {
+        return false;
+    };
+    let versions = grounding
+        .evidence
+        .iter()
+        .chain(&grounding.related_tests)
+        .map(|evidence| versions_in_text(&evidence.excerpt))
+        .collect::<Vec<_>>();
+    versions.len() >= 2
+        && versions.iter().all(|values| values.len() == 1)
+        && versions
+            .iter()
+            .filter_map(|values| values.first())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == 1
+}
+
+fn versions_in_text(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut versions = Vec::new();
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index].eq_ignore_ascii_case(&b'v') && bytes[index + 1].is_ascii_digit() {
+            let start = index;
+            index += 2;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric()
+                    || matches!(bytes[index], b'.' | b'-' | b'_'))
+            {
+                index += 1;
+            }
+            versions.push(text[start..index].to_ascii_lowercase());
+        } else {
+            index += 1;
+        }
+    }
+    versions
 }
 
 fn claim_asserts_shallow_checkout_alone_prevents_fetch(claim: &str) -> bool {
@@ -11112,8 +11210,11 @@ diff --git a/src/lib.rs b/src/lib.rs
             .collect::<BTreeSet<_>>();
         assert!(fixture_ids.contains("pr365.runner_tooling.broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.cross_job_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.metadata_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.conditional_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.release_assertion.broken"));
+        assert!(fixture_ids.contains("pr365.release_assertion.embedded_mismatch"));
         assert!(fixture_ids.contains("pr365.release_assertion.repaired"));
 
         for case in cases.as_array().expect("fixture cases") {
