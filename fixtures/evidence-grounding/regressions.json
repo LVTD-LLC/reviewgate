@@ -961,6 +961,39 @@
     "expected_blocking": true
   },
   {
+    "name": "PR 365 package name does not prove an equal-named executable",
+    "fixture_id": "pr365.runner_tooling.package_binary_mismatch_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install ripgrep\n      - run: ripgrep --version\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install ripgrep\n+      - run: ripgrep --version\n",
+    "finding": {
+      "id": "pr365-runner-tool-package-binary-mismatch-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The ripgrep package installs rg rather than an equal-named ripgrep executable.",
+      "agent_instruction": "Invoke the package's actual binary or use a verified package-to-binary setup mapping.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes ripgrep without installing an equal-named executable.",
+        "causal_path": "install ripgrep package -> provides rg -> ripgrep command not found",
+        "test_assessment": "Package-name equality is not proof of executable-name equality.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install ripgrep", "reason": "The package exposes rg, not ripgrep"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: ripgrep --version", "reason": "The unavailable equal-named command is invoked"}
+        ],
+        "related_tests": [],
+        "reproduction": "Install ripgrep with Cargo and observe that rg exists while ripgrep does not.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 embedded action version mismatch remains blocking",
     "fixture_id": "pr365.release_assertion.embedded_mismatch",
     "files": {
