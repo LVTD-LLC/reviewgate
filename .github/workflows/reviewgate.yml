@@ -59,5 +59,4 @@ jobs:
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           config: .reviewgate.yml
-          model: anthropic/claude-sonnet-4
           min_severity: ${{ inputs.min_severity || 'P4' }}

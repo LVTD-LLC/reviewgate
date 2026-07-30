@@ -6187,8 +6187,17 @@ fn workflow_installs_invoked_tool_before_finding(
             .split_once("run:")
             .is_some_and(|(_, command)| run_command_installs_tool(command, &tool));
         let action_setup = content.split_once("uses:").is_some_and(|(_, action)| {
-            let action = action.to_ascii_lowercase();
-            action.contains(&format!("setup-{tool}")) || action.contains(&format!("{tool}-action"))
+            let action = action
+                .trim()
+                .trim_matches(|character| character == '\'' || character == '"')
+                .split('@')
+                .next()
+                .unwrap_or_default()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            action == format!("setup-{tool}") || action == format!("{tool}-action")
         });
         let setup_matches = run_setup || action_setup;
         setup_matches && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
@@ -6196,12 +6205,18 @@ fn workflow_installs_invoked_tool_before_finding(
 }
 
 fn run_command_installs_tool(command: &str, tool: &str) -> bool {
-    if ["&&", "||", ";", "|", "\n"]
+    if ["||", ";", "|", "\n"]
         .iter()
         .any(|separator| command.contains(separator))
     {
         return false;
     }
+    command
+        .split("&&")
+        .any(|segment| single_command_installs_tool(segment, tool))
+}
+
+fn single_command_installs_tool(command: &str, tool: &str) -> bool {
     let tokens = command
         .split_whitespace()
         .map(|token| {
@@ -8351,7 +8366,7 @@ review_angles:
         assert!(dogfood_workflow.contains("timeout-minutes: 20"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@v0"));
         assert!(!dogfood_workflow.contains("uses: ./"));
-        assert!(dogfood_workflow.contains("model: anthropic/claude-sonnet-4"));
+        assert!(!dogfood_workflow.contains("\n          model:"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
@@ -11224,7 +11239,9 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.metadata_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.conditional_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.action_near_match_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
         assert!(fixture_ids.contains("pr365.release_assertion.broken"));
         assert!(fixture_ids.contains("pr365.release_assertion.embedded_mismatch"));
         assert!(fixture_ids.contains("pr365.release_assertion.repaired"));

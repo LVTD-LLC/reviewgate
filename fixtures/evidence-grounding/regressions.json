@@ -763,6 +763,72 @@
     "expected_blocking": false
   },
   {
+    "name": "PR 365 setup action near-match does not install runner tooling",
+    "fixture_id": "pr365.runner_tooling.action_near_match_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/setup-justification@v1\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: acme/setup-justification@v1\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-action-near-match-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The prior action has a similar name but does not provide the just executable.",
+      "agent_instruction": "Use an exact just setup action or install just before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "unrelated action -> just package -> command not found",
+        "test_assessment": "The action basename is setup-justification, not setup-just.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- uses: acme/setup-justification@v1", "reason": "The near-match action does not have an accepted setup basename"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The release step invokes just without exact setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe that the unrelated action does not provide just.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 chained runner tooling repair clears the blocker",
+    "fixture_id": "pr365.runner_tooling.chained_repaired",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just && just --version\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just && just --version\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-chained-repaired",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The release job invokes just without installing it first.",
+      "agent_instruction": "Install just before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "release job -> just package",
+        "test_assessment": "The successful chained setup installs and verifies just before the later invocation.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install just && just --version", "reason": "The first successful chain segment installs just"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The release step invokes just after setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe the install and version check succeed before just package.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
     "name": "PR 365 embedded action version mismatch remains blocking",
     "fixture_id": "pr365.release_assertion.embedded_mismatch",
     "files": {
