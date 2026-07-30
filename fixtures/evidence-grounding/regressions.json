@@ -1060,6 +1060,39 @@
     "expected_blocking": true
   },
   {
+    "name": "PR 365 cross-installer flag does not guarantee runner tooling",
+    "fixture_id": "pr365.runner_tooling.cross_installer_flag_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: brew install just --locked\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: brew install just --locked\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-cross-installer-flag-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The setup passes a Cargo-only flag to Homebrew, so the install command fails.",
+      "agent_instruction": "Use a verified installer-specific just command before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just after an invalid installer command.",
+        "causal_path": "invalid Homebrew flag -> failed setup -> just command unavailable",
+        "test_assessment": "The --locked flag is not a valid Homebrew install option.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: brew install just --locked", "reason": "The setup mixes installer-specific contracts"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The unavailable executable is invoked afterward"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run brew install just --locked and observe Homebrew reject the unsupported flag.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 embedded action version mismatch remains blocking",
     "fixture_id": "pr365.release_assertion.embedded_mismatch",
     "files": {

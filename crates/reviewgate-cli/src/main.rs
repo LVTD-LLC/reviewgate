@@ -6219,14 +6219,13 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
         })
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
-    let offset = usize::from(tokens.first().is_some_and(|token| token == "sudo"));
-    let Some(installer) = tokens.get(offset).map(String::as_str) else {
+    let Some(installer) = tokens.first().map(String::as_str) else {
         return false;
     };
-    if !matches!((installer, tool), ("cargo", "just") | ("brew", "just")) {
+    if (installer, tool) != ("cargo", "just") {
         return false;
     }
-    let command_tokens = &tokens[offset + 1..];
+    let command_tokens = &tokens[1..];
     let Some(install_index) = command_tokens.iter().position(|token| token == "install") else {
         return false;
     };
@@ -6237,7 +6236,7 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
     let Some(package_index) = package_tokens.iter().position(|token| {
         !matches!(
             token.as_str(),
-            "--locked" | "--force" | "--offline" | "--quiet" | "--yes" | "-q" | "-y"
+            "--locked" | "--force" | "--offline" | "--quiet" | "-q"
         )
     }) else {
         return false;
@@ -6247,7 +6246,7 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
         && package_tokens[package_index + 1..].iter().all(|token| {
             matches!(
                 token.as_str(),
-                "--locked" | "--force" | "--offline" | "--quiet" | "--yes" | "-q" | "-y"
+                "--locked" | "--force" | "--offline" | "--quiet" | "-q"
             )
         })
 }
@@ -11254,6 +11253,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.local_package_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.package_binary_mismatch_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.install_root_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.cross_installer_flag_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
