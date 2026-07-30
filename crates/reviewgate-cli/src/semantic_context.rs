@@ -924,9 +924,9 @@ mod tests {
 
     use super::{
         MAX_SEMANTIC_SOURCE_CANDIDATES, MAX_SEMANTIC_SOURCE_PATHS, SearchMatch,
-        SemanticContextStatus, bound_source_candidates, collect_semantic_context,
-        collect_semantic_context_with_search, extract_deleted_symbols,
-        extract_rust_changed_symbols, extract_text_changed_symbols, parse_diff_lines,
+        SemanticContextStatus, bound_source_candidates, collect_semantic_context_with_search,
+        extract_deleted_symbols, extract_rust_changed_symbols, extract_text_changed_symbols,
+        parse_diff_lines,
     };
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {
@@ -940,6 +940,21 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("create temp repo");
         path
+    }
+
+    fn rg_match(path: &str, line: usize, text: &str) -> Vec<u8> {
+        let mut output = serde_json::json!({
+            "type": "match",
+            "data": {
+                "path": { "text": format!("./{path}") },
+                "lines": { "text": format!("{text}\n") },
+                "line_number": line
+            }
+        })
+        .to_string()
+        .into_bytes();
+        output.push(b'\n');
+        output
     }
 
     #[test]
@@ -1126,8 +1141,16 @@ pub fn changed(value: bool) -> bool {
 -pub fn old_handler() {}
 "#;
 
-        let context =
-            collect_semantic_context(&repo, "head", &["src/removed.rs".to_string()], diff);
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "head",
+            &["src/removed.rs".to_string()],
+            diff,
+            |_, symbol, _, _| {
+                assert_eq!(symbol, "old_handler");
+                Ok((rg_match("src/caller.rs", 2, "    old_handler();"), false))
+            },
+        );
 
         assert!(context.excerpts.iter().any(|excerpt| {
             excerpt.path == "src/caller.rs"
@@ -1167,8 +1190,22 @@ pub fn changed(value: bool) -> bool {
 +}
 "#;
 
-        let context =
-            collect_semantic_context(&repo, "0123456789abcdef", &["src/lib.rs".to_string()], diff);
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "0123456789abcdef",
+            &["src/lib.rs".to_string()],
+            diff,
+            |_, symbol, _, _| {
+                assert_eq!(symbol, "changed");
+                let mut output = rg_match(
+                    "tests/changed_test.rs",
+                    3,
+                    "    assert!(!crate::changed(true));",
+                );
+                output.extend(rg_match("src/caller.rs", 2, "    crate::changed(false)"));
+                Ok((output, false))
+            },
+        );
 
         assert_eq!(context.report.status, SemanticContextStatus::Collected);
         assert!(context.report.rg_calls > 0);
@@ -1222,8 +1259,21 @@ pub fn changed(value: bool) -> bool {
 +}
 "#;
 
-        let context = collect_semantic_context(&repo, "head", &["src/lib.rs".to_string()], diff);
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "head",
+            &["src/lib.rs".to_string()],
+            diff,
+            |_, symbol, _, _| {
+                assert_eq!(symbol, "changed");
+                Ok((
+                    rg_match("src/leak.rs", 1, "pub fn leak() { let _ = changed(); }"),
+                    false,
+                ))
+            },
+        );
 
+        assert_eq!(context.report.status, SemanticContextStatus::Collected);
         assert!(
             context
                 .excerpts
