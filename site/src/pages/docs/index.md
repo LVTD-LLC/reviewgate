@@ -84,8 +84,9 @@ An agent stops only when the current PR head reports `status: "passed"`, `score:
 | CLI `review-pr --mock-artifact` | Not required | No | Context collection and output testing without model spend. |
 | CLI `fixture-review` | Not required | No | Deterministic scoring, validation, and rendering. |
 | CLI `check` | GitHub token, not model key | Reads GitHub | Exact-head agent-result retrieval. |
+| CLI `review --wait` | GitHub token, not model key | Reruns/joins, waits, and reconciles threads | Bounded first-class external repair loop. |
 | CLI `disposition` | GitHub token, not model key | Submits structured state | Evidence-backed finding disposition from an authenticated writer. |
 
 ## Next step
 
-For the shortest end-to-end path, continue to the [ReviewGate quickstart](/docs/quickstart). For an existing repository that is ready for production installation, go directly to [Install ReviewGate with GitHub Actions](/docs/github-actions).
+For the shortest end-to-end path, continue to the [ReviewGate quickstart](/docs/quickstart). For an existing repository that is ready for production installation, go directly to [Install ReviewGate with GitHub Actions](/docs/github-actions). For a neutral tool-selection checklist, read [Best AI code review tools](/blog/best-ai-code-review-tools).

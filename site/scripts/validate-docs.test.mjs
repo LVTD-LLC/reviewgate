@@ -108,6 +108,7 @@ test("documents the public CLI and exact agent stop contract", async () => {
   const workflow = await readDoc("agent-workflows");
   const troubleshooting = await readDoc("troubleshooting");
   const commands = [
+    "review",
     "check",
     "disposition",
     "fixture-review",
@@ -143,6 +144,16 @@ test("documents the public CLI and exact agent stop contract", async () => {
     /--workflow \.github\/workflows\/reviewgate\.yml/,
     "troubleshooting must use a valid workflow path selector",
   );
+  assert.match(
+    cli,
+    /reviewgate review[\s\S]*?--wait[\s\S]*?--timeout-seconds 600/,
+    "CLI docs must include the bounded first-class review loop",
+  );
+  assert.match(
+    cli,
+    /\| `2` \| `needs_changes`[\s\S]*?\| `3` \| `review_error`/,
+    "CLI docs must preserve structured review outcome exit codes",
+  );
 });
 
 test("keeps credential and artifact examples safe to paste", async () => {
@@ -158,10 +169,18 @@ test("keeps credential and artifact examples safe to paste", async () => {
 
   for (const slug of ["cli", "artifacts", "troubleshooting"]) {
     const source = await readDoc(slug);
-    assert.doesNotMatch(
-      source,
-      /(?<!mkdir -p \.reviewgate\n)reviewgate check[^\n]*> \.reviewgate\/result\.json/,
-      `${slug} must create .reviewgate before redirecting a result into it`,
+    const shellBlocks = [...source.matchAll(/```bash\n([\s\S]*?)\n```/g)].map(
+      ([, block]) => block,
+    );
+    const unsafeRedirect = shellBlocks.find(
+      (block) =>
+        /> ?\.reviewgate\/result\.json/.test(block) &&
+        !block.includes("mkdir -p .reviewgate"),
+    );
+    assert.equal(
+      unsafeRedirect,
+      undefined,
+      `${slug} must create .reviewgate in every block that redirects a result into it`,
     );
   }
 });

@@ -80,7 +80,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        REVIEWGATE_RUNTIME_VERSION: v0.5.1
+        REVIEWGATE_RUNTIME_VERSION: v0.6.1
       run: |
         set -euo pipefail
         started_ms="$(date +%s%3N)"
@@ -295,7 +295,7 @@ runs:
       if: ${{ inputs.mode == 'review' && always() }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: reviewgate-agent-result-${{ steps.agent-result.outputs.reviewed_sha }}
+        name: reviewgate-agent-result-${{ steps.agent-result.outputs.reviewed_sha }}-attempt-${{ github.run_attempt }}
         path: ${{ github.workspace }}/.reviewgate/result.json
         if-no-files-found: error
         retention-days: 14

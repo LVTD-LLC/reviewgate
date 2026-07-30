@@ -25,8 +25,8 @@ Every agent loop must obey these rules:
 9. Run focused tests and all repository-required checks.
 10. Submit a structured disposition when explicit state is needed.
 11. Commit and push only verified changes.
-12. Trigger or wait for a new ReviewGate run.
-13. Fetch a new exact-head result.
+12. Run `reviewgate review --pr <number> --wait` with a bounded timeout.
+13. Parse its exact-head JSON even when it exits `2` or `3`.
 14. Stop only on current-head status == passed and score == 5.
 ```
 
@@ -118,9 +118,18 @@ Use a temporary file so a failed fetch cannot leave a partial result that later 
 RESULT_FILE="$(mktemp)"
 trap 'rm -f "$RESULT_FILE"' EXIT
 
-reviewgate check \
+if reviewgate check \
   --pr "$PR_NUMBER" \
-  --workflow "$REVIEWGATE_WORKFLOW" >"$RESULT_FILE"
+  --workflow "$REVIEWGATE_WORKFLOW" >"$RESULT_FILE"; then
+  REVIEWGATE_EXIT=0
+else
+  REVIEWGATE_EXIT=$?
+fi
+
+case "$REVIEWGATE_EXIT" in
+  0|2|3) ;;
+  *) exit "$REVIEWGATE_EXIT" ;;
+esac
 ```
 
 `reviewgate check`:
@@ -347,6 +356,32 @@ If another actor pushed first, refresh the branch and revalidate rather than for
 
 ## Trigger or wait for rereview
 
+Prefer the first-class bounded loop command:
+
+```bash
+if reviewgate review \
+  --repo . \
+  --pr "$PR_NUMBER" \
+  --workflow "$REVIEWGATE_WORKFLOW" \
+  --wait \
+  --timeout-seconds "${REVIEWGATE_TIMEOUT_SECONDS:-600}" >"$RESULT_FILE"; then
+  REVIEWGATE_EXIT=0
+else
+  REVIEWGATE_EXIT=$?
+fi
+
+case "$REVIEWGATE_EXIT" in
+  0|2|3) ;;
+  *) exit "$REVIEWGATE_EXIT" ;;
+esac
+```
+
+Exit `0` means passed, `2` means needs changes, and `3` means review error.
+All three write the canonical JSON result. Progress goes to standard error.
+
+Use `recheck` only when the surrounding orchestrator deliberately owns waiting
+and result retrieval as separate steps:
+
 ```bash
 reviewgate recheck \
   --repo . \
@@ -370,8 +405,16 @@ while [ "$attempt" -le "$max_attempts" ]; do
   if reviewgate check \
     --pr "$PR_NUMBER" \
     --workflow "$REVIEWGATE_WORKFLOW" >"$RESULT_FILE" 2>/dev/null; then
-    break
+    REVIEWGATE_EXIT=0
+  else
+    REVIEWGATE_EXIT=$?
   fi
+
+  case "$REVIEWGATE_EXIT" in
+    0|2|3)
+    break
+    ;;
+  esac
 
   attempt=$((attempt + 1))
   sleep 15
@@ -387,9 +430,18 @@ An unchanged unavailable state is not permission to use a stale artifact. Report
 Refresh the PR head and result:
 
 ```bash
-reviewgate check \
+if reviewgate check \
   --pr "$PR_NUMBER" \
-  --workflow "$REVIEWGATE_WORKFLOW" >"$RESULT_FILE"
+  --workflow "$REVIEWGATE_WORKFLOW" >"$RESULT_FILE"; then
+  REVIEWGATE_EXIT=0
+else
+  REVIEWGATE_EXIT=$?
+fi
+
+case "$REVIEWGATE_EXIT" in
+  0|2|3) ;;
+  *) exit "$REVIEWGATE_EXIT" ;;
+esac
 
 HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
 
@@ -465,7 +517,7 @@ repeat until bounded attempt limit:
       submit evidenced disposition or stop for human judgment
 
   commit and push verified changes
-  trigger or wait for ReviewGate
+  result = reviewgate review(exact workflow, PR, wait=true, bounded timeout)
 
 stop and report if attempt limit is reached
 ```

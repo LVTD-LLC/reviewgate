@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reviewgate_core::{
-    DEFAULT_TARGET_SCORE, Finding, FindingDisposition, FindingEvidence, SUMMARY_MARKER,
-    SecretString, Severity, TrackedFinding, extract_summary_state, semantic_fingerprint,
+    AgentResultFinding, DEFAULT_TARGET_SCORE, Finding, FindingDisposition, FindingEvidence,
+    SUMMARY_MARKER, SecretString, Severity, TrackedFinding, extract_summary_state,
+    semantic_fingerprint,
 };
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
@@ -36,20 +37,34 @@ pub fn select_rereview_workflow_run<'a>(
     target: &RereviewTarget,
 ) -> Option<&'a WorkflowRunCandidate> {
     runs.iter()
-        .filter(|run| {
-            run.repository == target.repository
-                && run.event == "pull_request"
-                && run.status == "completed"
-                && run.head_sha == target.head_sha
-                && run
-                    .pull_request_numbers
-                    .contains(&target.pull_request_number)
-        })
+        .filter(|run| run.status == "completed" && workflow_run_matches_target(run, target))
         .max_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         })
+}
+
+pub fn select_current_head_workflow_run<'a>(
+    runs: &'a [WorkflowRunCandidate],
+    target: &RereviewTarget,
+) -> Option<&'a WorkflowRunCandidate> {
+    runs.iter()
+        .filter(|run| workflow_run_matches_target(run, target))
+        .max_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+}
+
+fn workflow_run_matches_target(run: &WorkflowRunCandidate, target: &RereviewTarget) -> bool {
+    run.repository == target.repository
+        && run.event == "pull_request"
+        && run.head_sha == target.head_sha
+        && run
+            .pull_request_numbers
+            .contains(&target.pull_request_number)
 }
 
 pub fn rereview_status_marker(comment_id: u64) -> String {
@@ -594,8 +609,15 @@ fn thread_lifecycle_marker(fingerprint: &str, state: &str) -> String {
 }
 
 pub fn review_thread_resolution_body(tracked: &TrackedFinding) -> String {
-    let disposition = tracked.disposition.as_str();
-    let mut body = thread_lifecycle_marker(&tracked.semantic_fingerprint, disposition);
+    review_thread_resolution_body_for(&tracked.semantic_fingerprint, tracked.disposition)
+}
+
+pub fn review_thread_resolution_body_for(
+    semantic_fingerprint: &str,
+    disposition: FindingDisposition,
+) -> String {
+    let disposition = disposition.as_str();
+    let mut body = thread_lifecycle_marker(semantic_fingerprint, disposition);
     body.push_str("\n\n");
     body.push_str(&format!(
         "ReviewGate lifecycle: `{disposition}`. This thread was reconciled against the canonical finding state for the current review head."
@@ -604,7 +626,11 @@ pub fn review_thread_resolution_body(tracked: &TrackedFinding) -> String {
 }
 
 pub fn review_thread_reopening_body(tracked: &TrackedFinding) -> String {
-    let mut body = thread_lifecycle_marker(&tracked.semantic_fingerprint, "reopened");
+    review_thread_reopening_body_for(&tracked.semantic_fingerprint)
+}
+
+fn review_thread_reopening_body_for(semantic_fingerprint: &str) -> String {
+    let mut body = thread_lifecycle_marker(semantic_fingerprint, "reopened");
     body.push_str("\n\n");
     body.push_str(
         "ReviewGate lifecycle: `reopened`. Relevant code or contract evidence changed, so this canonical finding is active again.",
@@ -612,29 +638,37 @@ pub fn review_thread_reopening_body(tracked: &TrackedFinding) -> String {
     body
 }
 
-fn is_evidence_backed_reopening(tracked: &TrackedFinding) -> bool {
-    tracked.disposition == FindingDisposition::StillOpen
-        && tracked
-            .disposition_history
-            .iter()
-            .rev()
-            .skip(1)
-            .any(|record| record.disposition.is_settled())
-        && tracked
-            .finding
-            .grounding
-            .as_ref()
-            .and_then(|grounding| grounding.reopening_evidence.as_deref())
-            .is_some_and(|evidence| !evidence.trim().is_empty())
+struct ThreadLifecycleFinding<'a> {
+    semantic_fingerprint: &'a str,
+    disposition: FindingDisposition,
+    disposition_history: &'a [reviewgate_core::FindingDispositionRecord],
+    reopening_evidence: Option<&'a str>,
+    expected_thread_id: Option<&'a str>,
 }
 
-pub fn plan_review_thread_lifecycle(
+impl ThreadLifecycleFinding<'_> {
+    fn is_evidence_backed_reopening(&self) -> bool {
+        self.disposition == FindingDisposition::StillOpen
+            && self
+                .disposition_history
+                .iter()
+                .rev()
+                .skip(1)
+                .any(|record| record.disposition.is_settled())
+            && self
+                .reopening_evidence
+                .is_some_and(|evidence| !evidence.trim().is_empty())
+    }
+}
+
+fn plan_thread_lifecycle(
     threads: &[ExistingReviewThread],
-    tracked_findings: &[TrackedFinding],
+    findings: Vec<ThreadLifecycleFinding<'_>>,
+    additional_receipt_author: Option<&str>,
 ) -> ReviewThreadLifecyclePlan {
-    let tracked_by_fingerprint = tracked_findings
-        .iter()
-        .map(|tracked| (tracked.semantic_fingerprint.as_str(), tracked))
+    let findings_by_fingerprint = findings
+        .into_iter()
+        .map(|finding| (finding.semantic_fingerprint, finding))
         .collect::<BTreeMap<_, _>>();
     let mut actions = Vec::new();
 
@@ -649,53 +683,103 @@ pub fn plan_review_thread_lifecycle(
             continue;
         };
         let fingerprint = identity.semantic_fingerprint;
-        let Some(tracked) = tracked_by_fingerprint.get(fingerprint.as_str()) else {
+        let Some(finding) = findings_by_fingerprint.get(fingerprint.as_str()) else {
             continue;
         };
-        if is_evidence_backed_reopening(tracked) {
+        if finding
+            .expected_thread_id
+            .is_some_and(|expected| expected != thread.id)
+        {
+            continue;
+        }
+        let has_authorized_receipt = |state: &str| {
+            let marker = thread_lifecycle_marker(&fingerprint, state);
+            thread.comments.iter().any(|comment| {
+                (is_github_actions_author(comment.author_login.as_deref())
+                    || comment.author_login.as_deref() == additional_receipt_author)
+                    && comment.body.contains(&marker)
+            })
+        };
+
+        if finding.is_evidence_backed_reopening() {
             if !thread.is_resolved {
                 continue;
             }
-            let marker = thread_lifecycle_marker(&fingerprint, "reopened");
-            let has_reopening_note = thread.comments.iter().any(|comment| {
-                is_github_actions_author(comment.author_login.as_deref())
-                    && comment.body.contains(&marker)
-            });
-            if has_reopening_note {
+            if has_authorized_receipt("reopened") {
                 actions.push(ReviewThreadLifecycleAction::Unresolve {
                     thread_id: thread.id.clone(),
                 });
             } else {
                 actions.push(ReviewThreadLifecycleAction::ReplyAndUnresolve {
                     thread_id: thread.id.clone(),
-                    body: review_thread_reopening_body(tracked),
+                    body: review_thread_reopening_body_for(&fingerprint),
                 });
             }
             continue;
         }
-        if !tracked.disposition.is_settled() {
+        if !finding.disposition.is_settled() {
             continue;
         }
 
-        let marker = thread_lifecycle_marker(&fingerprint, tracked.disposition.as_str());
-        let has_resolution_note = thread.comments.iter().any(|comment| {
-            is_github_actions_author(comment.author_login.as_deref())
-                && comment.body.contains(&marker)
-        });
+        let has_resolution_note = has_authorized_receipt(finding.disposition.as_str());
         match (has_resolution_note, thread.is_resolved) {
             (false, false) => actions.push(ReviewThreadLifecycleAction::ReplyAndResolve {
                 thread_id: thread.id.clone(),
-                body: review_thread_resolution_body(tracked),
+                body: review_thread_resolution_body_for(&fingerprint, finding.disposition),
             }),
-            (false, true) => {}
             (true, false) => actions.push(ReviewThreadLifecycleAction::Resolve {
                 thread_id: thread.id.clone(),
             }),
-            (true, true) => {}
+            (_, true) => {}
         }
     }
 
     ReviewThreadLifecyclePlan { actions }
+}
+
+pub fn plan_review_thread_lifecycle(
+    threads: &[ExistingReviewThread],
+    tracked_findings: &[TrackedFinding],
+) -> ReviewThreadLifecyclePlan {
+    plan_thread_lifecycle(
+        threads,
+        tracked_findings
+            .iter()
+            .map(|tracked| ThreadLifecycleFinding {
+                semantic_fingerprint: &tracked.semantic_fingerprint,
+                disposition: tracked.disposition,
+                disposition_history: &tracked.disposition_history,
+                reopening_evidence: tracked
+                    .finding
+                    .grounding
+                    .as_ref()
+                    .and_then(|grounding| grounding.reopening_evidence.as_deref()),
+                expected_thread_id: None,
+            })
+            .collect(),
+        None,
+    )
+}
+
+pub fn plan_agent_review_thread_lifecycle(
+    threads: &[ExistingReviewThread],
+    findings: &[AgentResultFinding],
+    actor_login: &str,
+) -> ReviewThreadLifecyclePlan {
+    plan_thread_lifecycle(
+        threads,
+        findings
+            .iter()
+            .map(|finding| ThreadLifecycleFinding {
+                semantic_fingerprint: &finding.semantic_fingerprint,
+                disposition: finding.disposition,
+                disposition_history: &finding.prior_dispositions,
+                reopening_evidence: finding.reopening_evidence.as_deref(),
+                expected_thread_id: finding.thread_id.as_deref(),
+            })
+            .collect(),
+        Some(actor_login),
+    )
 }
 
 fn append_finding_comment_contents(body: &mut String, finding: &Finding) {
@@ -1052,6 +1136,10 @@ mod tests {
         };
 
         assert!(select_rereview_workflow_run(&runs, &target).is_none());
+        assert_eq!(
+            select_current_head_workflow_run(&runs, &target).map(|run| run.id),
+            Some(13)
+        );
     }
 
     #[test]
@@ -2092,6 +2180,78 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
             plan.actions,
             vec![ReviewThreadLifecycleAction::Resolve {
                 thread_id: "PRRT_reviewgate".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn agent_result_planner_accepts_only_bot_or_invoking_writer_receipts() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture");
+        artifact.findings.truncate(1);
+        artifact = artifact.with_computed_score().expect("score");
+        let finding = &artifact.findings[0];
+        let fingerprint = semantic_fingerprint(finding);
+        let mut result = reviewgate_core::AgentReviewResult::from_artifact(
+            &artifact,
+            reviewgate_core::ReviewScope::PullRequest {
+                repository: "LVTD-LLC/reviewgate".to_string(),
+                pull_request_number: 48,
+            },
+            BTreeMap::from([(
+                fingerprint.clone(),
+                reviewgate_core::AgentResultThread {
+                    id: Some("PRRT_reviewgate".to_string()),
+                    status: reviewgate_core::AgentThreadStatus::Open,
+                    is_outdated: true,
+                },
+            )]),
+        )
+        .expect("agent result");
+        result.findings[0].disposition = FindingDisposition::Fixed;
+        result.findings[0].blocking_reason = None;
+        let receipt = review_thread_resolution_body_for(&fingerprint, FindingDisposition::Fixed);
+        let thread_with_writer_receipt = ExistingReviewThread {
+            id: "PRRT_reviewgate".to_string(),
+            is_resolved: false,
+            is_outdated: true,
+            comments: vec![
+                ExistingReviewThreadComment {
+                    author_login: Some("github-actions[bot]".to_string()),
+                    body: render_inline_comment_body(finding),
+                },
+                ExistingReviewThreadComment {
+                    author_login: Some("repair-agent".to_string()),
+                    body: receipt.clone(),
+                },
+            ],
+        };
+
+        let writer_plan = plan_agent_review_thread_lifecycle(
+            std::slice::from_ref(&thread_with_writer_receipt),
+            &result.findings,
+            "repair-agent",
+        );
+        assert_eq!(
+            writer_plan.actions,
+            vec![ReviewThreadLifecycleAction::Resolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+            }]
+        );
+
+        let mut untrusted_thread = thread_with_writer_receipt;
+        untrusted_thread.comments[1].author_login = Some("untrusted-contributor".to_string());
+        let untrusted_plan = plan_agent_review_thread_lifecycle(
+            &[untrusted_thread],
+            &result.findings,
+            "repair-agent",
+        );
+        assert_eq!(
+            untrusted_plan.actions,
+            vec![ReviewThreadLifecycleAction::ReplyAndResolve {
+                thread_id: "PRRT_reviewgate".to_string(),
+                body: receipt,
             }]
         );
     }

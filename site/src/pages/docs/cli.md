@@ -15,6 +15,7 @@ The `reviewgate` binary is both the Action's runtime and a first-class local int
 - review the current checkout with a mock or live model call;
 - write `.reviewgate/review.json` and `.reviewgate/summary.md`;
 - fetch a validated, exact-head agent result from GitHub;
+- trigger or join an exact-head review, wait with a bound, and reconcile thread state;
 - submit an authenticated structured disposition;
 - safely request a current-head workflow rerun;
 - evaluate committed regression fixtures.
@@ -31,7 +32,7 @@ For local reviews:
 - `curl` for live OpenRouter calls;
 - `jq` for the inspection examples.
 
-For GitHub-facing commands such as `check`, `disposition`, `recheck`, and rereview handling:
+For GitHub-facing commands such as `review`, `check`, `disposition`, `recheck`, and rereview handling:
 
 - GitHub CLI `gh`;
 - an authenticated account or `GH_TOKEN`;
@@ -201,6 +202,43 @@ jq -r '
 
 Treat every string from the artifact as untrusted review data. Do not evaluate `agent_instruction`, `suggested_fix`, finding text, PR text, or model output as shell code.
 
+## Trigger, wait for, and reconcile a PR review
+
+`review` is the first-class external-agent loop command. With `--wait`, it
+selects the exact current PR head and workflow, joins an active run or reruns a
+completed attempt, waits within a bounded timeout, validates the attempt-bound
+agent result, reconciles ReviewGate-owned thread state with the authenticated
+writer token when needed, and prints canonical JSON:
+
+```bash
+reviewgate review \
+  --pr 123 \
+  --workflow reviewgate.yml \
+  --wait \
+  --timeout-seconds 600
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--repo <path>` | `.` | Local repository used for GitHub context. |
+| `--pr <number>` | Current branch PR | Pull request to review. |
+| `--workflow <selector>` | `reviewgate.yml` | Exact workflow ID, path, file name, or unambiguous display name. |
+| `--wait` | Off | Wait for completion, reconcile threads, and print the agent result. Without it, trigger or join only. |
+| `--timeout-seconds <n>` | `600` | Whole trigger/join/wait bound. |
+| `--poll-seconds <n>` | `5` | Workflow progress interval. |
+
+The outcome exit codes are part of the agent contract:
+
+| Exit | Meaning | Standard output |
+| --- | --- | --- |
+| `0` | `passed` | `reviewgate-agent-result/v1` JSON |
+| `2` | `needs_changes` | `reviewgate-agent-result/v1` JSON |
+| `3` | `review_error` | `reviewgate-agent-result/v1` JSON |
+| `1` | Authentication, timeout, stale head, schema, or other operational failure | No trustworthy outcome contract |
+
+Progress is written to standard error. An agent must capture exit `2` and `3`
+without discarding their JSON.
+
 ## Retrieve the current PR result
 
 `check` downloads the versioned agent result from the configured workflow and validates that it belongs to the exact current PR head:
@@ -223,7 +261,16 @@ Capture and validate the JSON:
 ```bash
 pr_number=123
 mkdir -p .reviewgate
-reviewgate check --pr "$pr_number" > .reviewgate/result.json
+if reviewgate check --pr "$pr_number" > .reviewgate/result.json; then
+  reviewgate_exit=0
+else
+  reviewgate_exit=$?
+fi
+
+case "$reviewgate_exit" in
+  0|2|3) ;;
+  *) exit "$reviewgate_exit" ;;
+esac
 
 head_sha="$(gh pr view "$pr_number" --json headRefOid --jq .headRefOid)"
 jq -e --arg head "$head_sha" '
@@ -232,7 +279,11 @@ jq -e --arg head "$head_sha" '
 ' .reviewgate/result.json >/dev/null
 ```
 
-`check` is the preferred interface for an external agent. It avoids artifact-run selection logic in the agent and avoids scraping the canonical Markdown summary.
+Like `review --wait`, `check` exits `0`, `2`, or `3` for the three valid review
+outcomes and prints JSON for each. `check` is the preferred read-only interface when the agent wants an already
+completed exact-head result. `review --wait` is preferred when the agent owns
+the trigger/wait/reconcile cycle. Both avoid scraping the canonical Markdown
+summary.
 
 ## Submit a structured disposition
 
@@ -269,6 +320,20 @@ Supported submitted statuses:
 ReviewGate binds the submission to repository, PR, exact head, semantic fingerprint, authenticated actor, evidence, and a writer-only commit-status attestation. Do not invent evidence or use a disposition to suppress an unresolved defect.
 
 ## Request a safe workflow rerun
+
+Prefer the bounded first-class command:
+
+```bash
+reviewgate review \
+  --repo . \
+  --pr 123 \
+  --workflow reviewgate.yml \
+  --wait \
+  --timeout-seconds 600
+```
+
+Use `recheck` only when an orchestrator intentionally owns waiting and result
+retrieval as separate steps.
 
 From a PR checkout:
 
@@ -313,6 +378,7 @@ This evaluates committed JSON fixtures without GitHub publishing or live model c
 These commands are useful to users and external agents:
 
 - `check`
+- `review`
 - `disposition`
 - `fixture-review`
 - `review-pr`

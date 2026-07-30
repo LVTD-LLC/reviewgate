@@ -19,10 +19,13 @@ ReviewGate writes two JSON shapes for different consumers:
 External agents should prefer the stable agent result. The GitHub Action uploads it as:
 
 ```text
-reviewgate-agent-result-<reviewed_sha>
+reviewgate-agent-result-<reviewed_sha>-attempt-<run_attempt>
 ```
 
-Use `reviewgate check --pr <number>` to resolve the correct workflow run, download the newest non-expired exact-head artifact, validate its schema/scope/SHA, and print JSON.
+Use `reviewgate check --pr <number>` to resolve the correct workflow run,
+download the newest non-expired exact-head attempt artifact, validate its
+schema/scope/SHA, and print JSON. Use `reviewgate review --pr <number> --wait`
+when the agent must trigger or join the run before retrieving the result.
 
 Do not scrape the PR summary or inline comment prose for automation.
 
@@ -63,7 +66,16 @@ Action expressions are strings. Validate and parse values before numeric compari
 ```bash
 pr_number=123
 mkdir -p .reviewgate
-reviewgate check --pr "$pr_number" > .reviewgate/result.json
+if reviewgate check --pr "$pr_number" > .reviewgate/result.json; then
+  reviewgate_exit=0
+else
+  reviewgate_exit=$?
+fi
+
+case "$reviewgate_exit" in
+  0|2|3) ;;
+  *) exit "$reviewgate_exit" ;;
+esac
 ```
 
 Verify scope and freshness:

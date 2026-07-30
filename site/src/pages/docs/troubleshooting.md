@@ -330,13 +330,15 @@ head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
 printf 'result=%s\nhead=%s\n' "$result_sha" "$head_sha"
 ```
 
-If they differ, wait for the synchronize-triggered run or request an eligible rerun:
+If they differ, trigger or join the exact-head run and wait with a bound:
 
 ```bash
-reviewgate recheck \
+reviewgate review \
   --repo . \
   --pr "$PR_NUMBER" \
-  --workflow reviewgate.yml
+  --workflow reviewgate.yml \
+  --wait \
+  --timeout-seconds 600
 ```
 
 Never treat an old `5/5` as current.

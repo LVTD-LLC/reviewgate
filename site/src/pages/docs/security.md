@@ -165,8 +165,21 @@ Agents must compare:
 
 ```bash
 head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
-reviewgate check --pr "$PR_NUMBER" \
-  | jq -e --arg head "$head_sha" '.reviewed_sha == $head'
+result_file="$(mktemp)"
+trap 'rm -f "$result_file"' EXIT
+
+if reviewgate check --pr "$PR_NUMBER" >"$result_file"; then
+  reviewgate_exit=0
+else
+  reviewgate_exit=$?
+fi
+
+case "$reviewgate_exit" in
+  0|2|3) ;;
+  *) exit "$reviewgate_exit" ;;
+esac
+
+jq -e --arg head "$head_sha" '.reviewed_sha == $head' "$result_file"
 ```
 
 A stale `5/5` is not permission to merge or stop.

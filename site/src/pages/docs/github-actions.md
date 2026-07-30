@@ -19,7 +19,7 @@ For each eligible pull request, the review job:
 6. publishes inline findings when GitHub has a valid diff anchor;
 7. creates or updates one canonical PR summary;
 8. publishes the `ReviewGate` check run;
-9. uploads `reviewgate-agent-result-<reviewed_sha>` for external agents.
+9. uploads `reviewgate-agent-result-<reviewed_sha>-attempt-<run_attempt>` for external agents.
 
 The separate rereview job handles the exact maintainer command `@reviewgate review`. It does not check out PR code and never receives the OpenRouter secret.
 
@@ -240,7 +240,7 @@ Open or update a same-repository pull request. A complete run should produce:
 - one bot-authored PR comment containing `<!-- reviewgate-summary -->`;
 - a `ReviewGate` check run for the current head;
 - zero or more inline finding comments;
-- an Actions artifact named `reviewgate-agent-result-<reviewed_sha>`;
+- an Actions artifact named `reviewgate-agent-result-<reviewed_sha>-attempt-<run_attempt>`;
 - Action outputs for status, score, reviewed SHA, schema version, and result path.
 
 Confirm the run reviewed the current PR head:
