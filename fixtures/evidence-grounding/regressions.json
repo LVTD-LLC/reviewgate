@@ -928,6 +928,39 @@
     "expected_blocking": true
   },
   {
+    "name": "PR 365 local package install does not guarantee PATH tooling",
+    "fixture_id": "pr365.runner_tooling.local_package_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm install just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: npm install just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-local-package-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The prior npm command installs a project-local package and does not expose a bare just executable on PATH.",
+      "agent_instruction": "Use a setup form that guarantees the just executable is on PATH.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing a PATH-visible executable.",
+        "causal_path": "local node_modules install -> bare just package -> command not found",
+        "test_assessment": "A local npm dependency is not a guaranteed shell executable setup.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: npm install just", "reason": "The package is installed locally rather than onto PATH"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The later step invokes a bare executable"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the workflow and observe that a project-local npm install does not guarantee the bare just command.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 embedded action version mismatch remains blocking",
     "fixture_id": "pr365.release_assertion.embedded_mismatch",
     "files": {

@@ -6237,10 +6237,7 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
     let Some(installer) = tokens.get(offset).map(String::as_str) else {
         return false;
     };
-    if !matches!(
-        installer,
-        "cargo" | "brew" | "apt" | "apt-get" | "npm" | "pnpm" | "yarn" | "pip" | "pip3"
-    ) {
+    if !matches!(installer, "cargo" | "brew" | "apt" | "apt-get") {
         return false;
     }
     let command_tokens = &tokens[offset + 1..];
@@ -11259,6 +11256,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.action_near_match_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.action_metadata_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.option_value_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.local_package_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
