@@ -6181,18 +6181,20 @@ fn workflow_installs_invoked_tool_before_finding(
     let Some(job_start) = enclosing_workflow_job_start(&lines, invocation_index) else {
         return false;
     };
-    let Some(jobs_index) = lines
-        .iter()
-        .position(|line| yaml_line_content(line).trim() == "jobs:")
-    else {
-        return false;
-    };
     let cargo_root_is_overridden = |line: &&str| {
         let content = yaml_line_content(line);
         content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
     };
-    if lines[..jobs_index].iter().any(cargo_root_is_overridden)
-        || lines[job_start..invocation_index]
+    let job_key_index = job_start.saturating_sub(1);
+    let job_indent = yaml_indent(lines[job_key_index]);
+    let job_end = (job_start..lines.len())
+        .find(|index| {
+            let content = yaml_line_content(lines[*index]).trim();
+            !content.is_empty() && yaml_indent(lines[*index]) <= job_indent
+        })
+        .unwrap_or(lines.len());
+    if workflow_env_has_cargo_root_override(&lines)
+        || lines[job_start..job_end]
             .iter()
             .any(cargo_root_is_overridden)
     {
@@ -6204,6 +6206,28 @@ fn workflow_installs_invoked_tool_before_finding(
             .strip_prefix("run:")
             .is_some_and(|command| run_command_installs_tool(command, &tool));
         run_setup && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
+    })
+}
+
+fn workflow_env_has_cargo_root_override(lines: &[&str]) -> bool {
+    lines.iter().enumerate().any(|(index, line)| {
+        let content = yaml_line_content(line).trim();
+        if yaml_indent(line) != 0 || !content.starts_with("env:") {
+            return false;
+        }
+        if content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME") {
+            return true;
+        }
+        lines[index + 1..]
+            .iter()
+            .take_while(|line| {
+                let content = yaml_line_content(line).trim();
+                content.is_empty() || yaml_indent(line) > 0
+            })
+            .any(|line| {
+                let content = yaml_line_content(line);
+                content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
+            })
     })
 }
 
@@ -11272,6 +11296,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.install_root_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.cross_installer_flag_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.install_root_env_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.reordered_job_env_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.unrelated_job_env_repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.path_package_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));

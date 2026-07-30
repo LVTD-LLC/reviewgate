@@ -1159,6 +1159,39 @@
     "expected_blocking": false
   },
   {
+    "name": "PR 365 reordered job environment does not guarantee PATH tooling",
+    "fixture_id": "pr365.runner_tooling.reordered_job_env_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n      - run: just package\n    env:\n      CARGO_INSTALL_ROOT: /tmp/reviewgate-tools\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,8 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+      - run: just package\n+    env:\n+      CARGO_INSTALL_ROOT: /tmp/reviewgate-tools\n",
+    "finding": {
+      "id": "pr365-runner-tool-reordered-job-env-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The job-level Cargo environment redirects just outside the runner's normal PATH regardless of YAML key order.",
+      "agent_instruction": "Use the default Cargo install root or export the redirected bin directory before invoking just.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without PATH-visible setup.",
+        "causal_path": "reordered CARGO_INSTALL_ROOT override -> unexported bin directory -> just command not found",
+        "test_assessment": "Job mapping order does not change the effective Cargo destination.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The step invokes a bare executable"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 8, "excerpt": "CARGO_INSTALL_ROOT: /tmp/reviewgate-tools", "reason": "The same job redirects the install destination"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the job without exporting /tmp/reviewgate-tools/bin and observe just is unavailable.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 path-shaped Cargo package does not guarantee runner tooling",
     "fixture_id": "pr365.runner_tooling.path_package_broken",
     "files": {
