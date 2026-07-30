@@ -104,7 +104,7 @@ Why each write exists:
 - `issues: write` updates the canonical PR conversation comment;
 - `pull-requests: write` publishes inline review comments;
 - `checks: write` publishes the current ReviewGate check;
-- `statuses: read` verifies structured disposition attestations written by authenticated repository writers.
+- `statuses: read` enables the exact commit-status receipt path for structured dispositions written by authenticated repository writers.
 
 Do not grant broad `write-all`, `contents: write`, `packages: write`, `id-token: write`, or deployment permissions to the ReviewGate review job.
 
@@ -241,7 +241,9 @@ Do not build an integration that trusts marker-shaped user text or edits the hid
 - evidence;
 - a payload-digest commit status that only a repository writer can create.
 
-The review workflow needs `statuses: read` to verify this attestation. If attestation fails, ReviewGate rejects the submission and removes the transport comment when possible.
+At submission time, ReviewGate requires live repository write permission and creates the payload-digest status receipt. During replay it accepts either that exact status receipt or a fresh GitHub repository-write permission check. The second path prevents workflow-token status filtering from silently discarding a valid writer submission.
+
+The review workflow uses `statuses: read` for the receipt path. If both replay-verification paths are unavailable, ReviewGate reports an operational error instead of silently ignoring the disposition. If submission-time attestation fails, it rejects the submission and removes the transport comment when possible.
 
 Disposition evidence is bounded. Never include secrets, personal data, full logs, or untrusted commands.
 

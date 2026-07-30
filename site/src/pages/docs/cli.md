@@ -317,7 +317,7 @@ Supported submitted statuses:
 | `intentional_contract` | The behavior is a deliberate, evidenced product or architecture contract. |
 | `needs_human` | The agent cannot safely choose a disposition. |
 
-ReviewGate binds the submission to repository, PR, exact head, semantic fingerprint, authenticated actor, evidence, and a writer-only commit-status attestation. Do not invent evidence or use a disposition to suppress an unresolved defect.
+ReviewGate binds the submission to repository, PR, exact head, semantic fingerprint, authenticated actor, evidence, and a writer-only commit-status attestation. On replay, the review accepts either the exact receipt or a fresh GitHub repository-write permission check. If both verification paths are unavailable, it returns an operational error instead of silently ignoring the disposition. Do not invent evidence or use a disposition to suppress an unresolved defect.
 
 ## Request a safe workflow rerun
 

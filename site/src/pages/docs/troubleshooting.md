@@ -388,8 +388,11 @@ Check:
 - the authenticated actor has current repository write permission;
 - repository, PR, and reviewed SHA still match;
 - the finding exists in canonical state;
-- the commit-status attestation can be created and verified;
+- the commit-status attestation can be created;
+- replay can verify either the exact status receipt or the actor's current repository-write permission;
 - the review job grants `statuses: read`.
+
+If GitHub makes both replay-verification paths unavailable, ReviewGate reports an operational error. Retry after GitHub status and permission APIs recover; do not treat the disposition as applied or resubmit it blindly.
 
 Refresh the result before retrying:
 

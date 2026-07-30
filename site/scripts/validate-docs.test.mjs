@@ -185,6 +185,17 @@ test("keeps credential and artifact examples safe to paste", async () => {
   }
 });
 
+test("documents both current disposition replay verification paths", async () => {
+  const security = await readDoc("security");
+
+  assert.match(security, /exact status receipt/);
+  assert.match(security, /fresh GitHub repository-write permission check/);
+  assert.match(
+    security,
+    /operational error instead of silently ignoring the disposition/,
+  );
+});
+
 test("llms.txt routes agents to every documentation page", async () => {
   const llms = await readFile(new URL("public/llms.txt", siteRoot), "utf8");
 

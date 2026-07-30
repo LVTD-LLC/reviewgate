@@ -145,7 +145,7 @@ Do not replace `pull_request` with `pull_request_target` to expose secrets to fo
 | `issues: write` | Create or update the canonical PR summary comment. PR conversation comments use the issues API. |
 | `pull-requests: write` | Publish inline review comments. |
 | `checks: write` | Publish the dedicated `ReviewGate` check run. |
-| `statuses: read` | Verify writer-only commit-status attestations for structured disposition receipts. |
+| `statuses: read` | Verify the exact writer-only commit-status receipt for a structured disposition. During replay, ReviewGate can independently fall back to a fresh repository-write permission check when workflow-token status filtering hides that receipt. |
 
 Do not hide summary or check-run failures with `continue-on-error`. The canonical summary and current check are product-critical outputs. Inline finding publication is best-effort; the complete finding set remains in JSON when an inline anchor is unavailable.
 

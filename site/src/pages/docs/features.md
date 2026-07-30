@@ -252,7 +252,7 @@ Automatic `fixed` requires current-delta evidence that removes every prior curre
 
 A finding marked `rejected_with_evidence` or `intentional_contract` stays suppressed unless changed code or contract evidence justifies reopening it.
 
-External agents can submit supported dispositions with `reviewgate disposition`. ReviewGate binds them to the exact repository, PR, reviewed SHA, semantic fingerprint, authenticated actor, evidence, and writer attestation.
+External agents can submit supported dispositions with `reviewgate disposition`. ReviewGate binds them to the exact repository, PR, reviewed SHA, semantic fingerprint, authenticated actor, evidence, and writer attestation. During replay, it accepts either the exact writer-only status receipt or a fresh repository-write permission check; if neither verification path is available, the review fails operationally instead of dropping the disposition.
 
 ## Report cost and runtime without hosted telemetry
 
