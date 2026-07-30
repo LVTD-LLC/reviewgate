@@ -37,13 +37,23 @@ PR_NUMBER="${PR_NUMBER:-$(gh pr view --json number --jq .number)}"
 RESULT_FILE="$(mktemp)"
 trap 'rm -f "$RESULT_FILE"' EXIT
 
-reviewgate check \
+if reviewgate check \
   --pr "$PR_NUMBER" \
-  --workflow "${REVIEWGATE_WORKFLOW:-reviewgate.yml}" >"$RESULT_FILE"
+  --workflow "${REVIEWGATE_WORKFLOW:-reviewgate.yml}" >"$RESULT_FILE"; then
+  REVIEWGATE_EXIT=0
+else
+  REVIEWGATE_EXIT=$?
+fi
+case "$REVIEWGATE_EXIT" in
+  0|2|3) ;;
+  *) exit "$REVIEWGATE_EXIT" ;;
+esac
 ```
 
-If the command fails, report its error. Do not fall back to comment scraping or
-an artifact from another workflow or SHA.
+Exit `0` means `passed`, `2` means `needs_changes`, and `3` means
+`review_error`; each prints valid JSON. Any other exit is an operational
+failure. Do not fall back to comment scraping or an artifact from another
+workflow or SHA.
 
 ### 2. Classify the result
 
