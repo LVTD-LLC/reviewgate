@@ -1,0 +1,109 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+
+interface Props {
+  frontmatter: {
+    title: string;
+    description: string;
+    heading: string;
+    lede: string;
+    eyebrow?: string;
+  };
+}
+
+const {
+  title,
+  description,
+  heading,
+  lede,
+  eyebrow = "DOCUMENTATION / REVIEWGATE V0",
+} = Astro.props.frontmatter;
+
+const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
+const currentPath = Astro.url.pathname.replace(/\/$/, "") || "/";
+
+const groups = [
+  {
+    label: "Start",
+    links: [
+      { href: "/docs", label: "Documentation home" },
+      { href: "/docs/quickstart", label: "Quickstart" },
+    ],
+  },
+  {
+    label: "Install and configure",
+    links: [
+      { href: "/docs/github-actions", label: "GitHub Actions" },
+      { href: "/docs/cli", label: "CLI" },
+      { href: "/docs/configuration", label: "Configuration" },
+    ],
+  },
+  {
+    label: "Understand ReviewGate",
+    links: [
+      { href: "/docs/features", label: "Features and scoring" },
+      { href: "/docs/artifacts", label: "Artifacts and outputs" },
+      { href: "/docs/security", label: "Security model" },
+    ],
+  },
+  {
+    label: "Operate",
+    links: [
+      { href: "/docs/agent-workflows", label: "Agent workflows" },
+      { href: "/docs/troubleshooting", label: "Troubleshooting" },
+    ],
+  },
+];
+
+const isCurrent = (href: string) => currentPath === href;
+---
+
+<BaseLayout title={title} description={description}>
+  <main class="concept signal-site docs-site">
+    <SiteHeader current="docs" />
+
+    <section class="docs-page-hero">
+      <p class="signal-eyebrow">{eyebrow}</p>
+      <p class="docs-breadcrumbs"><a href="/docs">Docs</a><span aria-hidden="true">/</span>{heading}</p>
+      <h1>{heading}</h1>
+      <p class="docs-page-lede">{lede}</p>
+      <div class="docs-badges" aria-label="Documentation attributes">
+        <span>AGENT-READY</span>
+        <span>COPYABLE EXAMPLES</span>
+        <span>SOURCE-BACKED</span>
+      </div>
+    </section>
+
+    <div class="docs-shell">
+      <aside class="docs-navigation">
+        <nav aria-label="Documentation">
+          {groups.map((group) => (
+            <section>
+              <p>{group.label}</p>
+              {group.links.map((link) => (
+                <a href={link.href} aria-current={isCurrent(link.href) ? "page" : undefined}>
+                  {link.label}
+                </a>
+              ))}
+            </section>
+          ))}
+        </nav>
+
+        <div class="docs-machine-links">
+          <p>For agents</p>
+          <a href="/llms.txt">llms.txt ↗</a>
+          <a href={`${repositoryUrl}/tree/main/schemas`}>JSON schemas ↗</a>
+          <a href={`${repositoryUrl}/tree/main/skills`}>Agent skills ↗</a>
+        </div>
+      </aside>
+
+      <article class="docs-content">
+        <slot />
+      </article>
+    </div>
+
+    <SiteFooter />
+  </main>
+</BaseLayout>

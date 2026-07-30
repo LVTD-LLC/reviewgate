@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Replaced the single-page Astro docs preview with an expansive agent-first documentation set covering quickstart, GitHub Actions and CLI installation, configuration, features and scoring, versioned artifacts, external repair loops, security, and troubleshooting; added shared responsive docs navigation, an `llms.txt` route map, and contract tests for workflow safety, Action inputs, CLI coverage, and exact-head agent stop conditions.
 - Preserved an already-reconciled mixed open/fixed finding set during canonical summary publication instead of applying the same model dispositions twice; genuinely late agent dispositions still reconcile before publication. Advanced the action runtime pin to `v0.5.1`.
 - Reconciled ReviewGate-owned inline threads by semantic finding identity: rereviews retain still-open and moved findings without duplicate comments, resolve settled findings, reopen evidence-backed recurrences, preserve human discussion, reject marker-shaped untrusted text, and expose truthful unknown/open/resolved/outdated state plus lifecycle transitions in the stable agent result. Advanced the action runtime pin to `v0.5.0`.
 
