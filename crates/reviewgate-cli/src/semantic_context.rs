@@ -98,8 +98,7 @@ pub(crate) fn collect_semantic_context(
     changed_files: &[String],
     diff: &str,
 ) -> SemanticContext {
-    let added_lines = parse_added_lines(diff);
-    let deleted_lines = parse_deleted_lines(diff);
+    let (added_lines, deleted_lines) = parse_diff_lines(diff);
     let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
     let mut structured_symbols = Vec::new();
     let mut fallback_symbols = Vec::new();
@@ -110,7 +109,7 @@ pub(crate) fn collect_semantic_context(
     for relative in changed_files {
         let deleted_symbols = deleted_lines
             .get(relative)
-            .map(|lines| extract_deleted_symbols(relative, lines, diff))
+            .map(|lines| extract_deleted_symbols(relative, lines))
             .unwrap_or_default();
         if !deleted_symbols.is_empty() {
             used_text_fallback = true;
@@ -128,12 +127,7 @@ pub(crate) fn collect_semantic_context(
         ) && let Ok(Some(mut source)) = read_bounded_text(&path, MAX_SEMANTIC_FILE_BYTES)
         {
             if source.len() > MAX_SEMANTIC_FILE_BYTES {
-                source.truncate(
-                    (0..=MAX_SEMANTIC_FILE_BYTES)
-                        .rev()
-                        .find(|index| source.is_char_boundary(*index))
-                        .unwrap_or(0),
-                );
+                truncate_utf8(&mut source, MAX_SEMANTIC_FILE_BYTES);
             }
             if relative.ends_with(".rs") {
                 let changed_lines = lines.iter().map(|line| line.line).collect::<BTreeSet<_>>();
@@ -144,7 +138,7 @@ pub(crate) fn collect_semantic_context(
                         &mut fallback_symbols,
                         &mut symbol_origins,
                         relative,
-                        extract_text_changed_symbols(relative, &source, lines, diff),
+                        extract_text_changed_symbols(lines),
                     );
                 } else {
                     used_rust_parser = true;
@@ -161,7 +155,7 @@ pub(crate) fn collect_semantic_context(
                     &mut fallback_symbols,
                     &mut symbol_origins,
                     relative,
-                    extract_text_changed_symbols(relative, &source, lines, diff),
+                    extract_text_changed_symbols(lines),
                 );
             }
         }
@@ -246,10 +240,34 @@ pub(crate) fn collect_semantic_context(
             ))
     });
     let candidate_count = matches.len();
-    let mut ranked = matches
-        .into_iter()
-        .filter_map(|candidate| rank_excerpt(repo, candidate))
-        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        (
+            left.path.as_str(),
+            left.line,
+            left.symbol.as_str(),
+            left.origin.as_str(),
+        )
+            .cmp(&(
+                right.path.as_str(),
+                right.line,
+                right.symbol.as_str(),
+                right.origin.as_str(),
+            ))
+    });
+    let mut ranked = Vec::new();
+    let mut loaded_path = None;
+    let mut loaded_source = None;
+    for candidate in matches {
+        if loaded_path.as_deref() != Some(candidate.path.as_str()) {
+            loaded_source = load_semantic_source(repo, &candidate.path);
+            loaded_path = Some(candidate.path.clone());
+        }
+        if let Some((source, file_truncated)) = loaded_source.as_ref()
+            && let Some(excerpt) = rank_excerpt(candidate, source, *file_truncated)
+        {
+            ranked.push(excerpt);
+        }
+    }
     ranked.sort_by(|left, right| {
         (
             left.rank,
@@ -368,9 +386,9 @@ fn deduplicate_preserving_order(values: &mut Vec<String>) {
     values.retain(|value| seen.insert(value.clone()));
 }
 
-fn extract_deleted_symbols(path: &str, lines: &[AddedLine], diff: &str) -> Vec<String> {
+fn extract_deleted_symbols(path: &str, lines: &[AddedLine]) -> Vec<String> {
     if !path.ends_with(".rs") {
-        return extract_text_changed_symbols(path, "", lines, diff);
+        return extract_text_changed_symbols(lines);
     }
 
     let mut symbols = Vec::new();
@@ -443,12 +461,7 @@ fn collect_changed_rust_definitions(
     }
 }
 
-fn extract_text_changed_symbols(
-    _path: &str,
-    _source: &str,
-    added_lines: &[AddedLine],
-    _diff: &str,
-) -> Vec<String> {
+fn extract_text_changed_symbols(added_lines: &[AddedLine]) -> Vec<String> {
     let mut candidates = BTreeMap::<String, (u8, usize)>::new();
     for added in added_lines {
         for token in identifiers(&added.text) {
@@ -549,16 +562,14 @@ fn text_stop_word(identifier: &str) -> bool {
     )
 }
 
-fn parse_added_lines(diff: &str) -> BTreeMap<String, Vec<AddedLine>> {
-    parse_diff_lines(diff, '+')
-}
-
-fn parse_deleted_lines(diff: &str) -> BTreeMap<String, Vec<AddedLine>> {
-    parse_diff_lines(diff, '-')
-}
-
-fn parse_diff_lines(diff: &str, selected_prefix: char) -> BTreeMap<String, Vec<AddedLine>> {
-    let mut result = BTreeMap::new();
+fn parse_diff_lines(
+    diff: &str,
+) -> (
+    BTreeMap<String, Vec<AddedLine>>,
+    BTreeMap<String, Vec<AddedLine>>,
+) {
+    let mut added = BTreeMap::new();
+    let mut deleted = BTreeMap::new();
     let mut path: Option<String> = None;
     let mut old_path: Option<String> = None;
     let mut new_line = 0usize;
@@ -612,10 +623,8 @@ fn parse_diff_lines(diff: &str, selected_prefix: char) -> BTreeMap<String, Vec<A
             continue;
         }
         if line.starts_with('+') && !line.starts_with("+++") {
-            if selected_prefix == '+'
-                && let Some(path) = path.as_ref()
-            {
-                result
+            if let Some(path) = path.as_ref() {
+                added
                     .entry(path.clone())
                     .or_insert_with(Vec::new)
                     .push(AddedLine {
@@ -625,10 +634,8 @@ fn parse_diff_lines(diff: &str, selected_prefix: char) -> BTreeMap<String, Vec<A
             }
             new_line += 1;
         } else if line.starts_with('-') && !line.starts_with("---") {
-            if selected_prefix == '-'
-                && let Some(path) = old_path.as_ref()
-            {
-                result
+            if let Some(path) = old_path.as_ref() {
+                deleted
                     .entry(path.clone())
                     .or_insert_with(Vec::new)
                     .push(AddedLine {
@@ -642,7 +649,7 @@ fn parse_diff_lines(diff: &str, selected_prefix: char) -> BTreeMap<String, Vec<A
             old_line += 1;
         }
     }
-    result
+    (added, deleted)
 }
 
 fn search_symbol(
@@ -739,18 +746,21 @@ fn parse_rg_matches(output: &[u8], symbol: &str, origin: &str) -> Vec<SearchMatc
         .collect()
 }
 
-fn rank_excerpt(repo: &Path, candidate: SearchMatch) -> Option<RankedExcerpt> {
-    let path = confined_repo_file(repo, &candidate.path)?;
+fn load_semantic_source(repo: &Path, relative: &str) -> Option<(String, bool)> {
+    let path = confined_repo_file(repo, relative)?;
     let mut source = read_bounded_text(&path, MAX_SEMANTIC_FILE_BYTES).ok()??;
     let file_truncated = source.len() > MAX_SEMANTIC_FILE_BYTES;
     if file_truncated {
-        source.truncate(
-            (0..=MAX_SEMANTIC_FILE_BYTES)
-                .rev()
-                .find(|index| source.is_char_boundary(*index))
-                .unwrap_or(0),
-        );
+        truncate_utf8(&mut source, MAX_SEMANTIC_FILE_BYTES);
     }
+    Some((source, file_truncated))
+}
+
+fn rank_excerpt(
+    candidate: SearchMatch,
+    source: &str,
+    file_truncated: bool,
+) -> Option<RankedExcerpt> {
     let lower_path = candidate.path.to_ascii_lowercase();
     let (rank, reason) = if is_test_path(&lower_path) {
         (0, "test_reference")
@@ -771,12 +781,7 @@ fn rank_excerpt(repo: &Path, candidate: SearchMatch) -> Option<RankedExcerpt> {
     contents.push('\n');
     let excerpt_truncated = contents.len() > MAX_SEMANTIC_EXCERPT_BYTES;
     if excerpt_truncated {
-        contents.truncate(
-            (0..=MAX_SEMANTIC_EXCERPT_BYTES)
-                .rev()
-                .find(|index| contents.is_char_boundary(*index))
-                .unwrap_or(0),
-        );
+        truncate_utf8(&mut contents, MAX_SEMANTIC_EXCERPT_BYTES);
     }
     Some(RankedExcerpt {
         rank,
@@ -828,6 +833,13 @@ fn looks_like_definition(line: &str, symbol: &str) -> bool {
     .any(|prefix| line.contains(&format!("{prefix}{symbol}")))
 }
 
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    value.truncate(value.floor_char_boundary(max_bytes));
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -835,8 +847,7 @@ mod tests {
 
     use super::{
         SemanticContextStatus, collect_semantic_context, extract_deleted_symbols,
-        extract_rust_changed_symbols, extract_text_changed_symbols, parse_added_lines,
-        parse_deleted_lines,
+        extract_rust_changed_symbols, extract_text_changed_symbols, parse_diff_lines,
     };
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {
@@ -878,8 +889,8 @@ pub fn changed(value: bool) -> bool {
 +created_ms="$(date -d "$created_at" +%s%3N)"
 +run_started_ms="$(date -d "$run_started_at" +%s%3N)"
  "#;
-        let added = parse_added_lines(diff);
-        let symbols = extract_text_changed_symbols("action.yml", "", &added["action.yml"], diff);
+        let (added, _) = parse_diff_lines(diff);
+        let symbols = extract_text_changed_symbols(&added["action.yml"]);
 
         assert!(symbols.contains(&"created_at".to_string()));
         assert!(symbols.contains(&"run_started_at".to_string()));
@@ -894,8 +905,8 @@ pub fn changed(value: bool) -> bool {
 -pub fn old_handler() {}
 +pub fn new_handler() {}
 "#;
-        let deleted = parse_deleted_lines(diff);
-        let symbols = extract_deleted_symbols("src/lib.rs", &deleted["src/lib.rs"], diff);
+        let (_, deleted) = parse_diff_lines(diff);
+        let symbols = extract_deleted_symbols("src/lib.rs", &deleted["src/lib.rs"]);
 
         assert!(symbols.contains(&"old_handler".to_string()));
     }
