@@ -100,21 +100,19 @@ pub(crate) fn collect_semantic_context(
     let added_lines = parse_added_lines(diff);
     let deleted_lines = parse_deleted_lines(diff);
     let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
-    let mut symbols = Vec::new();
-    let mut seen_symbols = BTreeSet::new();
+    let mut structured_symbols = Vec::new();
+    let mut fallback_symbols = Vec::new();
     let mut used_rust_parser = false;
     let mut used_text_fallback = false;
 
     for relative in changed_files {
-        if symbols.len() >= MAX_CHANGED_SYMBOLS {
-            break;
-        }
-        let mut extracted = deleted_lines
+        let deleted_symbols = deleted_lines
             .get(relative)
             .map(|lines| extract_text_changed_symbols(relative, "", lines, diff))
             .unwrap_or_default();
-        if !extracted.is_empty() {
+        if !deleted_symbols.is_empty() {
             used_text_fallback = true;
+            fallback_symbols.extend(deleted_symbols);
         }
 
         if let (Some(lines), Some(path)) = (
@@ -132,26 +130,33 @@ pub(crate) fn collect_semantic_context(
             }
             if relative.ends_with(".rs") {
                 let changed_lines = lines.iter().map(|line| line.line).collect::<BTreeSet<_>>();
-                let rust_symbols = extract_rust_changed_symbols(&source, &changed_lines);
-                if rust_symbols.is_empty() {
+                let extracted_rust = extract_rust_changed_symbols(&source, &changed_lines);
+                if extracted_rust.is_empty() {
                     used_text_fallback = true;
-                    extracted.extend(extract_text_changed_symbols(relative, &source, lines, diff));
+                    fallback_symbols
+                        .extend(extract_text_changed_symbols(relative, &source, lines, diff));
                 } else {
                     used_rust_parser = true;
-                    extracted.extend(rust_symbols);
+                    structured_symbols.extend(extracted_rust);
                 }
             } else {
                 used_text_fallback = true;
-                extracted.extend(extract_text_changed_symbols(relative, &source, lines, diff));
+                fallback_symbols
+                    .extend(extract_text_changed_symbols(relative, &source, lines, diff));
             }
         }
-        for symbol in extracted {
-            if seen_symbols.insert(symbol.clone()) {
-                symbols.push(symbol);
-                if symbols.len() >= MAX_CHANGED_SYMBOLS {
-                    break;
-                }
-            }
+    }
+    structured_symbols.sort();
+    structured_symbols.dedup();
+    fallback_symbols.sort();
+    fallback_symbols.dedup();
+    let mut symbols = structured_symbols;
+    for symbol in fallback_symbols {
+        if symbols.len() >= MAX_CHANGED_SYMBOLS {
+            break;
+        }
+        if !symbols.contains(&symbol) {
+            symbols.push(symbol);
         }
     }
 
@@ -194,7 +199,9 @@ pub(crate) fn collect_semantic_context(
             Ok((output, truncated)) => {
                 rg_output_bytes = rg_output_bytes.saturating_add(output.len());
                 search_truncated |= truncated;
-                matches.extend(parse_rg_matches(&output, symbol));
+                if !truncated {
+                    matches.extend(parse_rg_matches(&output, symbol));
+                }
             }
             Err(_) => {
                 rg_unavailable = true;
@@ -234,10 +241,23 @@ pub(crate) fn collect_semantic_context(
 
     let mut selected = Vec::new();
     let mut selected_bytes = 0usize;
+    let mut selected_per_path = BTreeMap::<String, usize>::new();
+    let mut selected_ranges = BTreeSet::new();
     for excerpt in ranked {
         if selected.len() >= MAX_SEMANTIC_EXCERPTS || selected_bytes >= MAX_SEMANTIC_CONTEXT_BYTES {
             search_truncated = true;
             break;
+        }
+        if selected_per_path
+            .get(&excerpt.path)
+            .copied()
+            .unwrap_or_default()
+            >= 2
+            || selected_ranges.iter().any(|(path, start, end)| {
+                path == &excerpt.path && excerpt.start_line <= *end && excerpt.end_line >= *start
+            })
+        {
+            continue;
         }
         let remaining = MAX_SEMANTIC_CONTEXT_BYTES - selected_bytes;
         if excerpt.contents.len() > remaining {
@@ -245,6 +265,8 @@ pub(crate) fn collect_semantic_context(
             continue;
         }
         selected_bytes += excerpt.contents.len();
+        *selected_per_path.entry(excerpt.path.clone()).or_default() += 1;
+        selected_ranges.insert((excerpt.path.clone(), excerpt.start_line, excerpt.end_line));
         selected.push(excerpt);
     }
 
@@ -365,15 +387,10 @@ fn extract_text_changed_symbols(
             if !stable_identifier(&token) || text_stop_word(&token) {
                 continue;
             }
-            let rank = if token.contains('_')
-                || token
-                    .chars()
-                    .any(|character| character.is_ascii_uppercase())
-            {
-                0
-            } else {
-                1
-            };
+            if !text_identifier_is_specific(&token) {
+                continue;
+            }
+            let rank = if token.contains('_') { 0 } else { 1 };
             candidates
                 .entry(token)
                 .and_modify(|entry| entry.1 += 1)
@@ -400,6 +417,16 @@ fn extract_text_changed_symbols(
         .take(MAX_CHANGED_SYMBOLS)
         .map(|(name, _)| name)
         .collect()
+}
+
+fn text_identifier_is_specific(identifier: &str) -> bool {
+    let has_lowercase = identifier
+        .chars()
+        .any(|character| character.is_ascii_lowercase());
+    let has_uppercase = identifier
+        .chars()
+        .any(|character| character.is_ascii_uppercase());
+    identifier.contains('_') || (has_lowercase && has_uppercase)
 }
 
 fn identifiers(line: &str) -> Vec<String> {
@@ -447,6 +474,10 @@ fn text_stop_word(identifier: &str) -> bool {
             | "jobs"
             | "permissions"
             | "contents"
+            | "reviewgate"
+            | "github"
+            | "pull_request"
+            | "repository"
     )
 }
 
