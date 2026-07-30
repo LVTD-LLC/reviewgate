@@ -8142,6 +8142,7 @@ review_angles:
         assert!(dogfood_workflow.contains("actions: read"));
         assert!(dogfood_workflow.contains("attestations: read"));
         assert!(dogfood_workflow.contains("checks: write"));
+        assert!(dogfood_workflow.contains("pull_request:\n    types:"));
         assert!(dogfood_workflow.contains("github.run_id"));
         assert!(dogfood_workflow.contains("timeout-minutes: 20"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@v0"));
