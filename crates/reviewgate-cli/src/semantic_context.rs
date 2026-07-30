@@ -76,6 +76,7 @@ struct SearchMatch {
     line: usize,
     text: String,
     symbol: String,
+    origin: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +103,7 @@ pub(crate) fn collect_semantic_context(
     let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
     let mut structured_symbols = Vec::new();
     let mut fallback_symbols = Vec::new();
+    let mut symbol_origins = BTreeMap::new();
     let mut used_rust_parser = false;
     let mut used_text_fallback = false;
 
@@ -112,7 +114,12 @@ pub(crate) fn collect_semantic_context(
             .unwrap_or_default();
         if !deleted_symbols.is_empty() {
             used_text_fallback = true;
-            fallback_symbols.extend(deleted_symbols);
+            record_symbols(
+                &mut fallback_symbols,
+                &mut symbol_origins,
+                relative,
+                deleted_symbols,
+            );
         }
 
         if let (Some(lines), Some(path)) = (
@@ -133,23 +140,35 @@ pub(crate) fn collect_semantic_context(
                 let extracted_rust = extract_rust_changed_symbols(&source, &changed_lines);
                 if extracted_rust.is_empty() {
                     used_text_fallback = true;
-                    fallback_symbols
-                        .extend(extract_text_changed_symbols(relative, &source, lines, diff));
+                    record_symbols(
+                        &mut fallback_symbols,
+                        &mut symbol_origins,
+                        relative,
+                        extract_text_changed_symbols(relative, &source, lines, diff),
+                    );
                 } else {
                     used_rust_parser = true;
-                    structured_symbols.extend(extracted_rust);
+                    record_symbols(
+                        &mut structured_symbols,
+                        &mut symbol_origins,
+                        relative,
+                        extracted_rust,
+                    );
                 }
             } else {
                 used_text_fallback = true;
-                fallback_symbols
-                    .extend(extract_text_changed_symbols(relative, &source, lines, diff));
+                record_symbols(
+                    &mut fallback_symbols,
+                    &mut symbol_origins,
+                    relative,
+                    extract_text_changed_symbols(relative, &source, lines, diff),
+                );
             }
         }
     }
-    structured_symbols.sort();
-    structured_symbols.dedup();
-    fallback_symbols.sort();
-    fallback_symbols.dedup();
+    deduplicate_preserving_order(&mut structured_symbols);
+    deduplicate_preserving_order(&mut fallback_symbols);
+    structured_symbols.truncate(MAX_CHANGED_SYMBOLS);
     let mut symbols = structured_symbols;
     for symbol in fallback_symbols {
         if symbols.len() >= MAX_CHANGED_SYMBOLS {
@@ -200,7 +219,14 @@ pub(crate) fn collect_semantic_context(
                 rg_output_bytes = rg_output_bytes.saturating_add(output.len());
                 search_truncated |= truncated;
                 if !truncated {
-                    matches.extend(parse_rg_matches(&output, symbol));
+                    matches.extend(parse_rg_matches(
+                        &output,
+                        symbol,
+                        symbol_origins
+                            .get(symbol)
+                            .map(String::as_str)
+                            .unwrap_or("[unknown]"),
+                    ));
                 }
             }
             Err(_) => {
@@ -323,6 +349,25 @@ pub(crate) fn collect_semantic_context(
     SemanticContext { report, excerpts }
 }
 
+fn record_symbols(
+    target: &mut Vec<String>,
+    origins: &mut BTreeMap<String, String>,
+    origin: &str,
+    symbols: Vec<String>,
+) {
+    for symbol in symbols {
+        origins
+            .entry(symbol.clone())
+            .or_insert_with(|| origin.to_string());
+        target.push(symbol);
+    }
+}
+
+fn deduplicate_preserving_order(values: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
 fn extract_deleted_symbols(path: &str, lines: &[AddedLine], diff: &str) -> Vec<String> {
     if !path.ends_with(".rs") {
         return extract_text_changed_symbols(path, "", lines, diff);
@@ -360,8 +405,7 @@ fn extract_rust_changed_symbols(source: &str, changed_lines: &BTreeSet<usize>) -
     };
     let mut symbols = Vec::new();
     collect_changed_rust_definitions(tree.root_node(), source, changed_lines, &mut symbols);
-    symbols.sort();
-    symbols.dedup();
+    deduplicate_preserving_order(&mut symbols);
     symbols
 }
 
@@ -670,7 +714,7 @@ fn search_symbol(
     Ok((output, timed_out || output_truncated))
 }
 
-fn parse_rg_matches(output: &[u8], symbol: &str) -> Vec<SearchMatch> {
+fn parse_rg_matches(output: &[u8], symbol: &str, origin: &str) -> Vec<SearchMatch> {
     String::from_utf8_lossy(output)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -689,6 +733,7 @@ fn parse_rg_matches(output: &[u8], symbol: &str) -> Vec<SearchMatch> {
                 line,
                 text,
                 symbol: symbol.to_string(),
+                origin: origin.to_string(),
             })
         })
         .collect()
@@ -738,7 +783,10 @@ fn rank_excerpt(repo: &Path, candidate: SearchMatch) -> Option<RankedExcerpt> {
         path: candidate.path,
         line: candidate.line,
         reason: reason.to_string(),
-        relation: format!("symbol:{}", candidate.symbol),
+        relation: format!(
+            "symbol:{};changed_in:{}",
+            candidate.symbol, candidate.origin
+        ),
         contents,
         start_line: start,
         end_line: end,
@@ -871,13 +919,12 @@ pub fn changed(value: bool) -> bool {
         let context =
             collect_semantic_context(&repo, "head", &["src/removed.rs".to_string()], diff);
 
-        assert!(
-            context
-                .excerpts
-                .iter()
-                .any(|excerpt| excerpt.path == "src/caller.rs"
-                    && excerpt.relation == "symbol:old_handler")
-        );
+        assert!(context.excerpts.iter().any(|excerpt| {
+            excerpt.path == "src/caller.rs"
+                && excerpt
+                    .relation
+                    .starts_with("symbol:old_handler;changed_in:")
+        }));
         fs::remove_dir_all(repo).ok();
     }
 
