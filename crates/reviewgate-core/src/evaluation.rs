@@ -14,6 +14,7 @@ pub struct BenchmarkManifest {
     pub minimum_case_count: usize,
     pub repetitions: usize,
     pub thresholds: BenchmarkThresholds,
+    pub configurations: Vec<BenchmarkConfiguration>,
     pub sources: Vec<BenchmarkSource>,
 }
 
@@ -25,6 +26,30 @@ pub struct BenchmarkThresholds {
     pub maximum_false_blockers_per_case: f64,
     pub maximum_contradiction_rate: f64,
     pub minimum_rereview_stability: f64,
+    pub maximum_live_cost_usd: f64,
+    pub maximum_mean_latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkConfiguration {
+    pub id: String,
+    pub role: BenchmarkConfigurationRole,
+    pub pipeline: BenchmarkPipeline,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkConfigurationRole {
+    Baseline,
+    Candidate,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkPipeline {
+    RawModel,
+    EvidenceGate,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -157,6 +182,42 @@ pub fn validate_manifest(manifest: &BenchmarkManifest) -> Result<(), String> {
         "minimum_rereview_stability",
         manifest.thresholds.minimum_rereview_stability,
     )?;
+    if !manifest.thresholds.maximum_live_cost_usd.is_finite()
+        || manifest.thresholds.maximum_live_cost_usd < 0.0
+    {
+        return Err("maximum_live_cost_usd must be finite and non-negative".to_string());
+    }
+    if manifest.thresholds.maximum_mean_latency_ms == 0 {
+        return Err("maximum_mean_latency_ms must be greater than zero".to_string());
+    }
+    let mut configuration_ids = std::collections::BTreeSet::new();
+    let mut baseline_count = 0;
+    let mut candidate_count = 0;
+    for configuration in &manifest.configurations {
+        if configuration.id.trim().is_empty() {
+            return Err("benchmark configuration id must not be empty".to_string());
+        }
+        if !configuration_ids.insert(configuration.id.as_str()) {
+            return Err(format!(
+                "duplicate benchmark configuration id `{}`",
+                configuration.id
+            ));
+        }
+        match configuration.role {
+            BenchmarkConfigurationRole::Baseline => baseline_count += 1,
+            BenchmarkConfigurationRole::Candidate => candidate_count += 1,
+        }
+    }
+    if baseline_count != 1 {
+        return Err(format!(
+            "benchmark manifest must contain exactly one baseline configuration; found {baseline_count}"
+        ));
+    }
+    if candidate_count != 1 {
+        return Err(format!(
+            "benchmark manifest must contain exactly one candidate configuration; found {candidate_count}"
+        ));
+    }
     if manifest.sources.is_empty() {
         return Err("benchmark manifest must contain at least one source".to_string());
     }
@@ -384,7 +445,21 @@ mod tests {
                 maximum_false_blockers_per_case: 0.1,
                 maximum_contradiction_rate: 0.1,
                 minimum_rereview_stability: 0.95,
+                maximum_live_cost_usd: 5.0,
+                maximum_mean_latency_ms: 120_000,
             },
+            configurations: vec![
+                BenchmarkConfiguration {
+                    id: "baseline".to_string(),
+                    role: BenchmarkConfigurationRole::Baseline,
+                    pipeline: BenchmarkPipeline::RawModel,
+                },
+                BenchmarkConfiguration {
+                    id: "candidate".to_string(),
+                    role: BenchmarkConfigurationRole::Candidate,
+                    pipeline: BenchmarkPipeline::EvidenceGate,
+                },
+            ],
             sources: vec![BenchmarkSource {
                 id: "grounding".to_string(),
                 kind: BenchmarkSourceKind::EvidenceGrounding,
@@ -447,6 +522,54 @@ mod tests {
             validate_manifest(&escaping_path)
                 .expect_err("escaping path")
                 .contains("repo-relative")
+        );
+    }
+
+    #[test]
+    fn requires_unique_baseline_and_candidate_configurations() {
+        let mut missing_candidate = valid_manifest();
+        missing_candidate
+            .configurations
+            .retain(|configuration| configuration.role == BenchmarkConfigurationRole::Baseline);
+        assert!(
+            validate_manifest(&missing_candidate)
+                .expect_err("candidate required")
+                .contains("exactly one candidate")
+        );
+
+        let mut duplicate_id = valid_manifest();
+        duplicate_id.configurations[1].id = "baseline".to_string();
+        assert!(
+            validate_manifest(&duplicate_id)
+                .expect_err("duplicate id")
+                .contains("duplicate benchmark configuration id")
+        );
+
+        let mut duplicate_baseline = valid_manifest();
+        duplicate_baseline.configurations[1].role = BenchmarkConfigurationRole::Baseline;
+        assert!(
+            validate_manifest(&duplicate_baseline)
+                .expect_err("one baseline")
+                .contains("exactly one baseline")
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_cost_budgets_and_zero_latency_budgets() {
+        let mut cost = valid_manifest();
+        cost.thresholds.maximum_live_cost_usd = f64::NAN;
+        assert!(
+            validate_manifest(&cost)
+                .expect_err("finite cost")
+                .contains("maximum_live_cost_usd")
+        );
+
+        let mut latency = valid_manifest();
+        latency.thresholds.maximum_mean_latency_ms = 0;
+        assert!(
+            validate_manifest(&latency)
+                .expect_err("positive latency")
+                .contains("maximum_mean_latency_ms")
         );
     }
 
