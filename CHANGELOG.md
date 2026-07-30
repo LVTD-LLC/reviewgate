@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Preserved semantic-context matches when a fast `rg` process exits between the stdout reader and process poll, preventing valid repository context from being reported as unavailable.
 - Added opt-in `deep: true` semantic repository context: ReviewGate now extracts changed Rust definitions with tree-sitter, discovers bounded repository-wide definitions/references/tests/configuration with direct `rg` calls and a universal text fallback, shares cited excerpts across review angles, and records exact-head selection metadata without persisting source or an index. Advanced the action runtime pin to `v0.8.0`.
 - Shortened the homepage AI setup prompt into a concise agent bootstrap that links to the docs, `llms.txt`, repository, and README while retaining model-selection and secret-safety guidance.
 - Corrected the standalone CLI release sequence after `v0.7.0` was tagged before its macOS packaging workflow merged: runtime tags now publish and verify Linux X64 and macOS Apple Silicon/Intel archives before a follow-up change advances the Action pin.
