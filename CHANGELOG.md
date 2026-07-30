@@ -4,7 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
-- Preserved exact-head agent disposition receipts when GitHub Actions redacts the commit-status creator, while continuing to reject visible creator mismatches and requiring the exact writer-only status context, payload digest, and success state.
+- Preserved exact-head agent disposition receipts when GitHub Actions redacts the commit-status creator, while continuing to reject visible creator mismatches and requiring the exact writer-only status context, payload digest, and success state. Advanced the action runtime pin to `v0.6.1`.
 - Added site-wide Plausible pageview and outbound-link tracking for `reviewgate.lvtd.dev`.
 - Moved ReviewGate's own dogfood workflow to OpenRouter's free model router while preserving the public price-to-value model default.
 - Added a first-class `review --pr <number> --wait` agent loop that binds to the exact current head and workflow attempt, reruns and waits with bounded progress, reconciles bot-owned threads with the invoking writer token when Actions is policy-restricted, prints canonical JSON, and uses deterministic passed/needs-changes/review-error exit codes. Advanced the action runtime pin to `v0.6.0`.
