@@ -1015,9 +1015,13 @@ fn attested_disposition_comment_ids(
             let expected_context = agent_disposition_status_context(comment.id);
             let expected_digest = agent_disposition_digest(&comment.body);
             statuses.iter().any(|status| {
+                // GitHub can redact a human status creator from GITHUB_TOKEN
+                // reads. The exact status itself remains a writer-only
+                // capability bound to this comment body and reviewed head.
                 status.context == expected_context
                     && status.description == expected_digest
-                    && status.creator_login == comment.author_login
+                    && (status.creator_login.is_empty()
+                        || status.creator_login == comment.author_login)
                     && status.state == "success"
             })
         })
@@ -8537,6 +8541,17 @@ review_angles:
                 std::slice::from_ref(&attestation)
             ),
             BTreeSet::from([3])
+        );
+        assert_eq!(
+            attested_disposition_comment_ids(
+                std::slice::from_ref(&trusted),
+                &[CommitStatusRecord {
+                    creator_login: String::new(),
+                    ..attestation.clone()
+                }]
+            ),
+            BTreeSet::from([3]),
+            "GitHub Actions can redact a valid commit-status creator"
         );
         for invalid_attestation in [
             CommitStatusRecord {
