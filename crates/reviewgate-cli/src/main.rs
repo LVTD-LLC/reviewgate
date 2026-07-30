@@ -3835,7 +3835,7 @@ fn fetch_commit_status_records(
             "api",
             "--paginate",
             "--slurp",
-            &format!("repos/{repository}/commits/{reviewed_sha}/statuses?per_page=100"),
+            &format!("repos/{repository}/commits/{reviewed_sha}/status?per_page=100"),
         ],
     )?;
     parse_commit_status_records(&raw)
@@ -3844,32 +3844,42 @@ fn fetch_commit_status_records(
 fn parse_commit_status_records(raw: &str) -> CliResult<Vec<CommitStatusRecord>> {
     let value: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse commit statuses JSON")?;
+    let pages: Vec<&serde_json::Value> = value
+        .as_array()
+        .map(|pages| pages.iter().collect())
+        .unwrap_or_else(|| vec![&value]);
     let mut statuses = Vec::new();
-    for entry in flatten_gh_paginated_items(&value) {
-        let Some(context) = entry.get("context").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        if !context.starts_with(AGENT_DISPOSITION_STATUS_PREFIX) {
-            continue;
+    for page in pages {
+        let entries = page
+            .get("statuses")
+            .and_then(serde_json::Value::as_array)
+            .context("combined commit status response did not include statuses")?;
+        for entry in entries {
+            let Some(context) = entry.get("context").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !context.starts_with(AGENT_DISPOSITION_STATUS_PREFIX) {
+                continue;
+            }
+            statuses.push(CommitStatusRecord {
+                context: context.to_string(),
+                description: entry
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                creator_login: entry
+                    .pointer("/creator/login")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                state: entry
+                    .get("state")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            });
         }
-        statuses.push(CommitStatusRecord {
-            context: context.to_string(),
-            description: entry
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            creator_login: entry
-                .pointer("/creator/login")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            state: entry
-                .get("state")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        });
     }
     Ok(statuses)
 }
@@ -8627,20 +8637,24 @@ review_angles:
 
     #[test]
     fn commit_status_parser_keeps_only_disposition_attestations() {
-        let raw = serde_json::json!([[
+        let raw = serde_json::json!([
             {
-                "context": "reviewgate/disposition/42",
-                "description": "receipt-sha256:abc",
-                "creator": {"login": "repair-agent"},
-                "state": "success"
-            },
-            {
+                "statuses": [{
                 "context": "continuous-integration/test",
                 "description": "passed",
                 "creator": {"login": "github-actions[bot]"},
                 "state": "success"
+                }]
+            },
+            {
+                "statuses": [{
+                    "context": "reviewgate/disposition/42",
+                    "description": "receipt-sha256:abc",
+                    "creator": {"login": "repair-agent"},
+                    "state": "success"
+                }]
             }
-        ]])
+        ])
         .to_string();
 
         assert_eq!(
@@ -8649,6 +8663,30 @@ review_angles:
                 context: "reviewgate/disposition/42".to_string(),
                 description: "receipt-sha256:abc".to_string(),
                 creator_login: "repair-agent".to_string(),
+                state: "success".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn commit_status_parser_reads_combined_response_with_redacted_creator() {
+        let raw = serde_json::json!({
+            "state": "success",
+            "statuses": [{
+                "context": "reviewgate/disposition/42",
+                "description": "receipt-sha256:abc",
+                "creator": null,
+                "state": "success"
+            }]
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_commit_status_records(&raw).expect("combined status parses"),
+            vec![CommitStatusRecord {
+                context: "reviewgate/disposition/42".to_string(),
+                description: "receipt-sha256:abc".to_string(),
+                creator_login: String::new(),
                 state: "success".to_string(),
             }]
         );
