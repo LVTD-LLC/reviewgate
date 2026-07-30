@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Corrected the standalone CLI release sequence after `v0.7.0` was tagged before its macOS packaging workflow merged, and advanced the action runtime pin to `v0.7.1` so Linux X64 and macOS Apple Silicon/Intel archives publish together.
 - Simplified the blog index into a responsive field-note ledger with restrained copy, full-row article links, clear publication dates, and divider-based hierarchy.
 - Added checksum-verified one-line CLI installation for Linux X64 and macOS Apple Silicon/Intel, an LVTD Homebrew installation path, and a source-aware `reviewgate upgrade` command. Expanded release artifacts and the release checklist to keep the Homebrew formula current.
 - Replaced the navbar initials tile with the ReviewGate shield logo and added a landing-page CTA that copies a complete AI-agent setup prompt for the local CLI and GitHub Action, including an explicit OpenRouter model choice.

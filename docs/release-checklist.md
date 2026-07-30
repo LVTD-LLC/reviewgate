@@ -4,6 +4,7 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 
 ## Code and CI
 
+- Merge every feature and release-workflow change intended for the release before creating its version-preparation branch or tag; verify the tag commit contains those changes.
 - `cargo fmt --all --check` passes.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings` passes.
 - `cargo test --locked --workspace` passes.
