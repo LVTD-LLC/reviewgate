@@ -6,6 +6,7 @@ use thiserror::Error;
 
 mod agent_result;
 mod convergence;
+mod evaluation;
 
 pub use agent_result::*;
 pub use convergence::{
@@ -14,6 +15,7 @@ pub use convergence::{
     MAX_DISPOSITION_HISTORY, ReviewScope, TrackedFinding, finding_code_fingerprint,
     reconcile_findings, reconcile_findings_with_updates, semantic_fingerprint,
 };
+pub use evaluation::*;
 
 pub const SUMMARY_MARKER: &str = "<!-- reviewgate-summary -->";
 pub const SUMMARY_STATE_PREFIX: &str = "<!-- reviewgate-state ";
