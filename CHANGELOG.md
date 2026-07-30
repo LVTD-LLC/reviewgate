@@ -5,6 +5,7 @@ Changes are grouped by calendar date, newest first.
 ## 2026-07-30
 
 - Replaced the single-page Astro docs preview with an expansive agent-first documentation set covering quickstart, GitHub Actions and CLI installation, configuration, features and scoring, versioned artifacts, external repair loops, security, and troubleshooting; added shared responsive docs navigation, an `llms.txt` route map, and contract tests for workflow safety, Action inputs, CLI coverage, and exact-head agent stop conditions.
+- Loaded agent disposition receipts from GitHub's combined commit-status response so workflow tokens can consume exact writer-created receipts that the paginated status endpoint omits.
 - Preserved exact-head agent disposition receipts when GitHub Actions redacts the commit-status creator, while continuing to reject visible creator mismatches and requiring the exact writer-only status context, payload digest, and success state. Advanced the action runtime pin to `v0.6.1`.
 - Added site-wide Plausible pageview and outbound-link tracking for `reviewgate.lvtd.dev`.
 - Moved ReviewGate's own dogfood workflow to OpenRouter's free model router while preserving the public price-to-value model default.
