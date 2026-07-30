@@ -829,6 +829,105 @@
     "expected_blocking": false
   },
   {
+    "name": "PR 365 action wording does not execute a setup action",
+    "fixture_id": "pr365.runner_tooling.action_metadata_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - name: \"Document uses: acme/setup-just@v1\"\n        run: echo setup guidance\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,7 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - name: \"Document uses: acme/setup-just@v1\"\n+        run: echo setup guidance\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-action-metadata-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 7,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The prior step only names a setup action in metadata and does not execute it.",
+      "agent_instruction": "Execute an exact just setup action or install just before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "metadata mention -> echo only -> just package -> command not found",
+        "test_assessment": "The uses text belongs to the name key rather than an executable uses key.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- name: \"Document uses: acme/setup-just@v1\"", "reason": "The action reference is inert metadata"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 7, "excerpt": "- run: just package", "reason": "The invocation has no executable setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe that the name field does not execute a setup action.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 installer option value does not install runner tooling",
+    "fixture_id": "pr365.runner_tooling.option_value_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install cargo-nextest --features just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install cargo-nextest --features just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-option-value-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The installer targets cargo-nextest; just is only a feature value and is not installed.",
+      "agent_instruction": "Install just as the package operand before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "install cargo-nextest feature -> just package -> command not found",
+        "test_assessment": "The first installer package operand is cargo-nextest, not just.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install cargo-nextest --features just", "reason": "The word just is not the installed package operand"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The invocation has no matching package setup"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe that cargo-nextest installation does not provide just.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 continue-on-error setup does not guarantee runner tooling",
+    "fixture_id": "pr365.runner_tooling.continue_on_error_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n        continue-on-error: true\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,7 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+        continue-on-error: true\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-continue-on-error-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 7,
+      "title": "Release invokes conditionally unavailable runner tooling",
+      "detail": "The install may fail without stopping the job, after which the invocation still runs.",
+      "agent_instruction": "Require setup to succeed before invoking just.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without a guaranteed installation.",
+        "causal_path": "allowed setup failure -> just package -> command not found",
+        "test_assessment": "continue-on-error permits the install step to fail while the later invocation proceeds.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "continue-on-error: true", "reason": "The setup failure is explicitly allowed"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 7, "excerpt": "- run: just package", "reason": "The invocation still executes"}
+        ],
+        "related_tests": [],
+        "reproduction": "Make cargo install fail and observe the job continue to just package.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 embedded action version mismatch remains blocking",
     "fixture_id": "pr365.release_assertion.embedded_mismatch",
     "files": {

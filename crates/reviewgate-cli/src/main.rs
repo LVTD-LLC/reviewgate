@@ -6182,11 +6182,11 @@ fn workflow_installs_invoked_tool_before_finding(
         return false;
     };
     (job_start..invocation_index).any(|index| {
-        let content = yaml_line_content(lines[index]).trim_start();
+        let content = yaml_step_line_content(lines[index]);
         let run_setup = content
-            .split_once("run:")
-            .is_some_and(|(_, command)| run_command_installs_tool(command, &tool));
-        let action_setup = content.split_once("uses:").is_some_and(|(_, action)| {
+            .strip_prefix("run:")
+            .is_some_and(|command| run_command_installs_tool(command, &tool));
+        let action_setup = content.strip_prefix("uses:").is_some_and(|action| {
             let action = action
                 .trim()
                 .trim_matches(|character| character == '\'' || character == '"')
@@ -6202,6 +6202,11 @@ fn workflow_installs_invoked_tool_before_finding(
         let setup_matches = run_setup || action_setup;
         setup_matches && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
     })
+}
+
+fn yaml_step_line_content(line: &str) -> &str {
+    let content = yaml_line_content(line).trim_start();
+    content.strip_prefix("- ").unwrap_or(content).trim_start()
 }
 
 fn run_command_installs_tool(command: &str, tool: &str) -> bool {
@@ -6239,10 +6244,21 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
         return false;
     }
     let command_tokens = &tokens[offset + 1..];
-    command_tokens.iter().any(|token| token == "install")
-        && command_tokens
-            .iter()
-            .any(|token| token == tool || token.rsplit('/').next() == Some(tool))
+    let Some(install_index) = command_tokens.iter().position(|token| token == "install") else {
+        return false;
+    };
+    if install_index != 0 {
+        return false;
+    }
+    command_tokens[install_index + 1..]
+        .iter()
+        .find(|token| {
+            !matches!(
+                token.as_str(),
+                "--locked" | "--force" | "--offline" | "--quiet" | "--yes" | "-q" | "-y"
+            )
+        })
+        .is_some_and(|token| token == tool || token.rsplit('/').next() == Some(tool))
 }
 
 fn yaml_line_content(line: &str) -> &str {
@@ -6298,16 +6314,17 @@ fn workflow_step_is_unconditional(
         })
         .unwrap_or(invocation_index);
     !lines[step_start..step_end].iter().any(|line| {
-        let condition = yaml_line_content(line)
-            .trim()
-            .strip_prefix("- ")
-            .unwrap_or_else(|| yaml_line_content(line).trim())
-            .trim_start();
-        condition.starts_with("if:")
+        let property = yaml_step_line_content(line);
+        (property.starts_with("if:")
             && !matches!(
-                condition.trim_start_matches("if:").trim(),
+                property.trim_start_matches("if:").trim(),
                 "true" | "${{ true }}"
-            )
+            ))
+            || (property.starts_with("continue-on-error:")
+                && !matches!(
+                    property.trim_start_matches("continue-on-error:").trim(),
+                    "false" | "${{ false }}"
+                ))
     })
 }
 
@@ -11240,6 +11257,9 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.conditional_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.action_near_match_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.action_metadata_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.option_value_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
         assert!(fixture_ids.contains("pr365.release_assertion.broken"));
