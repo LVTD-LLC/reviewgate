@@ -13,7 +13,7 @@ ReviewGate writes two JSON shapes for different consumers:
 
 | Artifact | Path | Contract | Use it for |
 | --- | --- | --- | --- |
-| Full review artifact | `.reviewgate/review.json` | `reviewgate-review-output-v3` schema | Detailed diagnostics, review stages, complete grounding, metrics, and local development. |
+| Full review artifact | `.reviewgate/review.json` | `reviewgate-review-output-v3` schema | Detailed diagnostics, review stages, complete grounding, optional verifier decisions, metrics, and local development. |
 | Stable agent result | `.reviewgate/result.json` | `reviewgate-agent-result/v1` | External repair agents, CI integrations, exact-head status, canonical finding state, and thread lifecycle. |
 
 External agents should prefer the stable agent result. The GitHub Action uploads it as:
@@ -160,6 +160,7 @@ Each stable agent finding includes:
 | `confidence` | Numeric confidence from `0` to `1`. |
 | `classification` | Defect, security, reliability risk, contract ambiguity, or suggestion. |
 | `blocking_reason` | Validated blocking reason or `null`. Only still-open findings can retain one. |
+| `verification` | Independent decision, model, reason, checked evidence, and any bounded `conflicting_decisions` retained for audit. |
 | `path` / `line` | Current target when known. |
 | `claim` | Checked finding claim when grounded. |
 | `causal_evidence` | Causal path from changed code to the failure. |

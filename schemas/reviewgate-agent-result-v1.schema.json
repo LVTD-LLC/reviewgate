@@ -132,6 +132,14 @@
             null
           ]
         },
+        "verification": {
+          "anyOf": [
+            {
+              "$ref": "reviewgate-review-output-v3.schema.json#/$defs/finding_verification"
+            },
+            { "type": "null" }
+          ]
+        },
         "path": { "type": ["string", "null"] },
         "line": { "type": ["integer", "null"], "minimum": 1 },
         "claim": { "type": ["string", "null"] },

@@ -173,6 +173,8 @@ The job never needs `OPENROUTER_API_KEY`. It reruns a previously approved `pull_
 | `review_workflow` | No | `reviewgate.yml` | Workflow file selected by rereview mode. |
 | `config` | No | `.reviewgate.yml` | Repository-relative configuration path. |
 | `model` | No | Built-in balanced model | Exact OpenRouter model ID. An empty value keeps the default. |
+| `verify_blockers` | No | Empty | `true` or `false`; empty defers to `.reviewgate.yml`. One extra batched call is made only when enabled and blockers exist. |
+| `verifier_model` | No | Primary review model | Trusted workflow-selected model for blocker verification. Does not enable verification by itself. |
 | `min_severity` | No | `P4` | Lowest severity published as an inline comment. |
 | `angle_timeout_seconds` | No | `180` | Maximum runtime for one model review angle. |
 | `total_timeout_seconds` | No | `480` | Maximum combined model runtime for the whole review. |

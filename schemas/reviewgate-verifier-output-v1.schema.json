@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewgate.lvtd.dev/schemas/reviewgate-verifier-output-v1.schema.json",
+  "title": "ReviewGate blocker verifier output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "state", "reason", "evidence_indices"],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "enum": ["verified", "rejected"]
+                }
+              },
+              "required": ["state"]
+            },
+            "then": {
+              "properties": {
+                "evidence_indices": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": ["verified", "rejected", "inconclusive"]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "evidence_indices": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

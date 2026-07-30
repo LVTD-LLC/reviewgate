@@ -25,6 +25,7 @@ pub const MAX_TRACKED_FINDINGS: usize = 128;
 pub const DEFAULT_COST_HISTORY_LIMIT: usize = 20;
 pub const DEFAULT_TARGET_SCORE: u8 = 5;
 pub const HIGH_CONFIDENCE_THRESHOLD: f64 = 0.85;
+pub const MAX_VERIFIER_REASON_CHARS: usize = 4_000;
 pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -85,6 +86,7 @@ pub enum ReviewErrorKind {
     EmptyResponse,
     ProviderError,
     TransportError,
+    VerificationInconclusive,
 }
 
 impl ReviewErrorKind {
@@ -95,6 +97,7 @@ impl ReviewErrorKind {
             ReviewErrorKind::EmptyResponse => "empty_response",
             ReviewErrorKind::ProviderError => "provider_error",
             ReviewErrorKind::TransportError => "transport_error",
+            ReviewErrorKind::VerificationInconclusive => "verification_inconclusive",
         }
     }
 
@@ -109,6 +112,9 @@ impl ReviewErrorKind {
                 "The reviewer provider rejected or could not complete the request."
             }
             ReviewErrorKind::TransportError => "The reviewer transport failed.",
+            ReviewErrorKind::VerificationInconclusive => {
+                "The blocker verifier could not reach a conclusive decision."
+            }
         }
     }
 }
@@ -276,6 +282,111 @@ impl BlockingReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifierState {
+    Verified,
+    Rejected,
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FindingVerification {
+    pub state: VerifierState,
+    pub reason: String,
+    pub model: String,
+    #[serde(default)]
+    pub evidence: Vec<FindingEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicting_decisions: Vec<FindingVerificationDecision>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FindingVerificationDecision {
+    pub state: VerifierState,
+    pub reason: String,
+    pub model: String,
+    #[serde(default)]
+    pub evidence: Vec<FindingEvidence>,
+}
+
+fn validate_verification_decision(
+    state: VerifierState,
+    reason: &str,
+    model: &str,
+    evidence: &[FindingEvidence],
+) -> Result<(), ReviewGateError> {
+    if reason.trim().is_empty() || reason.chars().count() > MAX_VERIFIER_REASON_CHARS {
+        return Err(ReviewGateError::InvalidReviewOutcome(
+            "finding verification reason must be non-empty and bounded".to_string(),
+        ));
+    }
+    if model.trim().is_empty() {
+        return Err(ReviewGateError::InvalidReviewOutcome(
+            "finding verification model must not be empty".to_string(),
+        ));
+    }
+    if matches!(state, VerifierState::Verified | VerifierState::Rejected) && evidence.is_empty() {
+        return Err(ReviewGateError::InvalidReviewOutcome(
+            "conclusive finding verification must cite checked evidence".to_string(),
+        ));
+    }
+    for evidence in evidence {
+        if evidence.path.trim().is_empty()
+            || evidence.line == 0
+            || evidence.excerpt.trim().is_empty()
+            || evidence.reason.trim().is_empty()
+        {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "finding verification evidence must include path, line, excerpt, and reason"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl FindingVerificationDecision {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        validate_verification_decision(self.state, &self.reason, &self.model, &self.evidence)
+    }
+}
+
+impl FindingVerification {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        validate_verification_decision(self.state, &self.reason, &self.model, &self.evidence)?;
+        if self.conflicting_decisions.len() > 8 {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "finding verification has too many conflicting decisions".to_string(),
+            ));
+        }
+        for decision in &self.conflicting_decisions {
+            decision.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn record_conflicting_decision(&mut self, decision: FindingVerificationDecision) {
+        if !self.conflicting_decisions.contains(&decision) {
+            self.conflicting_decisions.push(decision);
+            if self.conflicting_decisions.len() > 8 {
+                self.conflicting_decisions.remove(0);
+            }
+        }
+    }
+
+    pub fn decision(&self) -> FindingVerificationDecision {
+        FindingVerificationDecision {
+            state: self.state,
+            reason: self.reason.clone(),
+            model: self.model.clone(),
+            evidence: self.evidence.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Finding {
     pub id: String,
@@ -291,6 +402,8 @@ pub struct Finding {
     pub evidence_gate_result: EvidenceGateResult,
     #[serde(default)]
     pub blocking_reason: Option<BlockingReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<FindingVerification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grounding: Option<FindingGrounding>,
     pub file: Option<String>,
@@ -355,12 +468,37 @@ impl Finding {
             && self.classification.blocking_reason().is_some()
     }
 
+    pub fn requires_blocker_verification(&self) -> bool {
+        self.verification.is_none() && self.is_blocking(DEFAULT_TARGET_SCORE)
+    }
+
+    pub fn is_verifier_rejected(&self) -> bool {
+        self.verification
+            .as_ref()
+            .is_some_and(|verification| verification.state == VerifierState::Rejected)
+    }
+
+    pub fn is_publishable_after_verification(&self) -> bool {
+        self.verification
+            .as_ref()
+            .is_none_or(|verification| verification.state == VerifierState::Verified)
+    }
+
+    pub fn is_active_for_convergence(&self) -> bool {
+        !self.is_verifier_rejected()
+    }
+
     pub fn calibrate_policy(&mut self) {
         self.blocking_reason = self.expected_blocking_reason();
     }
 
     fn expected_blocking_reason(&self) -> Option<BlockingReason> {
-        if self.requires_evidence_gate() && self.evidence_gate_result == EvidenceGateResult::Passed
+        if self.requires_evidence_gate()
+            && self.evidence_gate_result == EvidenceGateResult::Passed
+            && self
+                .verification
+                .as_ref()
+                .is_none_or(|verification| verification.state == VerifierState::Verified)
         {
             self.classification.blocking_reason()
         } else {
@@ -370,6 +508,15 @@ impl Finding {
 
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         validate_confidence(self.confidence)?;
+        if let Some(verification) = &self.verification {
+            verification.validate()?;
+            if !self.requires_evidence_gate() {
+                return Err(ReviewGateError::InvalidReviewOutcome(format!(
+                    "finding {} has a verifier decision but is not a blocker candidate",
+                    self.id
+                )));
+            }
+        }
         let expected = self.expected_blocking_reason();
         if self.blocking_reason != expected {
             return Err(ReviewGateError::InvalidReviewOutcome(format!(
@@ -378,6 +525,87 @@ impl Finding {
             )));
         }
         Ok(())
+    }
+}
+
+pub fn preserve_prior_verified_verifier_disagreements(
+    current_findings: &mut Vec<Finding>,
+    previous_findings: &[TrackedFinding],
+) -> usize {
+    let prior_verified = previous_findings
+        .iter()
+        .filter(|tracked| tracked.disposition == FindingDisposition::StillOpen)
+        .filter(|tracked| {
+            tracked
+                .finding
+                .verification
+                .as_ref()
+                .is_some_and(|verification| verification.state == VerifierState::Verified)
+        })
+        .map(|tracked| (tracked.semantic_fingerprint.clone(), &tracked.finding))
+        .collect::<BTreeMap<_, _>>();
+    let mut disagreement_count = 0;
+    let mut preserved = Vec::with_capacity(current_findings.len());
+    for finding in std::mem::take(current_findings) {
+        let fingerprint = semantic_fingerprint(&finding);
+        if finding.is_verifier_rejected()
+            && let Some(prior) = prior_verified.get(&fingerprint)
+        {
+            let mut retained = (*prior).clone();
+            retained.angle_id = finding.angle_id.clone();
+            if let (Some(active), Some(rejected)) = (
+                retained.verification.as_mut(),
+                finding.verification.as_ref(),
+            ) {
+                active.record_conflicting_decision(rejected.decision());
+            }
+            preserved.push(retained);
+            disagreement_count += 1;
+        } else {
+            preserved.push(finding);
+        }
+    }
+    *current_findings = preserved;
+    disagreement_count
+}
+
+pub fn merge_verifier_state_into_previous(
+    previous_findings: &mut [TrackedFinding],
+    current_findings: &[Finding],
+    allow_conclusive_upgrade: bool,
+) {
+    let current_by_fingerprint = current_findings
+        .iter()
+        .map(|finding| (semantic_fingerprint(finding), finding))
+        .collect::<BTreeMap<_, _>>();
+    for tracked in previous_findings {
+        let Some(current) = current_by_fingerprint.get(&tracked.semantic_fingerprint) else {
+            continue;
+        };
+        let Some(current_verification) = current.verification.as_ref() else {
+            continue;
+        };
+        let prior_is_conclusive = tracked
+            .finding
+            .verification
+            .as_ref()
+            .is_some_and(|verification| verification.state != VerifierState::Inconclusive);
+        if allow_conclusive_upgrade
+            && !prior_is_conclusive
+            && current_verification.state == VerifierState::Verified
+        {
+            tracked.finding.verification = Some(current_verification.clone());
+            tracked.finding.calibrate_policy();
+            continue;
+        }
+        if let Some(prior) = tracked.finding.verification.as_mut()
+            && prior.state == VerifierState::Verified
+            && current_verification.state == VerifierState::Verified
+        {
+            for decision in &current_verification.conflicting_decisions {
+                prior.record_conflicting_decision(decision.clone());
+            }
+        }
     }
 }
 
@@ -447,6 +675,8 @@ pub struct ReviewMetrics {
     pub timings: Option<ReviewTimings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_context: Option<SemanticContextReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier_ms: Option<u64>,
 }
 
 impl ReviewMetrics {
@@ -689,6 +919,16 @@ impl ReviewArtifact {
                 }
             }
             ReviewStatus::Passed | ReviewStatus::NeedsChanges => {
+                if self.findings.iter().any(|finding| {
+                    finding.verification.as_ref().is_some_and(|verification| {
+                        verification.state == VerifierState::Inconclusive
+                    })
+                }) {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "inconclusive blocker verification requires review_error status"
+                            .to_string(),
+                    ));
+                }
                 let Some(score) = self.score else {
                     return Err(ReviewGateError::InvalidReviewOutcome(
                         "completed review must expose a numeric score".to_string(),
@@ -768,6 +1008,7 @@ impl ReviewArtifact {
                 let open_findings = self
                     .findings
                     .iter()
+                    .filter(|finding| finding.is_active_for_convergence())
                     .map(|finding| (semantic_fingerprint(finding), finding))
                     .collect::<BTreeMap<_, _>>();
                 let tracked_open_findings = self
@@ -1050,6 +1291,10 @@ pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> Rev
             .metrics
             .as_ref()
             .and_then(|metrics| metrics.semantic_context.clone()),
+        verifier_ms: artifact
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.verifier_ms),
     };
 
     for finding in &artifact.findings {
@@ -1072,7 +1317,7 @@ pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> Rev
 }
 
 pub fn is_inline_comment_eligible(finding: &Finding, min_severity: Severity) -> bool {
-    finding.severity.is_at_or_above(min_severity)
+    finding.is_publishable_after_verification() && finding.severity.is_at_or_above(min_severity)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1276,6 +1521,7 @@ impl SummaryState {
             let artifact_fingerprints = artifact
                 .findings
                 .iter()
+                .filter(|finding| finding.is_active_for_convergence())
                 .map(semantic_fingerprint)
                 .collect::<BTreeSet<_>>();
             let open_fingerprints = tracked_findings
@@ -1715,11 +1961,46 @@ pub fn render_summary_with_options(
     if let Some(previous) = previous_state {
         previous.validate_for_scope(&options.scope)?;
     }
+    let mut effective_artifact = artifact.clone();
     let tracked_findings = if let Some(tracked) = options.tracked_findings.clone() {
         tracked
     } else {
+        let disagreement_count = previous_state.map_or(0, |state| {
+            preserve_prior_verified_verifier_disagreements(
+                &mut effective_artifact.findings,
+                &state.tracked_findings,
+            )
+        });
+        let rejected_findings = effective_artifact
+            .findings
+            .iter()
+            .filter(|finding| finding.is_verifier_rejected())
+            .cloned()
+            .collect::<Vec<_>>();
+        let rejected_fingerprints = rejected_findings
+            .iter()
+            .map(semantic_fingerprint)
+            .collect::<BTreeSet<_>>();
+        let active_findings = effective_artifact
+            .findings
+            .iter()
+            .filter(|finding| finding.is_active_for_convergence())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut previous_findings = previous_state
+            .map(|state| {
+                state
+                    .tracked_findings
+                    .iter()
+                    .filter(|tracked| {
+                        !rejected_fingerprints.contains(&tracked.semantic_fingerprint)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let delta = previous_state.map_or_else(
-            || ConvergenceDelta::first_review(&artifact.reviewed_sha),
+            || ConvergenceDelta::first_review(&effective_artifact.reviewed_sha),
             |previous| ConvergenceDelta {
                 previous_reviewed_sha: Some(
                     previous
@@ -1727,22 +2008,34 @@ pub fn render_summary_with_options(
                         .clone()
                         .unwrap_or_else(|| previous.last_reviewed_sha.clone()),
                 ),
-                current_reviewed_sha: artifact.reviewed_sha.clone(),
+                current_reviewed_sha: effective_artifact.reviewed_sha.clone(),
                 changed_files: BTreeSet::new(),
                 external_contract_changed: false,
             },
         );
-        reconcile_findings(
-            artifact.findings.clone(),
-            previous_state
-                .map(|state| state.tracked_findings.as_slice())
-                .unwrap_or_default(),
-            &delta,
-        )?
-        .tracked_findings
+        let unchanged_head =
+            delta.previous_reviewed_sha.as_deref() == Some(delta.current_reviewed_sha.as_str());
+        merge_verifier_state_into_previous(
+            &mut previous_findings,
+            &active_findings,
+            unchanged_head,
+        );
+        let result = reconcile_findings(active_findings, &previous_findings, &delta)?;
+        effective_artifact.findings = result.findings;
+        effective_artifact.findings.extend(rejected_findings);
+        effective_artifact.notes.extend(result.notes);
+        if disagreement_count > 0 {
+            effective_artifact.notes.push(format!(
+                "Retained {disagreement_count} previously validated open finding(s) after the current verifier disagreed without a convergence-approved resolution."
+            ));
+        }
+        effective_artifact.tracked_findings = result.tracked_findings.clone();
+        let findings_changed = effective_artifact.findings != artifact.findings;
+        effective_artifact = recompute_reconciled_outcome(effective_artifact, findings_changed)?;
+        result.tracked_findings
     };
     let state = SummaryState::for_artifact_with_convergence(
-        artifact,
+        &effective_artifact,
         previous_state,
         options.cost_history_limit,
         options.scope.clone(),
@@ -1752,9 +2045,98 @@ pub fn render_summary_with_options(
 
     let mut output = String::new();
     render_summary_header(&mut output, &encoded_state);
-    render_concise_summary_body(&mut output, artifact, &options, &state);
+    render_concise_summary_body(&mut output, &effective_artifact, &options, &state);
 
     Ok(output)
+}
+
+fn recompute_reconciled_outcome(
+    mut artifact: ReviewArtifact,
+    refresh_verdict: bool,
+) -> Result<ReviewArtifact, ReviewGateError> {
+    let successful_angle_ids = artifact
+        .angle_results
+        .iter()
+        .map(|angle| angle.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for finding in &mut artifact.findings {
+        if finding
+            .angle_id
+            .as_deref()
+            .is_some_and(|angle_id| !successful_angle_ids.contains(angle_id))
+        {
+            finding.angle_id = None;
+        }
+    }
+    for tracked in &mut artifact.tracked_findings {
+        if tracked
+            .finding
+            .angle_id
+            .as_deref()
+            .is_some_and(|angle_id| !successful_angle_ids.contains(angle_id))
+        {
+            tracked.finding.angle_id = None;
+        }
+    }
+    for angle in &mut artifact.angle_results {
+        angle.finding_ids = artifact
+            .findings
+            .iter()
+            .filter(|finding| finding.angle_id.as_deref() == Some(angle.id.as_str()))
+            .map(|finding| finding.id.clone())
+            .collect();
+        let angle_findings = artifact
+            .findings
+            .iter()
+            .filter(|finding| angle.finding_ids.contains(&finding.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        angle.score = compute_score(&angle_findings);
+        angle.status = status_for_score(angle.score);
+        if refresh_verdict {
+            angle.verdict = if angle.status == ReviewStatus::Passed {
+                "No validated blockers.".to_string()
+            } else {
+                let blocker_count = angle_findings
+                    .iter()
+                    .filter(|finding| finding.is_blocking(DEFAULT_TARGET_SCORE))
+                    .count();
+                format!("{blocker_count} validated blocker(s) remain.")
+            };
+        }
+    }
+
+    artifact = artifact.with_computed_score()?;
+    if refresh_verdict {
+        artifact.verdict = if artifact.status == ReviewStatus::ReviewError {
+            "ReviewGate could not complete every enabled review angle.".to_string()
+        } else if artifact.angle_results.is_empty() {
+            let blocker_count = artifact
+                .findings
+                .iter()
+                .filter(|finding| finding.is_blocking(DEFAULT_TARGET_SCORE))
+                .count();
+            if blocker_count == 0 {
+                "No validated blockers.".to_string()
+            } else {
+                format!("{blocker_count} validated blocker(s) remain.")
+            }
+        } else {
+            let failing_angles = artifact
+                .angle_results
+                .iter()
+                .filter(|angle| angle.status == ReviewStatus::NeedsChanges)
+                .map(|angle| angle.name.as_str())
+                .collect::<Vec<_>>();
+            if failing_angles.is_empty() {
+                "All enabled ReviewGate review angles passed.".to_string()
+            } else {
+                format!("ReviewGate found issues in: {}.", failing_angles.join(", "))
+            }
+        };
+    }
+    artifact.validate()?;
+    Ok(artifact)
 }
 
 fn render_summary_header(output: &mut String, encoded_state: &str) {
@@ -1780,6 +2162,7 @@ fn render_concise_summary_body(
     render_score_block(output, artifact, state);
     render_angle_score_table(output, artifact);
     render_angle_errors(output, artifact);
+    render_blocker_verifier(output, artifact);
     render_action_timings(output, artifact);
     output.push_str(&format!(
         "Findings: {} total, {} blocking, {} inline candidates\n",
@@ -1809,6 +2192,34 @@ fn render_concise_summary_body(
     output.push('\n');
     render_summary_details(output, artifact, options);
     render_summary_footer(output, state, artifact);
+}
+
+fn render_blocker_verifier(output: &mut String, artifact: &ReviewArtifact) {
+    let mut verified = 0;
+    let mut rejected = 0;
+    let mut inconclusive = 0;
+    for verification in artifact
+        .findings
+        .iter()
+        .filter_map(|finding| finding.verification.as_ref())
+    {
+        match verification.state {
+            VerifierState::Verified => verified += 1,
+            VerifierState::Rejected => rejected += 1,
+            VerifierState::Inconclusive => inconclusive += 1,
+        }
+    }
+    if verified + rejected + inconclusive > 0 {
+        output.push_str(&format!(
+            "Blocker verifier: {verified} verified, {rejected} rejected, {inconclusive} inconclusive.\n\n"
+        ));
+    } else if artifact
+        .review_stages
+        .iter()
+        .any(|stage| stage.name == "blocker_verifier" && stage.status == "skipped")
+    {
+        output.push_str("Blocker verifier: skipped; no additional model call was made.\n\n");
+    }
 }
 
 fn render_action_timings(output: &mut String, artifact: &ReviewArtifact) {
@@ -2012,7 +2423,9 @@ fn important_file_summaries(
 }
 
 fn is_important_file_finding(finding: &Finding) -> bool {
-    finding.is_blocking(DEFAULT_TARGET_SCORE) || finding.severity.is_at_or_above(Severity::P3)
+    finding.is_publishable_after_verification()
+        && (finding.is_blocking(DEFAULT_TARGET_SCORE)
+            || finding.severity.is_at_or_above(Severity::P3))
 }
 
 fn normalize_finding_path(path: &str) -> Option<String> {
@@ -2134,6 +2547,7 @@ mod tests {
             classification: FindingClassification::Defect,
             evidence_gate_result: EvidenceGateResult::Passed,
             blocking_reason: None,
+            verification: None,
             grounding: Some(FindingGrounding {
                 semantic_key: format!("test.{id}"),
                 resolution_disposition: None,
@@ -2156,6 +2570,78 @@ mod tests {
         };
         finding.calibrate_policy();
         finding
+    }
+
+    fn verifier_decision(state: VerifierState) -> FindingVerification {
+        FindingVerification {
+            state,
+            reason: "Independent verifier fixture.".to_string(),
+            model: "verifier/model".to_string(),
+            evidence: if state == VerifierState::Inconclusive {
+                vec![]
+            } else {
+                vec![FindingEvidence {
+                    path: "src/lib.rs".to_string(),
+                    side: FindingEvidenceSide::New,
+                    line: 1,
+                    excerpt: "defect();".to_string(),
+                    reason: "The verifier checked this line.".to_string(),
+                }]
+            },
+            conflicting_decisions: vec![],
+        }
+    }
+
+    #[test]
+    fn verified_candidates_keep_their_blocking_score() {
+        let mut finding = scoring_finding("verified", Severity::P2);
+        finding.verification = Some(verifier_decision(VerifierState::Verified));
+        finding.calibrate_policy();
+
+        assert!(finding.is_blocking(DEFAULT_TARGET_SCORE));
+        assert_eq!(compute_score(&[finding]), 3);
+    }
+
+    #[test]
+    fn conclusive_verifier_decisions_require_checked_evidence() {
+        let mut verified = verifier_decision(VerifierState::Verified);
+        verified.evidence.clear();
+        assert!(verified.validate().is_err());
+
+        let mut rejected = verifier_decision(VerifierState::Rejected);
+        rejected.evidence.clear();
+        assert!(rejected.validate().is_err());
+
+        assert!(
+            verifier_decision(VerifierState::Inconclusive)
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejected_candidates_remain_auditable_without_blocking() {
+        let mut finding = scoring_finding("rejected", Severity::P1);
+        finding.verification = Some(verifier_decision(VerifierState::Rejected));
+        finding.calibrate_policy();
+
+        assert!(!finding.is_blocking(DEFAULT_TARGET_SCORE));
+        assert_eq!(finding.blocking_reason, None);
+        assert_eq!(finding.evidence_gate_result, EvidenceGateResult::Passed);
+        assert_eq!(compute_score(&[finding.clone()]), 5);
+        let summary = render_summary(&scoring_artifact(vec![finding]))
+            .expect("rejected finding is auditable");
+        assert!(summary.contains("Blocker verifier: 0 verified, 1 rejected, 0 inconclusive."));
+    }
+
+    #[test]
+    fn inconclusive_verification_cannot_be_published_as_a_clean_review() {
+        let mut finding = scoring_finding("inconclusive", Severity::P2);
+        finding.verification = Some(verifier_decision(VerifierState::Inconclusive));
+        finding.calibrate_policy();
+        let artifact = scoring_artifact(vec![finding]);
+
+        assert!(artifact.validate().is_err());
     }
 
     #[test]
@@ -2582,6 +3068,7 @@ mod tests {
             classification: FindingClassification::Defect,
             evidence_gate_result: EvidenceGateResult::Passed,
             blocking_reason: Some(BlockingReason::ValidatedDefect),
+            verification: None,
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
@@ -2604,6 +3091,7 @@ mod tests {
             classification: FindingClassification::Security,
             evidence_gate_result: EvidenceGateResult::Passed,
             blocking_reason: Some(BlockingReason::ValidatedSecurity),
+            verification: None,
             grounding: None,
             file: Some("src/auth.rs".to_string()),
             line: Some(7),
@@ -2626,6 +3114,7 @@ mod tests {
             classification: FindingClassification::Defect,
             evidence_gate_result: EvidenceGateResult::Passed,
             blocking_reason: Some(BlockingReason::ValidatedDefect),
+            verification: None,
             grounding: None,
             file: Some("src/lib.rs".to_string()),
             line: Some(42),
@@ -2662,6 +3151,43 @@ mod tests {
     }
 
     #[test]
+    fn verifier_rejected_findings_are_not_publishable_comments_or_file_summaries() {
+        let mut finding = Finding {
+            id: "rg_rejected".to_string(),
+            angle_id: None,
+            scope: FindingScope::Line,
+            severity: Severity::P2,
+            confidence: 0.99,
+            classification: FindingClassification::Defect,
+            evidence_gate_result: EvidenceGateResult::Passed,
+            blocking_reason: Some(BlockingReason::ValidatedDefect),
+            verification: Some(FindingVerification {
+                state: VerifierState::Rejected,
+                reason: "The cited branch returns before the alleged write.".to_string(),
+                model: "independent/verifier".to_string(),
+                evidence: vec![FindingEvidence {
+                    path: "src/lib.rs".to_string(),
+                    side: FindingEvidenceSide::New,
+                    line: 42,
+                    excerpt: "return;".to_string(),
+                    reason: "The verifier checked the early return.".to_string(),
+                }],
+                conflicting_decisions: vec![],
+            }),
+            grounding: None,
+            file: Some("src/lib.rs".to_string()),
+            line: Some(42),
+            title: "Rejected claim".to_string(),
+            detail: None,
+            agent_instruction: "No action should be requested.".to_string(),
+        };
+        finding.calibrate_policy();
+
+        assert!(!is_inline_comment_eligible(&finding, Severity::P4));
+        assert!(!is_important_file_finding(&finding));
+    }
+
+    #[test]
     fn computes_score_without_relying_on_enum_ordering() {
         let findings = vec![
             Finding {
@@ -2673,6 +3199,7 @@ mod tests {
                 classification: FindingClassification::Suggestion,
                 evidence_gate_result: EvidenceGateResult::NotRequired,
                 blocking_reason: None,
+                verification: None,
                 grounding: None,
                 file: None,
                 line: None,
@@ -2689,6 +3216,7 @@ mod tests {
                 classification: FindingClassification::Security,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedSecurity),
+                verification: None,
                 grounding: None,
                 file: None,
                 line: None,
@@ -2726,6 +3254,101 @@ mod tests {
         assert!(summary.starts_with(SUMMARY_MARKER));
         assert!(summary.contains("# Review Gate Summary"));
         assert!(summary.contains("<h2 align=\"left\">Confidence Score: 4/5</h2>"));
+    }
+
+    #[test]
+    fn summary_reports_compact_blocker_verifier_counts_without_model_reasoning() {
+        let mut finding = scoring_finding("rg_verified", Severity::P2);
+        finding.verification = Some(FindingVerification {
+            state: VerifierState::Verified,
+            reason: "Private model rationale must stay in JSON.".to_string(),
+            model: "independent/verifier".to_string(),
+            evidence: vec![FindingEvidence {
+                path: "src/lib.rs".to_string(),
+                side: FindingEvidenceSide::New,
+                line: 1,
+                excerpt: "defect();".to_string(),
+                reason: "The verifier checked this line.".to_string(),
+            }],
+            conflicting_decisions: vec![],
+        });
+        finding.calibrate_policy();
+        let artifact = scoring_artifact(vec![finding]);
+
+        let summary = render_summary(&artifact).expect("summary renders");
+
+        assert!(summary.contains("Blocker verifier: 1 verified, 0 rejected, 0 inconclusive."));
+        assert!(!summary.contains("Private model rationale"));
+    }
+
+    #[test]
+    fn summary_rendering_preserves_verified_obligations_and_audits_disagreement() {
+        let mut prior_finding = scoring_finding("rg_verified", Severity::P2);
+        prior_finding.angle_id = Some("correctness".to_string());
+        prior_finding.verification = Some(verifier_decision(VerifierState::Verified));
+        prior_finding.calibrate_policy();
+        let mut prior_artifact = scoring_artifact(vec![prior_finding]);
+        prior_artifact.angle_results = vec![ReviewAngleResult {
+            id: "correctness".to_string(),
+            name: "Correctness".to_string(),
+            score: 3,
+            status: ReviewStatus::NeedsChanges,
+            verdict: "One validated blocker remains.".to_string(),
+            model: "balanced".to_string(),
+            finding_ids: vec!["rg_verified".to_string()],
+        }];
+        prior_artifact = prior_artifact
+            .with_computed_score()
+            .expect("prior artifact scores");
+        let prior_state =
+            SummaryState::for_artifact(&prior_artifact, None, 20).expect("prior state");
+
+        for reviewed_sha in [
+            prior_artifact.reviewed_sha.clone(),
+            "changed-head".to_string(),
+        ] {
+            let mut current = prior_artifact.clone();
+            current.reviewed_sha = reviewed_sha;
+            current.findings[0].id = "rg_current_reworded".to_string();
+            current.findings[0].angle_id = Some("security".to_string());
+            current.findings[0].verification = Some(verifier_decision(VerifierState::Rejected));
+            current.findings[0].calibrate_policy();
+            current.angle_results[0].id = "security".to_string();
+            current.angle_results[0].name = "Security".to_string();
+            current.angle_results[0].finding_ids = vec!["rg_current_reworded".to_string()];
+            current.tracked_findings.clear();
+            current = current
+                .with_computed_score()
+                .expect("current artifact scores");
+
+            let summary = render_summary_with_options(
+                &current,
+                SummaryOptions::default(),
+                Some(&prior_state),
+            )
+            .expect("summary renders");
+            let state = extract_summary_state(&summary)
+                .expect("state parses")
+                .expect("state exists");
+            let verification = state.tracked_findings[0]
+                .finding
+                .verification
+                .as_ref()
+                .expect("verified obligation remains");
+
+            assert!(summary.contains("ReviewGate found issues in: Security."));
+            assert_eq!(state.tracked_findings[0].finding.id, "rg_verified");
+            assert_eq!(
+                state.tracked_findings[0].finding.angle_id.as_deref(),
+                Some("security")
+            );
+            assert_eq!(verification.state, VerifierState::Verified);
+            assert_eq!(verification.conflicting_decisions.len(), 1);
+            assert_eq!(
+                verification.conflicting_decisions[0].state,
+                VerifierState::Rejected
+            );
+        }
     }
 
     #[test]
@@ -2850,6 +3473,7 @@ mod tests {
                 classification: FindingClassification::Defect,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedDefect),
+                verification: None,
                 grounding: None,
                 file: Some("./src//a|b.rs".to_string()),
                 line: Some(42),
@@ -3195,6 +3819,7 @@ mod tests {
                     classification: FindingClassification::ReliabilityRisk,
                     evidence_gate_result: EvidenceGateResult::Passed,
                     blocking_reason: Some(BlockingReason::ValidatedReliabilityRisk),
+                    verification: None,
                     grounding: None,
                     file: None,
                     line: None,
@@ -3211,6 +3836,7 @@ mod tests {
                     classification: FindingClassification::Suggestion,
                     evidence_gate_result: EvidenceGateResult::NotRequired,
                     blocking_reason: None,
+                    verification: None,
                     grounding: None,
                     file: None,
                     line: None,
@@ -3264,6 +3890,7 @@ mod tests {
                 classification: FindingClassification::Defect,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedDefect),
+                verification: None,
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -3372,6 +3999,7 @@ mod tests {
                 classification: FindingClassification::Defect,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedDefect),
+                verification: None,
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -3415,6 +4043,7 @@ mod tests {
                 classification: FindingClassification::Defect,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedDefect),
+                verification: None,
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -3594,6 +4223,7 @@ mod tests {
                 classification: FindingClassification::Security,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedSecurity),
+                verification: None,
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),
@@ -3639,6 +4269,7 @@ mod tests {
                 classification: FindingClassification::Suggestion,
                 evidence_gate_result: EvidenceGateResult::NotRequired,
                 blocking_reason: None,
+                verification: None,
                 grounding: None,
                 file: None,
                 line: None,
@@ -3790,6 +4421,7 @@ mod tests {
                     classification: FindingClassification::Defect,
                     evidence_gate_result: EvidenceGateResult::Passed,
                     blocking_reason: Some(BlockingReason::ValidatedDefect),
+                    verification: None,
                     grounding: None,
                     file: Some("src/lib.rs".to_string()),
                     line: Some(42),
@@ -3806,6 +4438,7 @@ mod tests {
                     classification: FindingClassification::Suggestion,
                     evidence_gate_result: EvidenceGateResult::NotRequired,
                     blocking_reason: None,
+                    verification: None,
                     grounding: None,
                     file: None,
                     line: None,
@@ -3855,6 +4488,7 @@ mod tests {
                 cost_source: CostSource::Unknown,
                 timings: None,
                 semantic_context: None,
+                verifier_ms: None,
             }),
             review_stages: vec![],
             angle_results: vec![],
@@ -3868,6 +4502,7 @@ mod tests {
                 classification: FindingClassification::Defect,
                 evidence_gate_result: EvidenceGateResult::Passed,
                 blocking_reason: Some(BlockingReason::ValidatedDefect),
+                verification: None,
                 grounding: None,
                 file: Some("src/lib.rs".to_string()),
                 line: Some(42),

@@ -36,11 +36,19 @@ inputs:
     required: false
     default: reviewgate.yml
   config:
-    description: Path to ReviewGate config with min severity and optional review angles.
+    description: Path to ReviewGate config with severity, optional blocker verification, semantic context, and review angles.
     required: false
     default: .reviewgate.yml
   model:
     description: Exact OpenRouter model id. Defaults to ReviewGate's built-in model.
+    required: false
+    default: ""
+  verify_blockers:
+    description: "Run one independent blocker-verification model call when blockers are found. Use true or false; empty defers to .reviewgate.yml."
+    required: false
+    default: ""
+  verifier_model:
+    description: Trusted workflow-selected OpenRouter model id for blocker verification. Defaults to the primary review model and does not enable verification by itself.
     required: false
     default: ""
   min_severity:
@@ -63,6 +71,7 @@ runs:
       shell: bash
       env:
         REVIEWGATE_MODE: ${{ inputs.mode }}
+        REVIEWGATE_VERIFY_BLOCKERS: ${{ inputs.verify_blockers }}
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
       run: |
         set -euo pipefail
@@ -72,6 +81,12 @@ runs:
         fi
         if [ "$REVIEWGATE_MODE" = "review" ] && [ -z "${OPENROUTER_API_KEY:-}" ]; then
           echo "::error title=Missing OPENROUTER_API_KEY::Pass the openrouter_api_key input and configure the OPENROUTER_API_KEY repository secret." >&2
+          exit 1
+        fi
+        if [ -n "$REVIEWGATE_VERIFY_BLOCKERS" ] \
+          && [ "$REVIEWGATE_VERIFY_BLOCKERS" != "true" ] \
+          && [ "$REVIEWGATE_VERIFY_BLOCKERS" != "false" ]; then
+          echo "::error title=Invalid blocker verifier setting::Use verify_blockers true or false, or leave it empty to use .reviewgate.yml." >&2
           exit 1
         fi
 
@@ -162,6 +177,8 @@ runs:
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         REVIEWGATE_CONFIG: ${{ inputs.config }}
         REVIEWGATE_MODEL: ${{ inputs.model }}
+        REVIEWGATE_VERIFY_BLOCKERS: ${{ inputs.verify_blockers }}
+        REVIEWGATE_VERIFIER_MODEL: ${{ inputs.verifier_model }}
         REVIEWGATE_MIN_SEVERITY: ${{ inputs.min_severity }}
         REVIEWGATE_ANGLE_TIMEOUT_SECONDS: ${{ inputs.angle_timeout_seconds }}
         REVIEWGATE_TOTAL_TIMEOUT_SECONDS: ${{ inputs.total_timeout_seconds }}
@@ -181,6 +198,12 @@ runs:
         )
         if [ -n "$REVIEWGATE_MODEL" ]; then
           args+=(--model "$REVIEWGATE_MODEL")
+        fi
+        if [ -n "$REVIEWGATE_VERIFY_BLOCKERS" ]; then
+          args+=(--verify-blockers "$REVIEWGATE_VERIFY_BLOCKERS")
+        fi
+        if [ -n "$REVIEWGATE_VERIFIER_MODEL" ]; then
+          args+=(--verifier-model "$REVIEWGATE_VERIFIER_MODEL")
         fi
         "$REVIEWGATE_BIN" "${args[@]}"
         echo "model_ms=$(( $(date +%s%3N) - started_ms ))" >> "$GITHUB_OUTPUT"
