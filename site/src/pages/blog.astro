@@ -3,24 +3,24 @@ import SiteFooter from "../components/SiteFooter.astro";
 import SiteHeader from "../components/SiteHeader.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
-
-const firstPost = {
-  href: "/blog/best-ai-code-review-tools",
-  number: "NOTE / 002",
-  title: "Best AI code review tools for agent-written PRs",
-  description:
-    "A practical 2026 selection guide for score-first, merge-safe AI review tools and agent repair loops.",
-  date: "JUL 30 / 2026",
-};
-
-const previousPost = {
-  href: "/blog/how-to-tell-if-code-is-ai-generated",
-  number: "NOTE / 001",
-  title: "How to tell if code is AI-generated: what actually works",
-  description:
-    "Why style-based detection is weak evidence, and the five-step review gate that works regardless of who wrote the diff.",
-};
+const posts = [
+  {
+    href: "/blog/best-ai-code-review-tools",
+    title: "Best AI code review tools for agent-written PRs",
+    description:
+      "A practical guide to score-first, merge-safe review tools and agent repair loops.",
+    date: "Jul 30, 2026",
+    isoDate: "2026-07-30",
+  },
+  {
+    href: "/blog/how-to-tell-if-code-is-ai-generated",
+    title: "How to tell if code is AI-generated: what actually works",
+    description:
+      "Why style is weak evidence, and the review gate that works regardless of who wrote the diff.",
+    date: "Jul 29, 2026",
+    isoDate: "2026-07-29",
+  },
+];
 ---
 
 <BaseLayout
@@ -30,57 +30,29 @@ const previousPost = {
   <main class="concept signal-site utility-site">
     <SiteHeader current="blog" />
 
-    <section class="utility-hero" aria-label="ReviewGate field notes">
-      <div class="utility-copy">
-        <p class="signal-eyebrow">FIELD NOTES / TRANSMISSION 001</p>
-        <h1>Notes from the <em>review loop.</em></h1>
-        <p class="utility-lede">
-          Practical decisions, failure modes, and operating patterns for teams reviewing code written with coding agents.
-        </p>
-        <div class="signal-actions">
-          <a
-            class="signal-primary"
-            href={firstPost.href}
-            data-analytics-event="blog_post_clicked"
-            data-analytics-location="blog_hero"
-          >
-            Read the first field note <span aria-hidden="true">↗</span>
-          </a>
-          <a
-            class="signal-secondary"
-            href={repositoryUrl}
-            data-analytics-event="source_link_clicked"
-            data-analytics-location="blog_hero"
-          >View the source</a>
-        </div>
-      </div>
+    <section class="simple-blog" aria-labelledby="blog-heading">
+      <header class="simple-blog-header">
+        <h1 id="blog-heading">Field notes</h1>
+        <p>Practical notes on reviewing agent-written pull requests.</p>
+      </header>
 
-      <aside class="utility-console" aria-label="Latest field note">
-        <div class="console-topline">
-          <span>CHANNEL / RG</span>
-          <span>POSTS / 02</span>
-          <strong>LIVE</strong>
-        </div>
-        <div class="utility-status">
-          <p>LATEST TRANSMISSION</p>
-          <strong>002_</strong>
-          <span>{firstPost.description}</span>
-        </div>
-        <a class="blog-entry" href={firstPost.href}>
-          <span>{firstPost.number}</span>
-          <strong>{firstPost.title}</strong>
-          <small>{firstPost.date}</small>
-        </a>
-        <a class="blog-entry" href={previousPost.href}>
-          <span>{previousPost.number}</span>
-          <strong>{previousPost.title}</strong>
-          <small>{previousPost.description}</small>
-        </a>
-        <div class="console-footer">
-          <span>/blog</span>
-          <strong>STATUS / PUBLISHED</strong>
-        </div>
-      </aside>
+      <ol class="simple-post-list" role="list">
+        {posts.map((post) => (
+          <li>
+            <a
+              href={post.href}
+              data-analytics-event="blog_post_clicked"
+              data-analytics-location="blog_quiet_ledger"
+            >
+              <div class="simple-post-copy">
+                <h2>{post.title}</h2>
+                <p>{post.description}</p>
+              </div>
+              <time datetime={post.isoDate}>{post.date}</time>
+            </a>
+          </li>
+        ))}
+      </ol>
     </section>
 
     <SiteFooter />
