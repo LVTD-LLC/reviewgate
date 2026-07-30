@@ -7,11 +7,22 @@ on:
 
 jobs:
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     env:
       RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -26,29 +37,41 @@ jobs:
             exit 1
           fi
       - run: rustup toolchain install 1.96.0 --profile minimal
+      - run: rustup +1.96.0 target add "$TARGET"
       - name: Run dogfood regression gate
         run: cargo +1.96.0 test --locked --workspace
-      - run: cargo +1.96.0 build --locked --release -p reviewgate-cli
+      - run: cargo +1.96.0 build --locked --release -p reviewgate-cli --target "$TARGET"
       - name: Package runtime
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp target/release/reviewgate dist/reviewgate
-          tar -C dist -czf reviewgate-x86_64-unknown-linux-gnu.tar.gz reviewgate
-          sha256sum reviewgate-x86_64-unknown-linux-gnu.tar.gz \
-            > reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256
+          cp "target/$TARGET/release/reviewgate" dist/reviewgate
+          archive="reviewgate-$TARGET.tar.gz"
+          tar -C dist -czf "$archive" reviewgate
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
       - name: Stage runtime
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: reviewgate-runtime
+          name: reviewgate-runtime-${{ matrix.target }}
           path: |
-            reviewgate-x86_64-unknown-linux-gnu.tar.gz
-            reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256
+            reviewgate-${{ matrix.target }}.tar.gz
+            reviewgate-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
   attest:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
     permissions:
       attestations: write
       contents: read
@@ -58,38 +81,50 @@ jobs:
       - name: Download staged runtime
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: reviewgate-runtime
+          name: reviewgate-runtime-${{ matrix.target }}
       - name: Attest runtime
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
-          subject-path: reviewgate-x86_64-unknown-linux-gnu.tar.gz
+          subject-path: reviewgate-${{ matrix.target }}.tar.gz
 
   verify:
     needs: attest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
     permissions:
       attestations: read
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     env:
       RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
     steps:
       - name: Download staged runtime
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: reviewgate-runtime
+          name: reviewgate-runtime-${{ matrix.target }}
       - name: Verify runtime before publication
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh attestation verify reviewgate-x86_64-unknown-linux-gnu.tar.gz \
+          archive="reviewgate-$TARGET.tar.gz"
+          gh attestation verify "$archive" \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow LVTD-LLC/reviewgate/.github/workflows/release-runtime.yml \
             --source-ref "refs/tags/$RELEASE_TAG" \
             --deny-self-hosted-runners
           runtime_dir="$(mktemp -d)"
-          tar -xzf reviewgate-x86_64-unknown-linux-gnu.tar.gz -C "$runtime_dir"
+          tar -xzf "$archive" -C "$runtime_dir"
           "$runtime_dir/reviewgate" --help >/dev/null
 
   publish:
@@ -103,7 +138,8 @@ jobs:
       - name: Download verified runtime
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: reviewgate-runtime
+          pattern: reviewgate-runtime-*
+          merge-multiple: true
       - name: Publish verified runtime
         shell: bash
         env:
@@ -111,14 +147,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          sha256sum --check reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256
+          sha256sum --check reviewgate-*.tar.gz.sha256
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --draft --verify-tag \
               --title "$RELEASE_TAG" \
               --generate-notes
           fi
           gh release upload "$RELEASE_TAG" \
-            reviewgate-x86_64-unknown-linux-gnu.tar.gz \
-            reviewgate-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            reviewgate-*.tar.gz \
+            reviewgate-*.tar.gz.sha256 \
             --clobber
           gh release edit "$RELEASE_TAG" --draft=false

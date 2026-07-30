@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Added checksum-verified one-line CLI installation for Linux X64 and macOS Apple Silicon/Intel, an LVTD Homebrew installation path, and a source-aware `reviewgate upgrade` command. Expanded release artifacts and the release checklist to keep the Homebrew formula current.
 - Replaced the single-page Astro docs preview with an expansive agent-first documentation set covering quickstart, GitHub Actions and CLI installation, configuration, features and scoring, versioned artifacts, external repair loops, security, and troubleshooting; documented exact-receipt and fresh-writer-permission disposition replay verification; added shared responsive docs navigation, an `llms.txt` route map, and contract tests for workflow safety, Action inputs, CLI coverage, and exact-head agent stop conditions.
 - Loaded agent disposition receipts from GitHub's combined commit-status response so workflow tokens can consume exact writer-created receipts that the paginated status endpoint omits.
 - Added sanitized PR #365 true-positive grounding fixtures and explicit review-prompt checks for unavailable runner tooling and stale release assertions, made the full deterministic dogfood regression suite block runtime releases before compilation and publication, restored automatic ReviewGate dogfooding on repository pull requests with the built-in balanced model, and advanced the action runtime pin to `v0.7.0`.

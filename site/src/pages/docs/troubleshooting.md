@@ -32,10 +32,13 @@ reviewgate: command not found
 Install:
 
 ```bash
-cargo install \
-  --git https://github.com/LVTD-LLC/reviewgate \
-  --locked \
-  reviewgate-cli
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/LVTD-LLC/reviewgate/main/scripts/install.sh | sh
+```
+
+Or on macOS:
+
+```bash
+brew install LVTD-LLC/tap/reviewgate
 ```
 
 Verify:
