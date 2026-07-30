@@ -287,6 +287,16 @@ impl AgentReviewResult {
         Ok(result)
     }
 
+    pub fn refresh_threads(
+        &mut self,
+        threads: BTreeMap<String, AgentResultThread>,
+    ) -> Result<(), ReviewGateError> {
+        for finding in &mut self.findings {
+            apply_thread_state(finding, threads.get(&finding.semantic_fingerprint));
+        }
+        self.validate()
+    }
+
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         if self.schema_version != AGENT_RESULT_SCHEMA_VERSION {
             return Err(ReviewGateError::InvalidReviewOutcome(
@@ -483,27 +493,12 @@ fn project_finding(
 ) -> AgentResultFinding {
     let grounding = finding.grounding.as_ref();
     let fingerprint = semantic_fingerprint(finding);
-    let thread = threads.get(&fingerprint);
-    let thread_status = thread
-        .map(|thread| thread.status)
-        .unwrap_or(AgentThreadStatus::NotPublished);
     let reopening_evidence = grounding
         .and_then(|grounding| grounding.reopening_evidence.clone())
         .filter(|evidence| !evidence.trim().is_empty());
-    let was_previously_resolved = history
-        .iter()
-        .rev()
-        .skip(1)
-        .any(|record| record.disposition.is_settled());
-    let thread_transition = thread_transition(
-        thread_status,
-        disposition,
-        was_previously_resolved,
-        reopening_evidence.is_some(),
-    );
-    AgentResultFinding {
+    let mut result = AgentResultFinding {
         id: finding.id.clone(),
-        semantic_fingerprint: fingerprint,
+        semantic_fingerprint: fingerprint.clone(),
         disposition,
         severity: finding.severity,
         confidence: finding.confidence,
@@ -520,13 +515,35 @@ fn project_finding(
             .unwrap_or_default(),
         reproduction: grounding.and_then(|grounding| grounding.reproduction.clone()),
         suggested_fix: finding.agent_instruction.clone(),
-        thread_id: thread.and_then(|thread| thread.id.clone()),
-        thread_status,
-        thread_transition,
-        thread_outdated: thread.is_some_and(|thread| thread.is_outdated),
+        thread_id: None,
+        thread_status: AgentThreadStatus::NotPublished,
+        thread_transition: AgentThreadTransition::NotPublished,
+        thread_outdated: false,
         reopening_evidence,
         prior_dispositions: history.to_vec(),
-    }
+    };
+    apply_thread_state(&mut result, threads.get(&fingerprint));
+    result
+}
+
+fn apply_thread_state(finding: &mut AgentResultFinding, thread: Option<&AgentResultThread>) {
+    finding.thread_id = thread.and_then(|thread| thread.id.clone());
+    finding.thread_status = thread
+        .map(|thread| thread.status)
+        .unwrap_or(AgentThreadStatus::NotPublished);
+    finding.thread_outdated = thread.is_some_and(|thread| thread.is_outdated);
+    let was_previously_resolved = finding
+        .prior_dispositions
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|record| record.disposition.is_settled());
+    finding.thread_transition = thread_transition(
+        finding.thread_status,
+        finding.disposition,
+        was_previously_resolved,
+        finding.reopening_evidence.is_some(),
+    );
 }
 
 #[cfg(test)]
@@ -613,6 +630,75 @@ mod tests {
                 .as_ref()
                 .map(|grounding| grounding.claim.as_str())
         );
+    }
+
+    #[test]
+    fn refreshes_agent_result_thread_state_after_external_reconciliation() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        artifact.findings.truncate(1);
+        artifact = artifact.with_computed_score().expect("fixture score");
+        let mut state = SummaryState::for_artifact(&artifact, None, 20).expect("state");
+        state.scope = ReviewScope::PullRequest {
+            repository: "LVTD-LLC/reviewgate".to_string(),
+            pull_request_number: 48,
+        };
+        let fingerprint = state.tracked_findings[0].semantic_fingerprint.clone();
+        AgentDispositionState {
+            schema_version: AGENT_DISPOSITIONS_SCHEMA_VERSION.to_string(),
+            scope: state.scope.clone(),
+            reviewed_sha: state.last_reviewed_sha.clone(),
+            submission: AgentDispositionSubmission {
+                semantic_fingerprint: fingerprint.clone(),
+                disposition: AgentDisposition::Fixed,
+                evidence: "The current head contains the fix.".to_string(),
+                actor: "repair-agent".to_string(),
+            },
+        }
+        .apply_to_summary(&mut state, 77)
+        .expect("fixed disposition");
+        artifact.findings.clear();
+        artifact.tracked_findings = state.tracked_findings;
+        artifact = artifact.with_computed_score().expect("passed artifact");
+        let mut result = AgentReviewResult::from_artifact(
+            &artifact,
+            state.scope,
+            BTreeMap::from([(
+                fingerprint.clone(),
+                AgentResultThread {
+                    id: Some("PRRT_fixed".to_string()),
+                    status: AgentThreadStatus::Open,
+                    is_outdated: true,
+                },
+            )]),
+        )
+        .expect("result projects");
+        assert_eq!(
+            result.findings[0].thread_transition,
+            AgentThreadTransition::ResolutionPending
+        );
+
+        result
+            .refresh_threads(BTreeMap::from([(
+                fingerprint,
+                AgentResultThread {
+                    id: Some("PRRT_fixed".to_string()),
+                    status: AgentThreadStatus::Resolved,
+                    is_outdated: true,
+                },
+            )]))
+            .expect("thread state refreshes");
+
+        assert_eq!(
+            result.findings[0].thread_status,
+            AgentThreadStatus::Resolved
+        );
+        assert_eq!(
+            result.findings[0].thread_transition,
+            AgentThreadTransition::ResolvedFixed
+        );
+        assert!(result.findings[0].thread_outdated);
     }
 
     #[test]

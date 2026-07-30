@@ -29,9 +29,10 @@ use reviewgate_github::{
     ChangedLineSet, ExistingInlineComment, ExistingReviewThread, ExistingReviewThreadComment,
     ExistingSummaryComment, InlineCommentDraft, RereviewTarget, ReviewThreadLifecycleAction,
     SummaryCommentAction, WorkflowRunCandidate, find_rereview_status_comment,
-    inline_comment_identity, is_github_actions_author, plan_inline_comment_drafts,
-    plan_review_thread_lifecycle, plan_summary_comment_publish, rereview_status_marker,
-    select_rereview_workflow_run, stale_finding_comment_ids,
+    inline_comment_identity, is_github_actions_author, plan_agent_review_thread_lifecycle,
+    plan_inline_comment_drafts, plan_review_thread_lifecycle, plan_summary_comment_publish,
+    rereview_status_marker, select_current_head_workflow_run, select_rereview_workflow_run,
+    stale_finding_comment_ids,
 };
 use sha2::{Digest, Sha256};
 
@@ -92,6 +93,21 @@ enum Command {
         repository: Option<String>,
         #[arg(long, default_value = "reviewgate.yml")]
         workflow: String,
+    },
+    /// Trigger, wait for, reconcile, and print a current-head ReviewGate result.
+    Review {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        pr: Option<String>,
+        #[arg(long, default_value = "reviewgate.yml")]
+        workflow: String,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_seconds: u64,
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
+        poll_seconds: u64,
     },
     /// Submit a structured disposition for a finding on the current PR head.
     Disposition {
@@ -405,7 +421,23 @@ fn main() -> CliResult<()> {
             pr,
             repository,
             workflow,
-        } => check_agent_result(repo, pr, repository, workflow),
+        } => check_agent_result(repo, pr, repository, workflow).and_then(exit_for_agent_status),
+        Command::Review {
+            repo,
+            pr,
+            workflow,
+            wait,
+            timeout_seconds,
+            poll_seconds,
+        } => review_agent_pull_request(
+            repo,
+            pr,
+            workflow,
+            wait,
+            Duration::from_secs(timeout_seconds),
+            Duration::from_secs(poll_seconds),
+        )
+        .and_then(|status| status.map_or(Ok(()), exit_for_agent_status)),
         Command::Disposition {
             repo,
             pr,
@@ -561,13 +593,29 @@ fn check_agent_result(
     pr_number: u64,
     repository: Option<String>,
     workflow: String,
-) -> CliResult<()> {
+) -> CliResult<ReviewStatus> {
     let repo = repo.canonicalize().unwrap_or(repo);
     let repository = resolve_repository(&repo, repository)?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow)?;
+    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow, None)?;
     ensure_pull_request_head(&repo, &repository, pr_number, &head_sha)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(result.status)
+}
+
+fn agent_status_exit_code(status: &ReviewStatus) -> u8 {
+    match status {
+        ReviewStatus::Passed => 0,
+        ReviewStatus::NeedsChanges => 2,
+        ReviewStatus::ReviewError => 3,
+    }
+}
+
+fn exit_for_agent_status(status: ReviewStatus) -> CliResult<()> {
+    let exit_code = agent_status_exit_code(&status);
+    if exit_code != 0 {
+        std::process::exit(exit_code.into());
+    }
     Ok(())
 }
 
@@ -577,20 +625,28 @@ fn download_agent_result(
     pr_number: u64,
     head_sha: &str,
     workflow: &str,
+    expected_run: Option<(u64, u64)>,
 ) -> CliResult<AgentReviewResult> {
     let workflow_id = resolve_recheck_workflow_id(repo, repository, workflow)?;
-    let target = RereviewTarget {
-        repository: repository.to_string(),
-        pull_request_number: pr_number,
-        head_sha: head_sha.to_string(),
+    let (trusted_run_id, trusted_attempt) = if let Some(expected) = expected_run {
+        expected
+    } else {
+        let target = RereviewTarget {
+            repository: repository.to_string(),
+            pull_request_number: pr_number,
+            head_sha: head_sha.to_string(),
+        };
+        let runs =
+            fetch_workflow_run_candidates(repo, repository, &workflow_id.to_string(), head_sha)?;
+        let trusted_run = select_rereview_workflow_run(&runs, &target).with_context(|| {
+            format!(
+                "no completed {workflow:?} pull_request run exists for PR #{pr_number} at current head {head_sha}"
+            )
+        })?;
+        let trusted_state = fetch_workflow_run_state(repo, repository, trusted_run.id)?;
+        (trusted_run.id, trusted_state.run_attempt)
     };
-    let runs = fetch_workflow_run_candidates(repo, repository, &workflow_id.to_string(), head_sha)?;
-    let trusted_run = select_rereview_workflow_run(&runs, &target).with_context(|| {
-        format!(
-            "no completed {workflow:?} pull_request run exists for PR #{pr_number} at current head {head_sha}"
-        )
-    })?;
-    let artifact_name = agent_result_artifact_name(head_sha);
+    let artifact_name = agent_result_artifact_name(head_sha, trusted_attempt);
     let raw = gh_dyn(
         repo,
         &[
@@ -600,7 +656,12 @@ fn download_agent_result(
             &format!("repos/{repository}/actions/artifacts?name={artifact_name}&per_page=100"),
         ],
     )?;
-    let run_id = select_agent_result_run(&raw, head_sha, &BTreeSet::from([trusted_run.id]))?;
+    let run_id = select_agent_result_run(
+        &raw,
+        head_sha,
+        trusted_attempt,
+        &BTreeSet::from([trusted_run_id]),
+    )?;
     let download_dir = unique_temp_path("reviewgate-agent-result", "download");
     fs::create_dir_all(&download_dir)
         .with_context(|| format!("failed to create {}", download_dir.display()))?;
@@ -657,7 +718,7 @@ fn submit_agent_disposition(
     let repo = repo.canonicalize().unwrap_or(repo);
     let repository = resolve_repository(&repo, repository)?;
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
-    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow)?;
+    let result = download_agent_result(&repo, &repository, pr_number, &head_sha, &workflow, None)?;
     if !result
         .findings
         .iter()
@@ -1021,11 +1082,12 @@ fn valid_repository_name(repository: &str) -> bool {
 fn select_agent_result_run(
     raw: &str,
     head_sha: &str,
+    run_attempt: u64,
     trusted_run_ids: &BTreeSet<u64>,
 ) -> CliResult<u64> {
     let value: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse Actions artifacts JSON")?;
-    let artifact_name = agent_result_artifact_name(head_sha);
+    let artifact_name = agent_result_artifact_name(head_sha, run_attempt);
     let mut artifact_lists = Vec::new();
     if value.get("artifacts").is_some() {
         artifact_lists.push(&value);
@@ -1084,8 +1146,8 @@ fn select_agent_result_run(
         .with_context(|| format!("no ReviewGate agent result exists for current head {head_sha}"))
 }
 
-fn agent_result_artifact_name(head_sha: &str) -> String {
-    format!("{AGENT_RESULT_ARTIFACT_PREFIX}-{head_sha}")
+fn agent_result_artifact_name(head_sha: &str, run_attempt: u64) -> String {
+    format!("{AGENT_RESULT_ARTIFACT_PREFIX}-{head_sha}-attempt-{run_attempt}")
 }
 
 fn ensure_pull_request_head(
@@ -2071,6 +2133,20 @@ fn fetch_workflow_run_candidates(
     parse_workflow_run_candidates(&raw)
 }
 
+fn fetch_current_workflow_run_candidates(
+    repo: &Path,
+    repository: &str,
+    workflow: &str,
+    head_sha: &str,
+) -> CliResult<Vec<WorkflowRunCandidate>> {
+    validate_workflow_identifier(workflow)?;
+    let endpoint = format!(
+        "repos/{repository}/actions/workflows/{workflow}/runs?event=pull_request&head_sha={head_sha}&per_page=100"
+    );
+    let raw = gh_dyn(repo, &["api", "--paginate", "--slurp", &endpoint])?;
+    parse_workflow_run_candidates(&raw)
+}
+
 fn workflow_runs_endpoint(repository: &str, workflow: &str, head_sha: &str) -> String {
     format!(
         "repos/{repository}/actions/workflows/{workflow}/runs?event=pull_request&status=completed&head_sha={head_sha}&per_page=100"
@@ -2090,12 +2166,27 @@ fn rerun_workflow(repo: &Path, repository: &str, run_id: u64) -> CliResult<()> {
     Ok(())
 }
 
-fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()> {
-    let repo = repo.canonicalize().unwrap_or(repo);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliPullRequestTarget {
+    repository: String,
+    pull_request_number: u64,
+    url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkflowRunState {
+    run_attempt: u64,
+    status: String,
+    conclusion: Option<String>,
+    event: String,
+    head_sha: String,
+}
+
+fn resolve_cli_pull_request(repo: &Path, pr: Option<String>) -> CliResult<CliPullRequestTarget> {
     let pr_ref = pr.unwrap_or_else(|| "current branch".to_string());
     let pr_json = if pr_ref == "current branch" {
         gh(
-            &repo,
+            repo,
             [
                 "pr",
                 "view",
@@ -2107,7 +2198,7 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()>
         )?
     } else {
         gh(
-            &repo,
+            repo,
             [
                 "pr",
                 "view",
@@ -2128,10 +2219,11 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()>
     let pr_url = pr_value
         .get("url")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
     let repository = gh(
-        &repo,
+        repo,
         [
             "repo",
             "view",
@@ -2141,22 +2233,401 @@ fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()>
             ".nameWithOwner",
         ],
     )?;
-    let target = fetch_rereview_target(&repo, &repository, pr_number)?;
-    let workflow_id = resolve_recheck_workflow_id(&repo, &repository, &workflow)?;
-    let runs = fetch_workflow_run_candidates(
-        &repo,
-        &repository,
-        &workflow_id.to_string(),
-        &target.head_sha,
+    Ok(CliPullRequestTarget {
+        repository,
+        pull_request_number: pr_number,
+        url: pr_url,
+    })
+}
+
+fn parse_workflow_run_state(raw: &str) -> CliResult<WorkflowRunState> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).context("failed to parse workflow run JSON")?;
+    Ok(WorkflowRunState {
+        run_attempt: value
+            .get("run_attempt")
+            .and_then(serde_json::Value::as_u64)
+            .context("workflow run did not include run_attempt")?,
+        status: value
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .context("workflow run did not include status")?
+            .to_string(),
+        conclusion: value
+            .get("conclusion")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        event: value
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .context("workflow run did not include event")?
+            .to_string(),
+        head_sha: value
+            .get("head_sha")
+            .and_then(serde_json::Value::as_str)
+            .context("workflow run did not include head_sha")?
+            .to_string(),
+    })
+}
+
+fn fetch_workflow_run_state(
+    repo: &Path,
+    repository: &str,
+    run_id: u64,
+) -> CliResult<WorkflowRunState> {
+    let raw = gh_dyn(
+        repo,
+        &["api", &format!("repos/{repository}/actions/runs/{run_id}")],
     )?;
-    let Some(run) = select_rereview_workflow_run(&runs, &target) else {
+    parse_workflow_run_state(&raw)
+}
+
+fn wait_for_workflow_attempt(
+    repo: &Path,
+    repository: &str,
+    run_id: u64,
+    expected_attempt: u64,
+    expected_head_sha: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> CliResult<WorkflowRunState> {
+    let started = Instant::now();
+    let mut last_progress = None;
+    loop {
+        let state = fetch_workflow_run_state(repo, repository, run_id)?;
+        if state.event != "pull_request" || state.head_sha != expected_head_sha {
+            bail!(
+                "workflow run {run_id} no longer matches the expected pull_request head {expected_head_sha}"
+            );
+        }
+        let progress = (
+            state.run_attempt,
+            state.status.clone(),
+            state.conclusion.clone(),
+        );
+        if last_progress.as_ref() != Some(&progress) {
+            eprintln!(
+                "ReviewGate run {run_id} attempt {}: {}{}",
+                state.run_attempt,
+                state.status,
+                state
+                    .conclusion
+                    .as_deref()
+                    .map(|conclusion| format!(" ({conclusion})"))
+                    .unwrap_or_default()
+            );
+            last_progress = Some(progress);
+        }
+        if state.run_attempt > expected_attempt {
+            bail!(
+                "ReviewGate run {run_id} advanced to attempt {} while waiting for attempt {expected_attempt}",
+                state.run_attempt
+            );
+        }
+        if state.run_attempt == expected_attempt && state.status == "completed" {
+            return Ok(state);
+        }
+        if started.elapsed() >= timeout {
+            bail!(
+                "timed out after {}s waiting for ReviewGate run {run_id} attempt {expected_attempt}",
+                timeout.as_secs(),
+            );
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        std::thread::sleep(poll_interval.min(remaining));
+    }
+}
+
+fn apply_review_thread_lifecycle_actions(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    head_sha: &str,
+    actions: Vec<ReviewThreadLifecycleAction>,
+) -> CliResult<()> {
+    for action in actions {
+        match action {
+            ReviewThreadLifecycleAction::ReplyAndResolve { thread_id, body } => {
+                apply_head_bound_mutation(repo, repository, pr_number, head_sha, || {
+                    reply_to_review_thread(repo, &thread_id, &body)
+                })?;
+                apply_head_bound_mutation(repo, repository, pr_number, head_sha, || {
+                    resolve_review_thread(repo, &thread_id)
+                })?;
+            }
+            ReviewThreadLifecycleAction::Resolve { thread_id } => {
+                apply_head_bound_mutation(repo, repository, pr_number, head_sha, || {
+                    resolve_review_thread(repo, &thread_id)
+                })?;
+            }
+            ReviewThreadLifecycleAction::ReplyAndUnresolve { thread_id, body } => {
+                apply_head_bound_mutation(repo, repository, pr_number, head_sha, || {
+                    reply_to_review_thread(repo, &thread_id, &body)
+                })?;
+                apply_head_bound_mutation(repo, repository, pr_number, head_sha, || {
+                    unresolve_review_thread(repo, &thread_id)
+                })?;
+            }
+            ReviewThreadLifecycleAction::Unresolve { thread_id } => {
+                apply_head_bound_mutation(repo, repository, pr_number, head_sha, || {
+                    unresolve_review_thread(repo, &thread_id)
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_head_bound_mutation(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    head_sha: &str,
+    mutation: impl FnOnce() -> CliResult<()>,
+) -> CliResult<()> {
+    ensure_pull_request_head(repo, repository, pr_number, head_sha)?;
+    mutation()?;
+    ensure_pull_request_head(repo, repository, pr_number, head_sha)
+}
+
+fn reconcile_agent_result_threads(
+    repo: &Path,
+    repository: &str,
+    pr_number: u64,
+    head_sha: &str,
+    result: &mut AgentReviewResult,
+) -> CliResult<usize> {
+    let actor = gh_dyn(repo, &["api", "user", "--jq", ".login"])?
+        .trim()
+        .to_string();
+    if actor.is_empty() {
+        bail!("thread reconciliation requires an authenticated GitHub actor");
+    }
+    let threads = fetch_review_threads(repo, repository, pr_number)?;
+    result.refresh_threads(agent_result_threads(&threads))?;
+    let plan = plan_agent_review_thread_lifecycle(&threads, &result.findings, &actor);
+    let action_count = plan.actions.len();
+    if action_count > 0 {
+        if !fetch_actor_write_permission(repo, repository, &actor)? {
+            bail!("thread reconciliation requires repository write permission");
+        }
+        apply_review_thread_lifecycle_actions(repo, repository, pr_number, head_sha, plan.actions)?;
+    }
+    let refreshed_threads = fetch_review_threads(repo, repository, pr_number)?;
+    result.refresh_threads(agent_result_threads(&refreshed_threads))?;
+    ensure_pull_request_head(repo, repository, pr_number, head_sha)?;
+    Ok(action_count)
+}
+
+struct ReviewRunTarget {
+    pull_request: CliPullRequestTarget,
+    target: RereviewTarget,
+    workflow_id: u64,
+}
+
+struct StartedReviewRun {
+    id: u64,
+    url: String,
+    expected_attempt: u64,
+    rerun_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewRunStart {
+    Join { expected_attempt: u64 },
+    Rerun { expected_attempt: u64 },
+}
+
+fn plan_review_run_start(state: &WorkflowRunState, join_active: bool) -> CliResult<ReviewRunStart> {
+    if state.status == "completed" {
+        return Ok(ReviewRunStart::Rerun {
+            expected_attempt: state.run_attempt.saturating_add(1),
+        });
+    }
+    if join_active {
+        return Ok(ReviewRunStart::Join {
+            expected_attempt: state.run_attempt,
+        });
+    }
+    bail!(
+        "workflow run became {} before ReviewGate could request a rerun",
+        state.status
+    )
+}
+
+fn resolve_review_run_target(
+    repo: &Path,
+    pr: Option<String>,
+    workflow: &str,
+) -> CliResult<ReviewRunTarget> {
+    let pull_request = resolve_cli_pull_request(repo, pr)?;
+    let target = fetch_rereview_target(
+        repo,
+        &pull_request.repository,
+        pull_request.pull_request_number,
+    )?;
+    let workflow_id = resolve_recheck_workflow_id(repo, &pull_request.repository, workflow)?;
+    Ok(ReviewRunTarget {
+        pull_request,
+        target,
+        workflow_id,
+    })
+}
+
+fn start_or_join_review_run(
+    repo: &Path,
+    target: &ReviewRunTarget,
+    join_active: bool,
+) -> CliResult<Option<StartedReviewRun>> {
+    let workflow_id = target.workflow_id.to_string();
+    let runs = if join_active {
+        fetch_current_workflow_run_candidates(
+            repo,
+            &target.pull_request.repository,
+            &workflow_id,
+            &target.target.head_sha,
+        )?
+    } else {
+        fetch_workflow_run_candidates(
+            repo,
+            &target.pull_request.repository,
+            &workflow_id,
+            &target.target.head_sha,
+        )?
+    };
+    let run = if join_active {
+        select_current_head_workflow_run(&runs, &target.target)
+    } else {
+        select_rereview_workflow_run(&runs, &target.target)
+    };
+    let Some(run) = run else {
+        return Ok(None);
+    };
+    let state = fetch_workflow_run_state(repo, &target.pull_request.repository, run.id)?;
+    if state.event != "pull_request" || state.head_sha != target.target.head_sha {
         bail!(
-            "no eligible {workflow:?} pull_request run found for PR #{pr_number} at current head {}",
-            target.head_sha
+            "workflow run {} no longer matches the expected pull_request head {}",
+            run.id,
+            target.target.head_sha
+        );
+    }
+    let start = plan_review_run_start(&state, join_active)?;
+    let (rerun_requested, expected_attempt) = match start {
+        ReviewRunStart::Rerun { expected_attempt } => {
+            rerun_workflow(repo, &target.pull_request.repository, run.id)?;
+            (true, expected_attempt)
+        }
+        ReviewRunStart::Join { expected_attempt } => (false, expected_attempt),
+    };
+    Ok(Some(StartedReviewRun {
+        id: run.id,
+        url: run.url.clone(),
+        expected_attempt,
+        rerun_requested,
+    }))
+}
+
+fn review_agent_pull_request(
+    repo: PathBuf,
+    pr: Option<String>,
+    workflow: String,
+    wait: bool,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> CliResult<Option<ReviewStatus>> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let started = Instant::now();
+    let target = resolve_review_run_target(&repo, pr, &workflow)?;
+    let run = loop {
+        if let Some(run) = start_or_join_review_run(&repo, &target, true)? {
+            break run;
+        }
+        if !wait || started.elapsed() >= timeout {
+            bail!(
+                "no eligible {workflow:?} pull_request run found for PR #{} at current head {}",
+                target.pull_request.pull_request_number,
+                target.target.head_sha
+            );
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        std::thread::sleep(poll_interval.min(remaining));
+    };
+    eprintln!(
+        "{} ReviewGate for PR #{} {} at {}",
+        if run.rerun_requested {
+            "Triggered"
+        } else {
+            "Joined"
+        },
+        target.pull_request.pull_request_number,
+        target.pull_request.url,
+        target.target.head_sha
+    );
+    if !wait {
+        if !run.url.is_empty() {
+            eprintln!("Run: {}", run.url);
+        }
+        return Ok(None);
+    }
+
+    let remaining = timeout.saturating_sub(started.elapsed());
+    wait_for_workflow_attempt(
+        &repo,
+        &target.pull_request.repository,
+        run.id,
+        run.expected_attempt,
+        &target.target.head_sha,
+        remaining,
+        poll_interval,
+    )?;
+    let mut result = download_agent_result(
+        &repo,
+        &target.pull_request.repository,
+        target.pull_request.pull_request_number,
+        &target.target.head_sha,
+        &workflow,
+        Some((run.id, run.expected_attempt)),
+    )?;
+    ensure_pull_request_head(
+        &repo,
+        &target.pull_request.repository,
+        target.pull_request.pull_request_number,
+        &target.target.head_sha,
+    )?;
+    let action_count = reconcile_agent_result_threads(
+        &repo,
+        &target.pull_request.repository,
+        target.pull_request.pull_request_number,
+        &target.target.head_sha,
+        &mut result,
+    )?;
+    if action_count > 0 {
+        eprintln!("Reconciled {action_count} ReviewGate thread action(s).");
+    }
+    ensure_pull_request_head(
+        &repo,
+        &target.pull_request.repository,
+        target.pull_request.pull_request_number,
+        &target.target.head_sha,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(Some(result.status))
+}
+
+fn recheck(repo: PathBuf, pr: Option<String>, workflow: String) -> CliResult<()> {
+    let repo = repo.canonicalize().unwrap_or(repo);
+    let target = resolve_review_run_target(&repo, pr, &workflow)?;
+    let Some(run) = start_or_join_review_run(&repo, &target, false)? else {
+        bail!(
+            "no eligible {workflow:?} pull_request run found for PR #{} at current head {}",
+            target.pull_request.pull_request_number,
+            target.target.head_sha
         );
     };
-    rerun_workflow(&repo, &repository, run.id)?;
-    println!("Triggered ReviewGate recheck for PR #{pr_number} {pr_url}");
+    println!(
+        "Triggered ReviewGate recheck for PR #{} {}",
+        target.pull_request.pull_request_number, target.pull_request.url
+    );
     if !run.url.is_empty() {
         println!("Rerun: {}", run.url);
     }
@@ -2910,24 +3381,7 @@ fn reconcile_review_threads(repo: PathBuf, input: PathBuf) -> CliResult<()> {
     let plan = plan_review_thread_lifecycle(&threads, &artifact.tracked_findings);
     let action_count = plan.actions.len();
 
-    for action in plan.actions {
-        match action {
-            ReviewThreadLifecycleAction::ReplyAndResolve { thread_id, body } => {
-                reply_to_review_thread(&repo, &thread_id, &body)?;
-                resolve_review_thread(&repo, &thread_id)?;
-            }
-            ReviewThreadLifecycleAction::Resolve { thread_id } => {
-                resolve_review_thread(&repo, &thread_id)?;
-            }
-            ReviewThreadLifecycleAction::ReplyAndUnresolve { thread_id, body } => {
-                reply_to_review_thread(&repo, &thread_id, &body)?;
-                unresolve_review_thread(&repo, &thread_id)?;
-            }
-            ReviewThreadLifecycleAction::Unresolve { thread_id } => {
-                unresolve_review_thread(&repo, &thread_id)?;
-            }
-        }
-    }
+    apply_review_thread_lifecycle_actions(&repo, &repository, pr_number, &head_sha, plan.actions)?;
 
     println!(
         "ReviewGate thread lifecycle reconciled {action_count} action(s) across {} thread(s).",
@@ -6300,6 +6754,70 @@ mod tests {
         result
     }
 
+    #[test]
+    fn agent_command_exit_codes_distinguish_findings_from_review_errors() {
+        assert_eq!(agent_status_exit_code(&ReviewStatus::Passed), 0);
+        assert_eq!(agent_status_exit_code(&ReviewStatus::NeedsChanges), 2);
+        assert_eq!(agent_status_exit_code(&ReviewStatus::ReviewError), 3);
+    }
+
+    #[test]
+    fn workflow_wait_state_requires_attempt_status_event_and_head() {
+        let state = parse_workflow_run_state(
+            r#"{
+                "run_attempt": 3,
+                "status": "completed",
+                "conclusion": "failure",
+                "event": "pull_request",
+                "head_sha": "abc123"
+            }"#,
+        )
+        .expect("workflow state");
+
+        assert_eq!(
+            state,
+            WorkflowRunState {
+                run_attempt: 3,
+                status: "completed".to_string(),
+                conclusion: Some("failure".to_string()),
+                event: "pull_request".to_string(),
+                head_sha: "abc123".to_string(),
+            }
+        );
+        assert!(parse_workflow_run_state(r#"{"status":"completed"}"#).is_err());
+    }
+
+    #[test]
+    fn agent_review_joins_active_runs_and_reruns_completed_attempts() {
+        let state = |status: &str, run_attempt| WorkflowRunState {
+            run_attempt,
+            status: status.to_string(),
+            conclusion: None,
+            event: "pull_request".to_string(),
+            head_sha: "current".to_string(),
+        };
+
+        assert_eq!(
+            plan_review_run_start(&state("queued", 2), true).expect("join queued"),
+            ReviewRunStart::Join {
+                expected_attempt: 2
+            }
+        );
+        assert_eq!(
+            plan_review_run_start(&state("in_progress", 2), true).expect("join running"),
+            ReviewRunStart::Join {
+                expected_attempt: 2
+            }
+        );
+        assert_eq!(
+            plan_review_run_start(&state("completed", 2), true).expect("rerun completed"),
+            ReviewRunStart::Rerun {
+                expected_attempt: 3
+            }
+        );
+        assert!(plan_review_run_start(&state("queued", 2), false).is_err());
+    }
+
     #[cfg(unix)]
     fn run_rereview_subprocess(scenario: &str, permission: &str) -> (Output, String) {
         run_rereview_subprocess_for_comment(scenario, permission, 9001)
@@ -7862,21 +8380,21 @@ review_angles:
                 },
                 {
                     "id": 8,
-                    "name": "reviewgate-agent-result-current",
+                    "name": "reviewgate-agent-result-current-attempt-2",
                     "expired": true,
                     "created_at": "2026-07-29T12:00:00Z",
                     "workflow_run": {"id": 80, "head_sha": "current"}
                 },
                 {
                     "id": 9,
-                    "name": "reviewgate-agent-result-current",
+                    "name": "reviewgate-agent-result-current-attempt-2",
                     "expired": false,
                     "created_at": "2026-07-29T11:00:00Z",
                     "workflow_run": {"id": 90, "head_sha": "current"}
                 },
                 {
                     "id": 10,
-                    "name": "reviewgate-agent-result-current",
+                    "name": "reviewgate-agent-result-current-attempt-3",
                     "expired": false,
                     "created_at": "2026-07-29T13:00:00Z",
                     "workflow_run": {"id": 100, "head_sha": "current"}
@@ -7886,17 +8404,17 @@ review_angles:
         .to_string();
 
         assert_eq!(
-            select_agent_result_run(&raw, "current", &BTreeSet::from([90]))
+            select_agent_result_run(&raw, "current", 2, &BTreeSet::from([90]))
                 .expect("trusted exact result"),
             90
         );
         assert!(
-            select_agent_result_run(&raw, "current", &BTreeSet::from([100]))
+            select_agent_result_run(&raw, "current", 3, &BTreeSet::from([100]))
                 .expect("other explicitly trusted workflow")
                 == 100
         );
-        assert!(select_agent_result_run(&raw, "current", &BTreeSet::from([101])).is_err());
-        assert!(select_agent_result_run(&raw, "missing", &BTreeSet::from([90])).is_err());
+        assert!(select_agent_result_run(&raw, "current", 2, &BTreeSet::from([101])).is_err());
+        assert!(select_agent_result_run(&raw, "missing", 2, &BTreeSet::from([90])).is_err());
     }
 
     #[test]
