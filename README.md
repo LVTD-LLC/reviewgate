@@ -202,10 +202,11 @@ The built-in default model is `deepseek/deepseek-v4-flash`. The Rust model prese
 ReviewGate downloads its version-pinned Linux X64 release binary and verifies its GitHub build-provenance attestation before executing it. Normal action startup does not install Rust or compile source. The supported action runner is GitHub's `ubuntu-latest` Linux X64 image. Self-hosted and other Linux distributions are not supported yet. The runner provides:
 
 - Git;
-- ripgrep (`rg`) for opt-in `deep: true` semantic context;
 - `curl`;
 - GitHub CLI `gh` with attestation support;
 - `tar` and GNU `date`.
+
+When `deep: true` is enabled, ReviewGate uses `rg` when it is installed and otherwise falls back to its own bounded fixed-string search over Git-tracked files. Installing ripgrep is optional.
 
 The clean-run target is startup in at most 15 seconds, excluding GitHub queue time. Model calls are capped at 180 seconds per angle and 480 seconds across all angles by default. The canonical summary reports queue, startup, model-review, and publishing durations independently.
 
@@ -217,7 +218,7 @@ For local development on a fresh machine:
 - Rustup and Cargo.
 - Rust toolchain `1.96.0` with `rustfmt` and `clippy`.
 - `curl` for live OpenRouter calls from the CLI.
-- `rg` (ripgrep) when `.reviewgate.yml` enables `deep: true`.
+- `rg` (ripgrep) is optional; `deep: true` uses it when available.
 - `jq` for inspecting generated JSON in examples.
 - GitHub CLI `gh` for `recheck` and GitHub publishing commands.
 - Node.js 24 and npm for the Astro marketing site.
@@ -851,7 +852,7 @@ review_angles:
 | Key | Values | Default | Effect |
 | --- | --- | --- | --- |
 | `min_severity` | `P0`, `P1`, `P2`, `P3`, `P4` | `P4` | Lowest severity published as inline PR comments and counted as inline-eligible in summaries. |
-| `deep` | `true`, `false` | `false` | Builds bounded semantic context once for the exact reviewed head using tree-sitter for changed Rust definitions and `rg`-based text fallback/references. Selected excerpts are shared by all review angles and discarded after the run. |
+| `deep` | `true`, `false` | `false` | Builds bounded semantic context once for the exact reviewed head using tree-sitter for changed Rust definitions, `rg` when available, and a built-in tracked-file search otherwise. Selected excerpts are shared by all review angles and discarded after the run. |
 | `review_angles` | YAML list | Built-in `general` and `adversarial` angles | Replaces the default review angle list when present. |
 
 Each configured review angle requires `id` plus exactly one instruction source.
@@ -1319,7 +1320,7 @@ ReviewGate assumes all review inputs are untrusted:
 Security constraints:
 
 - Do not execute code from the pull request under review.
-- Semantic context invokes `rg` directly with fixed arguments, rejects symlinked or repository-external paths, and enforces count, byte, file-size, output, and wall-time budgets. It does not execute repository code or persist a source index.
+- Semantic context invokes `rg` directly with fixed arguments when available and otherwise performs bounded fixed-string search over Git-tracked files. Both paths reject symlinked or repository-external files and enforce count, byte, file-size, output, and wall-time budgets. ReviewGate does not execute repository code or persist a source index.
 - Do not use `pull_request_target` for untrusted fork workflows.
 - Keep GitHub token permissions least-privilege.
 - Do not log OpenRouter keys, GitHub tokens, request headers, or raw secrets.
