@@ -4835,18 +4835,14 @@ fn collect_review_context(repo: &Path, deep: bool) -> CliResult<ReviewContext> {
     let analyzed_line_count = count_changed_diff_lines(&diff);
     let data_integrity_review_needed = operational_data_sync_review_needed(&changed_files, &diff);
     let context_files = collect_context_files(repo, &changed_files)?;
-    let semantic_context = deep.then(|| {
-        if checkout_sha == reviewed_sha {
-            collect_semantic_context(repo, &reviewed_sha, &changed_files, &diff)
-        } else {
-            unavailable_semantic_context(
-                &reviewed_sha,
-                format!(
-                    "checked-out commit {checkout_sha} does not match the exact reviewed head {reviewed_sha}"
-                ),
-            )
-        }
-    });
+    let semantic_context = collect_review_semantic_context(
+        repo,
+        deep,
+        &checkout_sha,
+        &reviewed_sha,
+        &changed_files,
+        &diff,
+    );
 
     Ok(ReviewContext {
         reviewed_sha,
@@ -4861,6 +4857,44 @@ fn collect_review_context(repo: &Path, deep: bool) -> CliResult<ReviewContext> {
         context_files,
         semantic_context,
     })
+}
+
+fn collect_review_semantic_context(
+    repo: &Path,
+    deep: bool,
+    checkout_sha: &str,
+    reviewed_sha: &str,
+    changed_files: &[String],
+    diff: &str,
+) -> Option<SemanticContext> {
+    if !deep {
+        return None;
+    }
+    if checkout_sha != reviewed_sha {
+        return Some(unavailable_semantic_context(
+            reviewed_sha,
+            format!(
+                "checked-out commit {checkout_sha} does not match the exact reviewed head {reviewed_sha}"
+            ),
+        ));
+    }
+
+    match git(repo, ["status", "--porcelain=v1", "--untracked-files=all"]) {
+        Ok(status) if status.is_empty() => Some(collect_semantic_context(
+            repo,
+            reviewed_sha,
+            changed_files,
+            diff,
+        )),
+        Ok(_) => Some(unavailable_semantic_context(
+            reviewed_sha,
+            "exact-head worktree is not clean; semantic context excludes staged, unstaged, and untracked workspace content",
+        )),
+        Err(error) => Some(unavailable_semantic_context(
+            reviewed_sha,
+            format!("could not verify that the exact-head worktree is clean: {error}"),
+        )),
+    }
 }
 
 fn parse_changed_files(raw: &str) -> Vec<String> {
@@ -10375,6 +10409,99 @@ let resync_state = state.clone();
             select_reviewed_sha("checkout-sha", Some(&event)),
             "checkout-sha".to_string()
         );
+    }
+
+    fn semantic_context_test_repo(prefix: &str) -> (PathBuf, String) {
+        let repo = unique_test_dir(prefix);
+        git(&repo, ["init", "-b", "main"]).expect("initialize repository");
+        git(&repo, ["config", "user.email", "reviewgate@example.test"]).expect("configure email");
+        git(&repo, ["config", "user.name", "ReviewGate Test"]).expect("configure name");
+        fs::write(repo.join("src.rs"), "pub fn changed_symbol() {}\n").expect("write source");
+        git(&repo, ["add", "src.rs"]).expect("stage source");
+        git(&repo, ["commit", "-m", "initial"]).expect("commit source");
+        let head = git(&repo, ["rev-parse", "HEAD"]).expect("resolve HEAD");
+        (repo, head)
+    }
+
+    #[test]
+    fn deep_semantic_context_is_unavailable_for_dirty_tracked_worktrees() {
+        for staged in [false, true] {
+            let (repo, head) = semantic_context_test_repo(if staged {
+                "semantic-context-staged"
+            } else {
+                "semantic-context-unstaged"
+            });
+            fs::write(
+                repo.join("src.rs"),
+                "pub fn changed_symbol() {}\npub fn workspace_only() {}\n",
+            )
+            .expect("dirty tracked source");
+            if staged {
+                git(&repo, ["add", "src.rs"]).expect("stage dirty source");
+            }
+
+            let semantic_context = collect_review_semantic_context(
+                &repo,
+                true,
+                &head,
+                &head,
+                &["src.rs".to_string()],
+                "@@ -1 +1 @@\n+pub fn changed_symbol() {}\n",
+            )
+            .expect("deep review produces an audit result");
+
+            assert_eq!(
+                semantic_context.report.status,
+                reviewgate_core::SemanticContextStatus::Unavailable
+            );
+            assert_eq!(semantic_context.report.selected_count, 0);
+            assert!(semantic_context.report.excerpts.is_empty());
+            assert!(semantic_context.excerpts.is_empty());
+            assert!(
+                semantic_context
+                    .report
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("worktree is not clean"))
+            );
+            fs::remove_dir_all(repo).ok();
+        }
+    }
+
+    #[test]
+    fn deep_semantic_context_is_unavailable_for_untracked_worktree_files() {
+        let (repo, head) = semantic_context_test_repo("semantic-context-untracked");
+        fs::write(
+            repo.join("workspace-only.rs"),
+            "pub fn workspace_only() {}\n",
+        )
+        .expect("write untracked source");
+
+        let semantic_context = collect_review_semantic_context(
+            &repo,
+            true,
+            &head,
+            &head,
+            &["src.rs".to_string()],
+            "@@ -1 +1 @@\n+pub fn changed_symbol() {}\n",
+        )
+        .expect("deep review produces an audit result");
+
+        assert_eq!(
+            semantic_context.report.status,
+            reviewgate_core::SemanticContextStatus::Unavailable
+        );
+        assert_eq!(semantic_context.report.selected_count, 0);
+        assert!(semantic_context.report.excerpts.is_empty());
+        assert!(semantic_context.excerpts.is_empty());
+        assert!(
+            semantic_context
+                .report
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("worktree is not clean"))
+        );
+        fs::remove_dir_all(repo).ok();
     }
 
     #[test]

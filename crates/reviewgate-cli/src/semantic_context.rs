@@ -21,6 +21,8 @@ const MAX_SEARCH_TIME: Duration = Duration::from_secs(3);
 const MAX_RG_CALL_TIME: Duration = Duration::from_millis(800);
 const MAX_SEMANTIC_FILE_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_EXCERPTS: usize = 16;
+const MAX_SEMANTIC_SOURCE_CANDIDATES: usize = MAX_SEMANTIC_EXCERPTS * 4;
+const MAX_SEMANTIC_SOURCE_PATHS: usize = MAX_SEMANTIC_EXCERPTS * 2;
 const MAX_SEMANTIC_EXCERPT_BYTES: usize = 4 * 1024;
 const MAX_SEMANTIC_CONTEXT_BYTES: usize = 40 * 1024;
 const EXCERPT_CONTEXT_LINES: usize = 3;
@@ -71,6 +73,13 @@ struct AddedLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedDiffLines {
+    added: BTreeMap<String, Vec<AddedLine>>,
+    deleted: BTreeMap<String, Vec<AddedLine>>,
+    deleted_new_anchors: BTreeMap<String, BTreeSet<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SearchMatch {
     path: String,
     line: usize,
@@ -98,7 +107,20 @@ pub(crate) fn collect_semantic_context(
     changed_files: &[String],
     diff: &str,
 ) -> SemanticContext {
-    let (added_lines, deleted_lines) = parse_diff_lines(diff);
+    collect_semantic_context_with_search(repo, reviewed_sha, changed_files, diff, search_symbol)
+}
+
+fn collect_semantic_context_with_search<F>(
+    repo: &Path,
+    reviewed_sha: &str,
+    changed_files: &[String],
+    diff: &str,
+    mut search: F,
+) -> SemanticContext
+where
+    F: FnMut(&Path, &str, usize, Duration) -> Result<(Vec<u8>, bool), String>,
+{
+    let parsed_diff = parse_diff_lines(diff);
     let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
     let mut structured_symbols = Vec::new();
     let mut fallback_symbols = Vec::new();
@@ -107,7 +129,8 @@ pub(crate) fn collect_semantic_context(
     let mut used_text_fallback = false;
 
     for relative in changed_files {
-        let deleted_symbols = deleted_lines
+        let deleted_symbols = parsed_diff
+            .deleted
             .get(relative)
             .map(|lines| extract_deleted_symbols(relative, lines))
             .unwrap_or_default();
@@ -121,16 +144,26 @@ pub(crate) fn collect_semantic_context(
             );
         }
 
-        if let (Some(lines), Some(path)) = (
-            added_lines.get(relative),
-            confined_repo_file(repo, relative),
-        ) && let Ok(Some(mut source)) = read_bounded_text(&path, MAX_SEMANTIC_FILE_BYTES)
+        let added = parsed_diff
+            .added
+            .get(relative)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let deleted_anchors = parsed_diff
+            .deleted_new_anchors
+            .get(relative)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(path) = confined_repo_file(repo, relative)
+            && (!added.is_empty() || !deleted_anchors.is_empty())
+            && let Ok(Some(mut source)) = read_bounded_text(&path, MAX_SEMANTIC_FILE_BYTES)
         {
             if source.len() > MAX_SEMANTIC_FILE_BYTES {
                 truncate_utf8(&mut source, MAX_SEMANTIC_FILE_BYTES);
             }
             if relative.ends_with(".rs") {
-                let changed_lines = lines.iter().map(|line| line.line).collect::<BTreeSet<_>>();
+                let mut changed_lines = added.iter().map(|line| line.line).collect::<BTreeSet<_>>();
+                changed_lines.extend(&deleted_anchors);
                 let extracted_rust = extract_rust_changed_symbols(&source, &changed_lines);
                 if extracted_rust.is_empty() {
                     used_text_fallback = true;
@@ -138,7 +171,7 @@ pub(crate) fn collect_semantic_context(
                         &mut fallback_symbols,
                         &mut symbol_origins,
                         relative,
-                        extract_text_changed_symbols(lines),
+                        extract_text_changed_symbols(added),
                     );
                 } else {
                     used_rust_parser = true;
@@ -155,7 +188,7 @@ pub(crate) fn collect_semantic_context(
                     &mut fallback_symbols,
                     &mut symbol_origins,
                     relative,
-                    extract_text_changed_symbols(lines),
+                    extract_text_changed_symbols(added),
                 );
             }
         }
@@ -203,7 +236,7 @@ pub(crate) fn collect_semantic_context(
         rg_calls += 1;
         let remaining_bytes = MAX_RG_OUTPUT_BYTES - rg_output_bytes;
         let remaining_time = MAX_SEARCH_TIME.saturating_sub(search_started.elapsed());
-        match search_symbol(
+        match search(
             repo,
             symbol,
             remaining_bytes.min(MAX_RG_OUTPUT_BYTES_PER_CALL),
@@ -230,6 +263,9 @@ pub(crate) fn collect_semantic_context(
         }
     }
 
+    if rg_unavailable {
+        matches.clear();
+    }
     let mut seen_matches = BTreeSet::new();
     matches.retain(|candidate| {
         !changed_set.contains(&candidate.path)
@@ -240,29 +276,19 @@ pub(crate) fn collect_semantic_context(
             ))
     });
     let candidate_count = matches.len();
-    matches.sort_by(|left, right| {
-        (
-            left.path.as_str(),
-            left.line,
-            left.symbol.as_str(),
-            left.origin.as_str(),
-        )
-            .cmp(&(
-                right.path.as_str(),
-                right.line,
-                right.symbol.as_str(),
-                right.origin.as_str(),
-            ))
-    });
+    let (matches, source_candidates_truncated) = bound_source_candidates(matches);
+    search_truncated |= source_candidates_truncated;
     let mut ranked = Vec::new();
-    let mut loaded_path = None;
-    let mut loaded_source = None;
+    let mut loaded_sources = BTreeMap::new();
     for candidate in matches {
-        if loaded_path.as_deref() != Some(candidate.path.as_str()) {
-            loaded_source = load_semantic_source(repo, &candidate.path);
-            loaded_path = Some(candidate.path.clone());
+        if !loaded_sources.contains_key(&candidate.path) {
+            loaded_sources.insert(
+                candidate.path.clone(),
+                load_semantic_source(repo, &candidate.path),
+            );
         }
-        if let Some((source, file_truncated)) = loaded_source.as_ref()
+        if let Some((source, file_truncated)) =
+            loaded_sources.get(&candidate.path).and_then(Option::as_ref)
             && let Some(excerpt) = rank_excerpt(candidate, source, *file_truncated)
         {
             ranked.push(excerpt);
@@ -562,14 +588,10 @@ fn text_stop_word(identifier: &str) -> bool {
     )
 }
 
-fn parse_diff_lines(
-    diff: &str,
-) -> (
-    BTreeMap<String, Vec<AddedLine>>,
-    BTreeMap<String, Vec<AddedLine>>,
-) {
+fn parse_diff_lines(diff: &str) -> ParsedDiffLines {
     let mut added = BTreeMap::new();
     let mut deleted = BTreeMap::new();
+    let mut deleted_new_anchors = BTreeMap::<String, BTreeSet<usize>>::new();
     let mut path: Option<String> = None;
     let mut old_path: Option<String> = None;
     let mut new_line = 0usize;
@@ -643,13 +665,25 @@ fn parse_diff_lines(
                         text: line[1..].to_string(),
                     });
             }
+            if new_line > 0
+                && let Some(path) = path.as_ref()
+            {
+                deleted_new_anchors
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(new_line);
+            }
             old_line += 1;
         } else if !line.starts_with('\\') {
             new_line += 1;
             old_line += 1;
         }
     }
-    (added, deleted)
+    ParsedDiffLines {
+        added,
+        deleted,
+        deleted_new_anchors,
+    }
 }
 
 fn search_symbol(
@@ -746,6 +780,41 @@ fn parse_rg_matches(output: &[u8], symbol: &str, origin: &str) -> Vec<SearchMatc
         .collect()
 }
 
+fn bound_source_candidates(mut matches: Vec<SearchMatch>) -> (Vec<SearchMatch>, bool) {
+    let original_len = matches.len();
+    matches.sort_by(|left, right| {
+        (
+            candidate_rank(left),
+            left.path.as_str(),
+            left.line,
+            left.symbol.as_str(),
+            left.origin.as_str(),
+        )
+            .cmp(&(
+                candidate_rank(right),
+                right.path.as_str(),
+                right.line,
+                right.symbol.as_str(),
+                right.origin.as_str(),
+            ))
+    });
+
+    let mut paths = BTreeSet::new();
+    let mut bounded = Vec::new();
+    for candidate in matches {
+        if bounded.len() >= MAX_SEMANTIC_SOURCE_CANDIDATES {
+            break;
+        }
+        if !paths.contains(&candidate.path) && paths.len() >= MAX_SEMANTIC_SOURCE_PATHS {
+            continue;
+        }
+        paths.insert(candidate.path.clone());
+        bounded.push(candidate);
+    }
+    let truncated = bounded.len() < original_len;
+    (bounded, truncated)
+}
+
 fn load_semantic_source(repo: &Path, relative: &str) -> Option<(String, bool)> {
     let path = confined_repo_file(repo, relative)?;
     let mut source = read_bounded_text(&path, MAX_SEMANTIC_FILE_BYTES).ok()??;
@@ -761,16 +830,7 @@ fn rank_excerpt(
     source: &str,
     file_truncated: bool,
 ) -> Option<RankedExcerpt> {
-    let lower_path = candidate.path.to_ascii_lowercase();
-    let (rank, reason) = if is_test_path(&lower_path) {
-        (0, "test_reference")
-    } else if looks_like_definition(&candidate.text, &candidate.symbol) {
-        (1, "definition")
-    } else if is_configuration_path(&lower_path) {
-        (2, "configuration_reference")
-    } else {
-        (3, "reference")
-    };
+    let (rank, reason) = candidate_rank_and_reason(&candidate);
     let lines = source.lines().collect::<Vec<_>>();
     if candidate.line == 0 || candidate.line > lines.len() {
         return None;
@@ -797,6 +857,23 @@ fn rank_excerpt(
         end_line: end,
         truncated: file_truncated || excerpt_truncated,
     })
+}
+
+fn candidate_rank(candidate: &SearchMatch) -> u8 {
+    candidate_rank_and_reason(candidate).0
+}
+
+fn candidate_rank_and_reason(candidate: &SearchMatch) -> (u8, &'static str) {
+    let lower_path = candidate.path.to_ascii_lowercase();
+    if is_test_path(&lower_path) {
+        (0, "test_reference")
+    } else if looks_like_definition(&candidate.text, &candidate.symbol) {
+        (1, "definition")
+    } else if is_configuration_path(&lower_path) {
+        (2, "configuration_reference")
+    } else {
+        (3, "reference")
+    }
 }
 
 fn is_test_path(path: &str) -> bool {
@@ -846,7 +923,9 @@ mod tests {
     use std::fs;
 
     use super::{
-        SemanticContextStatus, collect_semantic_context, extract_deleted_symbols,
+        MAX_SEMANTIC_SOURCE_CANDIDATES, MAX_SEMANTIC_SOURCE_PATHS, SearchMatch,
+        SemanticContextStatus, bound_source_candidates, collect_semantic_context,
+        collect_semantic_context_with_search, extract_deleted_symbols,
         extract_rust_changed_symbols, extract_text_changed_symbols, parse_diff_lines,
     };
 
@@ -889,8 +968,8 @@ pub fn changed(value: bool) -> bool {
 +created_ms="$(date -d "$created_at" +%s%3N)"
 +run_started_ms="$(date -d "$run_started_at" +%s%3N)"
  "#;
-        let (added, _) = parse_diff_lines(diff);
-        let symbols = extract_text_changed_symbols(&added["action.yml"]);
+        let parsed = parse_diff_lines(diff);
+        let symbols = extract_text_changed_symbols(&parsed.added["action.yml"]);
 
         assert!(symbols.contains(&"created_at".to_string()));
         assert!(symbols.contains(&"run_started_at".to_string()));
@@ -905,10 +984,130 @@ pub fn changed(value: bool) -> bool {
 -pub fn old_handler() {}
 +pub fn new_handler() {}
 "#;
-        let (_, deleted) = parse_diff_lines(diff);
-        let symbols = extract_deleted_symbols("src/lib.rs", &deleted["src/lib.rs"]);
+        let parsed = parse_diff_lines(diff);
+        let symbols = extract_deleted_symbols("src/lib.rs", &parsed.deleted["src/lib.rs"]);
 
         assert!(symbols.contains(&"old_handler".to_string()));
+    }
+
+    #[test]
+    fn deleted_rust_body_lines_anchor_the_enclosing_new_side_definition() {
+        let repo = unique_test_dir("semantic-context-body-deletion");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn changed() -> bool {\n    true\n}\n",
+        )
+        .expect("write source");
+        fs::write(repo.join("src/caller.rs"), "let result = changed();\n").expect("write caller");
+        let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,3 @@
+ pub fn changed() -> bool {
+-    let obsolete = false;
+     true
+ }
+"#;
+        let parsed = parse_diff_lines(diff);
+        let mut searched = Vec::new();
+
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "head",
+            &["src/lib.rs".to_string()],
+            diff,
+            |_, symbol, _, _| {
+                searched.push(symbol.to_string());
+                Ok((
+                    format!(
+                        "{{\"type\":\"match\",\"data\":{{\"path\":{{\"text\":\"./src/caller.rs\"}},\"lines\":{{\"text\":\"let result = {symbol}();\\n\"}},\"line_number\":1}}}}\n"
+                    )
+                    .into_bytes(),
+                    false,
+                ))
+            },
+        );
+
+        assert!(extract_deleted_symbols("src/lib.rs", &parsed.deleted["src/lib.rs"]).is_empty());
+        assert_eq!(searched, vec!["changed"]);
+        assert!(context.excerpts.iter().any(|excerpt| {
+            excerpt.path == "src/caller.rs"
+                && excerpt.relation == "symbol:changed;changed_in:src/lib.rs"
+        }));
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn source_candidates_are_bounded_before_loading_paths() {
+        let matches = (0..MAX_SEMANTIC_SOURCE_CANDIDATES + 5)
+            .map(|index| SearchMatch {
+                path: format!("src/path-{index}.rs"),
+                line: 1,
+                text: "changed();".to_string(),
+                symbol: "changed".to_string(),
+                origin: "src/lib.rs".to_string(),
+            })
+            .collect();
+
+        let (bounded, truncated) = bound_source_candidates(matches);
+        let unique_paths = bounded
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(truncated);
+        assert!(bounded.len() <= MAX_SEMANTIC_SOURCE_CANDIDATES);
+        assert!(unique_paths.len() <= MAX_SEMANTIC_SOURCE_PATHS);
+    }
+
+    #[test]
+    fn later_search_failure_discards_matches_from_earlier_symbols() {
+        let repo = unique_test_dir("semantic-context-search-failure");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn changed_one() {}\npub fn changed_two() {}\n",
+        )
+        .expect("write source");
+        fs::write(repo.join("src/caller.rs"), "changed_one();\n").expect("write caller");
+        let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- /dev/null
++++ b/src/lib.rs
+@@ -0,0 +1,2 @@
++pub fn changed_one() {}
++pub fn changed_two() {}
+"#;
+        let mut calls = 0;
+
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "head",
+            &["src/lib.rs".to_string()],
+            diff,
+            |_, symbol, _, _| {
+                calls += 1;
+                if calls == 1 {
+                    Ok((
+                        format!(
+                            "{{\"type\":\"match\",\"data\":{{\"path\":{{\"text\":\"./src/caller.rs\"}},\"lines\":{{\"text\":\"{symbol}();\\n\"}},\"line_number\":1}}}}\n"
+                        )
+                        .into_bytes(),
+                        false,
+                    ))
+                } else {
+                    Err("synthetic rg failure".to_string())
+                }
+            },
+        );
+
+        assert_eq!(context.report.status, SemanticContextStatus::Unavailable);
+        assert_eq!(context.report.candidate_count, 0);
+        assert_eq!(context.report.selected_count, 0);
+        assert_eq!(context.report.selected_bytes, 0);
+        assert!(context.report.excerpts.is_empty());
+        assert!(context.excerpts.is_empty());
+        fs::remove_dir_all(repo).ok();
     }
 
     #[test]
