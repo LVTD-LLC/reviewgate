@@ -530,6 +530,7 @@
   },
   {
     "name": "PR 365 unavailable runner tooling is a real defect",
+    "fixture_id": "pr365.runner_tooling.broken",
     "files": {
       ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: just package\n",
       ".github/runner-tools.txt": "cargo\ntar\nsha256sum\n"
@@ -563,6 +564,7 @@
   },
   {
     "name": "PR 365 stale release assertion is a real defect",
+    "fixture_id": "pr365.release_assertion.broken",
     "files": {
       "action.yml": "runtime: v0.7.0\n",
       "tests/release_contract.rs": "fn runtime_pin_matches_release() {\n    assert_eq!(runtime_version(), \"v0.6.3\");\n}\n"
@@ -597,6 +599,7 @@
   },
   {
     "name": "PR 365 runner tooling repair clears the blocker",
+    "fixture_id": "pr365.runner_tooling.repaired",
     "files": {
       ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo install just\n      - run: just package\n"
     },
@@ -609,15 +612,16 @@
       "file": ".github/workflows/release.yml",
       "line": 7,
       "title": "Release invokes unavailable runner tooling",
-      "detail": "The release job correctly installs just before invocation, so this is fine and no issue exists here.",
+      "detail": "The release job invokes just without installing it first, so the command fails on the declared runner.",
       "agent_instruction": "Install just before invoking it.",
       "grounding": {
-        "semantic_key": "fixture.pr365.runner_tooling.repaired",
+        "semantic_key": "fixture.pr365.runner_tooling",
         "claim": "The release job invokes just without installing it.",
         "causal_path": "release job -> just package",
         "test_assessment": "The changed workflow installs just immediately before the invocation.",
         "evidence": [
-          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The pre-repair location no longer contains the invocation"}
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: cargo install just", "reason": "The setup step installs the invoked command"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 7, "excerpt": "- run: just package", "reason": "The release step invokes just after setup"}
         ],
         "related_tests": [],
         "reproduction": "Run the release job and observe the installation complete before just package.",
@@ -628,6 +632,7 @@
   },
   {
     "name": "PR 365 release assertion repair clears the blocker",
+    "fixture_id": "pr365.release_assertion.repaired",
     "files": {
       "action.yml": "runtime: v0.7.0\n",
       "tests/release_contract.rs": "fn runtime_pin_matches_release() {\n    assert_eq!(runtime_version(), \"v0.7.0\");\n}\n"
@@ -641,10 +646,10 @@
       "file": "action.yml",
       "line": 1,
       "title": "Runtime pin update leaves the release assertion stale",
-      "detail": "The release-contract assertion correctly expects v0.7.0, so this is fine and no issue exists here.",
+      "detail": "The runtime now reports v0.7.0 while the release-contract test still requires v0.6.3.",
       "agent_instruction": "Update the release-contract assertion to v0.7.0.",
       "grounding": {
-        "semantic_key": "fixture.pr365.stale_release_assertion.repaired",
+        "semantic_key": "fixture.pr365.stale_release_assertion",
         "claim": "The runtime pin and release-contract assertion require different versions.",
         "causal_path": "action runtime v0.7.0 -> matching test v0.7.0",
         "test_assessment": "The exact release-contract assertion is updated to v0.7.0.",
@@ -652,7 +657,7 @@
           {"path": "action.yml", "side": "new", "line": 1, "excerpt": "runtime: v0.7.0", "reason": "The changed runtime contract advances to v0.7.0"}
         ],
         "related_tests": [
-          {"path": "tests/release_contract.rs", "side": "new", "line": 2, "excerpt": "assert_eq!(runtime_version(), \"v0.6.3\");", "reason": "The pre-repair assertion is no longer present"}
+          {"path": "tests/release_contract.rs", "side": "new", "line": 2, "excerpt": "assert_eq!(runtime_version(), \"v0.7.0\");", "reason": "The repository assertion matches the changed runtime version"}
         ],
         "reproduction": "Run the release-contract test and observe the matching v0.7.0 assertion pass.",
         "proof": null

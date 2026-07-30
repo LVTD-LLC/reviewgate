@@ -6073,6 +6073,13 @@ fn contradicts_checked_contract(
         .as_deref()
         .is_some_and(|path| path.starts_with(".github/workflows/"))
     {
+        if (claim.contains("unavailable")
+            || claim.contains("runner contract")
+            || claim.contains("without install"))
+            && workflow_installs_invoked_tool_before_finding(&source, finding)
+        {
+            return Ok(true);
+        }
         for trigger in [
             "workflow_dispatch",
             "workflow_call",
@@ -6127,11 +6134,88 @@ fn contradicts_checked_contract(
     {
         return Ok(true);
     }
+    if (claim.contains("different versions") || claim.contains("different version"))
+        && checked_contract_versions(finding).len() == 1
+    {
+        return Ok(true);
+    }
 
     if finding_location_evidence_disproves_absence(finding, &claim) {
         return Ok(true);
     }
     Ok(false)
+}
+
+fn workflow_installs_invoked_tool_before_finding(
+    workflow: &str,
+    finding: &reviewgate_core::Finding,
+) -> bool {
+    let Some(line_number) = finding.line else {
+        return false;
+    };
+    let lines = workflow.lines().collect::<Vec<_>>();
+    let Some(invocation) = lines.get(line_number.saturating_sub(1) as usize) else {
+        return false;
+    };
+    let Some(command) = invocation
+        .split_once("run:")
+        .map(|(_, command)| command.trim())
+    else {
+        return false;
+    };
+    let Some(tool) = command
+        .trim_matches(|character| character == '\'' || character == '"')
+        .split_whitespace()
+        .next()
+        .filter(|tool| {
+            !tool.is_empty()
+                && tool
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+    else {
+        return false;
+    };
+    let tool = tool.to_ascii_lowercase();
+    lines
+        .iter()
+        .take(line_number.saturating_sub(1) as usize)
+        .map(|line| {
+            line.split('#')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+        })
+        .any(|line| {
+            line.contains(&format!("install {tool}"))
+                || line.contains(&format!("setup-{tool}"))
+                || line.contains(&format!("{tool}-action"))
+        })
+}
+
+fn checked_contract_versions(finding: &reviewgate_core::Finding) -> BTreeSet<String> {
+    let Some(grounding) = finding.grounding.as_ref() else {
+        return BTreeSet::new();
+    };
+    grounding
+        .evidence
+        .iter()
+        .chain(&grounding.related_tests)
+        .flat_map(|evidence| evidence.excerpt.split_whitespace())
+        .map(|token| {
+            token
+                .trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '_')
+                })
+                .to_ascii_lowercase()
+        })
+        .filter(|token| {
+            token
+                .strip_prefix('v')
+                .and_then(|version| version.bytes().next())
+                .is_some_and(|byte| byte.is_ascii_digit())
+        })
+        .collect()
 }
 
 fn claim_asserts_shallow_checkout_alone_prevents_fetch(claim: &str) -> bool {
@@ -11007,17 +11091,17 @@ diff --git a/src/lib.rs b/src/lib.rs
             "../../../fixtures/evidence-grounding/regressions.json"
         ))
         .expect("grounding fixtures parse");
-        let semantic_keys = cases
+        let fixture_ids = cases
             .as_array()
             .expect("fixture cases")
             .iter()
-            .filter_map(|case| case.pointer("/finding/grounding/semantic_key"))
+            .filter_map(|case| case.get("fixture_id"))
             .filter_map(serde_json::Value::as_str)
             .collect::<BTreeSet<_>>();
-        assert!(semantic_keys.contains("fixture.pr365.runner_tooling"));
-        assert!(semantic_keys.contains("fixture.pr365.runner_tooling.repaired"));
-        assert!(semantic_keys.contains("fixture.pr365.stale_release_assertion"));
-        assert!(semantic_keys.contains("fixture.pr365.stale_release_assertion.repaired"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
+        assert!(fixture_ids.contains("pr365.release_assertion.broken"));
+        assert!(fixture_ids.contains("pr365.release_assertion.repaired"));
 
         for case in cases.as_array().expect("fixture cases") {
             let name = case["name"].as_str().expect("fixture name");
