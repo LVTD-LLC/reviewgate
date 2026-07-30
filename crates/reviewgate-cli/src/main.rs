@@ -68,6 +68,7 @@ const AGENT_DISPOSITIONS_MARKER_PREFIX: &str = "<!-- reviewgate-agent-dispositio
 const AGENT_DISPOSITIONS_MARKER_SUFFIX: &str = " -->";
 const AGENT_DISPOSITION_STATUS_PREFIX: &str = "reviewgate/disposition/";
 const AGENT_DISPOSITION_DIGEST_PREFIX: &str = "receipt-sha256:";
+const MAX_DISPOSITION_PERMISSION_LOOKUPS: usize = 32;
 const AGENT_RESULT_ARTIFACT_PREFIX: &str = "reviewgate-agent-result";
 const CURL_HTTP_STATUS_WRITE_OUT: &str = "%{stderr}reviewgate-http-status=%{http_code}\\n";
 
@@ -1040,7 +1041,68 @@ fn writer_authorized_disposition_comment_ids(
         .collect()
 }
 
-fn load_attested_disposition_comment_ids(
+fn resolve_authorized_disposition_comment_ids(
+    comments: &[AgentDispositionComment],
+    statuses: CliResult<Vec<CommitStatusRecord>>,
+    mut has_write_permission: impl FnMut(&str) -> CliResult<bool>,
+) -> CliResult<BTreeSet<u64>> {
+    let (mut authorized, statuses_unavailable) = match statuses {
+        Ok(statuses) => (attested_disposition_comment_ids(comments, &statuses), false),
+        Err(_) => (BTreeSet::new(), true),
+    };
+    let pending_authors = comments
+        .iter()
+        .filter(|comment| !authorized.contains(&comment.id))
+        .map(|comment| comment.author_login.as_str())
+        .filter(|author| !author.is_empty())
+        .collect::<BTreeSet<_>>();
+    if pending_authors.len() > MAX_DISPOSITION_PERMISSION_LOOKUPS {
+        bail!(
+            "agent disposition verification requires {} permission lookups, above the limit of {}",
+            pending_authors.len(),
+            MAX_DISPOSITION_PERMISSION_LOOKUPS
+        );
+    }
+
+    let mut writer_logins = BTreeSet::new();
+    let mut indeterminate = BTreeSet::new();
+    for author_login in pending_authors {
+        match has_write_permission(author_login) {
+            Ok(true) => {
+                writer_logins.insert(author_login.to_string());
+            }
+            Ok(false) if statuses_unavailable => {
+                indeterminate.insert(author_login.to_string());
+            }
+            Ok(false) => {}
+            Err(_) => {
+                indeterminate.insert(author_login.to_string());
+            }
+        }
+    }
+    if statuses_unavailable
+        && comments
+            .iter()
+            .any(|comment| !authorized.contains(&comment.id) && comment.author_login.is_empty())
+    {
+        indeterminate.insert("<unknown>".to_string());
+    }
+    if !indeterminate.is_empty() {
+        bail!(
+            "agent disposition authorization was unavailable for {} author(s): {}",
+            indeterminate.len(),
+            indeterminate.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+
+    authorized.extend(writer_authorized_disposition_comment_ids(
+        comments,
+        &writer_logins,
+    ));
+    Ok(authorized)
+}
+
+fn load_authorized_disposition_comment_ids(
     repo: &Path,
     repository: &str,
     reviewed_sha: &str,
@@ -1049,37 +1111,11 @@ fn load_attested_disposition_comment_ids(
     if comments.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let mut authorized = match fetch_commit_status_records(repo, repository, reviewed_sha) {
-        Ok(statuses) => attested_disposition_comment_ids(comments, &statuses),
-        Err(error) => {
-            eprintln!(
-                "ReviewGate warning: commit-status disposition receipts were unavailable: {error}"
-            );
-            BTreeSet::new()
-        }
-    };
-    let mut writer_logins = BTreeSet::new();
-    for author_login in comments
-        .iter()
-        .map(|comment| comment.author_login.as_str())
-        .filter(|author| !author.is_empty())
-        .collect::<BTreeSet<_>>()
-    {
-        match fetch_actor_write_permission(repo, repository, author_login) {
-            Ok(true) => {
-                writer_logins.insert(author_login.to_string());
-            }
-            Ok(false) => {}
-            Err(error) => eprintln!(
-                "ReviewGate warning: could not verify disposition author {author_login}: {error}"
-            ),
-        }
-    }
-    authorized.extend(writer_authorized_disposition_comment_ids(
+    resolve_authorized_disposition_comment_ids(
         comments,
-        &writer_logins,
-    ));
-    Ok(authorized)
+        fetch_commit_status_records(repo, repository, reviewed_sha),
+        |author| fetch_actor_write_permission(repo, repository, author),
+    )
 }
 
 fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
@@ -3253,14 +3289,14 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
-        let attested_ids = load_attested_disposition_comment_ids(
+        let authorized_ids = load_authorized_disposition_comment_ids(
             &repo,
             &repository,
             &previous.last_reviewed_sha,
             &disposition_comments,
         )?;
         let replay =
-            apply_agent_disposition_comments(previous, &disposition_comments, &attested_ids)?;
+            apply_agent_disposition_comments(previous, &disposition_comments, &authorized_ids)?;
         report_agent_disposition_replay("summary publish", replay);
     }
     let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
@@ -4706,14 +4742,14 @@ fn load_previous_summary_state(
     };
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
-    let attested_ids = load_attested_disposition_comment_ids(
+    let authorized_ids = load_authorized_disposition_comment_ids(
         repo,
         repository,
         &state.last_reviewed_sha,
         &disposition_comments,
     )?;
     let replay =
-        apply_agent_disposition_comments(&mut state, &disposition_comments, &attested_ids)?;
+        apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_ids)?;
     report_agent_disposition_replay("review", replay);
     Ok(Some(state))
 }
@@ -8735,7 +8771,7 @@ review_angles:
     #[test]
     fn empty_disposition_set_does_not_require_commit_status_access() {
         assert!(
-            load_attested_disposition_comment_ids(
+            load_authorized_disposition_comment_ids(
                 Path::new("/does-not-exist"),
                 "LVTD-LLC/reviewgate",
                 &"a".repeat(40),
@@ -8747,7 +8783,7 @@ review_angles:
     }
 
     #[test]
-    fn repository_writers_authorize_dispositions_when_statuses_are_cross_token_invisible() {
+    fn disposition_authorization_uses_either_channel_and_surfaces_indeterminacy() {
         let comments = vec![
             AgentDispositionComment {
                 id: 41,
@@ -8756,17 +8792,58 @@ review_angles:
             },
             AgentDispositionComment {
                 id: 42,
-                author_login: "drive-by-reader".to_string(),
-                body: "untrusted".to_string(),
+                author_login: "repair-agent".to_string(),
+                body: "also trusted".to_string(),
             },
         ];
+        let status = CommitStatusRecord {
+            context: agent_disposition_status_context(41),
+            description: agent_disposition_digest(&comments[0].body),
+            creator_login: "repair-agent".to_string(),
+            state: "success".to_string(),
+        };
 
         assert_eq!(
-            writer_authorized_disposition_comment_ids(
+            resolve_authorized_disposition_comment_ids(
                 &comments,
-                &BTreeSet::from(["repair-agent".to_string()])
-            ),
+                Err(anyhow::anyhow!("status endpoint unavailable")),
+                |_| Ok(true)
+            )
+            .expect("live permission authorizes both comments"),
+            BTreeSet::from([41, 42])
+        );
+
+        let mut permission_calls = Vec::new();
+        assert_eq!(
+            resolve_authorized_disposition_comment_ids(
+                &comments[..1],
+                Ok(vec![status]),
+                |author| {
+                    permission_calls.push(author.to_string());
+                    bail!("permission endpoint unavailable")
+                }
+            )
+            .expect("status receipt independently authorizes the comment"),
             BTreeSet::from([41])
+        );
+        assert!(
+            permission_calls.is_empty(),
+            "an attested comment must not spend a permission lookup"
+        );
+
+        assert!(
+            resolve_authorized_disposition_comment_ids(
+                &comments,
+                Err(anyhow::anyhow!("status endpoint unavailable")),
+                |_| bail!("permission endpoint unavailable")
+            )
+            .is_err(),
+            "dual transport failure must be machine-visible"
+        );
+        assert!(
+            resolve_authorized_disposition_comment_ids(&comments, Ok(vec![]), |_| Ok(false))
+                .expect("both channels definitively deny")
+                .is_empty()
         );
     }
 
