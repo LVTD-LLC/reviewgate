@@ -115,6 +115,10 @@
             "model_ms": { "type": "integer", "minimum": 0 },
             "publish_ms": { "type": "integer", "minimum": 0 }
           }
+        },
+        "semantic_context": {
+          "$ref": "#/$defs/semantic_context",
+          "description": "Selection metrics and provenance for opt-in ephemeral semantic repository context. Source excerpts are sent to the reviewer but are not duplicated in the artifact."
         }
       }
     },
@@ -271,6 +275,67 @@
         "prompt_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "completion_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "estimated_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "semantic_context_excerpt": {
+      "type": "object",
+      "required": [
+        "path",
+        "start_line",
+        "end_line",
+        "reason",
+        "relation",
+        "bytes",
+        "truncated",
+        "reviewed_sha"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "relation": { "type": "string", "minLength": 1 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" },
+        "reviewed_sha": { "type": "string", "minLength": 1 }
+      }
+    },
+    "semantic_context": {
+      "type": "object",
+      "required": [
+        "status",
+        "reviewed_sha",
+        "parser",
+        "changed_symbol_count",
+        "candidate_count",
+        "selected_count",
+        "rg_calls",
+        "rg_output_bytes",
+        "selected_bytes",
+        "truncated",
+        "excerpts"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["collected", "fallback", "unavailable"]
+        },
+        "reviewed_sha": { "type": "string", "minLength": 1 },
+        "parser": { "type": "string", "minLength": 1 },
+        "changed_symbol_count": { "type": "integer", "minimum": 0 },
+        "candidate_count": { "type": "integer", "minimum": 0 },
+        "selected_count": { "type": "integer", "minimum": 0 },
+        "rg_calls": { "type": "integer", "minimum": 0 },
+        "rg_output_bytes": { "type": "integer", "minimum": 0 },
+        "selected_bytes": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" },
+        "fallback_reason": { "type": ["string", "null"], "minLength": 1 },
+        "excerpts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/semantic_context_excerpt" }
+        }
       }
     },
     "review_stage": {

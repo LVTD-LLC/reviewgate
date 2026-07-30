@@ -445,12 +445,99 @@ pub struct ReviewMetrics {
     pub cost_source: CostSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<ReviewTimings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_context: Option<SemanticContextReport>,
 }
 
 impl ReviewMetrics {
     pub fn validate(&self) -> Result<(), ReviewGateError> {
         if let Some(cost) = self.current_run_cost_usd {
             validate_estimated_cost(cost)?;
+        }
+        if let Some(semantic_context) = &self.semantic_context {
+            semantic_context.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticContextStatus {
+    Collected,
+    Fallback,
+    Unavailable,
+}
+
+impl SemanticContextStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Collected => "collected",
+            Self::Fallback => "fallback",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticContextExcerpt {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub reason: String,
+    pub relation: String,
+    pub bytes: u32,
+    pub truncated: bool,
+    pub reviewed_sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticContextReport {
+    pub status: SemanticContextStatus,
+    pub reviewed_sha: String,
+    pub parser: String,
+    pub changed_symbol_count: u32,
+    pub candidate_count: u32,
+    pub selected_count: u32,
+    pub rg_calls: u32,
+    pub rg_output_bytes: u32,
+    pub selected_bytes: u32,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    pub excerpts: Vec<SemanticContextExcerpt>,
+}
+
+impl SemanticContextReport {
+    pub fn validate(&self) -> Result<(), ReviewGateError> {
+        if self.reviewed_sha.trim().is_empty() {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "semantic context reviewed_sha must not be empty".to_string(),
+            ));
+        }
+        if self.parser.trim().is_empty() {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "semantic context parser must not be empty".to_string(),
+            ));
+        }
+        if self.selected_count as usize != self.excerpts.len() {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "semantic context selected_count must match excerpts".to_string(),
+            ));
+        }
+        if self.excerpts.iter().any(|excerpt| {
+            excerpt.path.trim().is_empty()
+                || excerpt.start_line == 0
+                || excerpt.end_line < excerpt.start_line
+                || excerpt.reason.trim().is_empty()
+                || excerpt.relation.trim().is_empty()
+                || excerpt.reviewed_sha != self.reviewed_sha
+        }) {
+            return Err(ReviewGateError::InvalidReviewOutcome(
+                "semantic context excerpt metadata is invalid".to_string(),
+            ));
         }
         Ok(())
     }
@@ -959,6 +1046,10 @@ pub fn compute_metrics(artifact: &ReviewArtifact, min_severity: Severity) -> Rev
             .metrics
             .as_ref()
             .and_then(|metrics| metrics.timings.clone()),
+        semantic_context: artifact
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.semantic_context.clone()),
     };
 
     for finding in &artifact.findings {
@@ -3763,6 +3854,7 @@ mod tests {
                 current_run_cost_usd: None,
                 cost_source: CostSource::Unknown,
                 timings: None,
+                semantic_context: None,
             }),
             review_stages: vec![],
             angle_results: vec![],
