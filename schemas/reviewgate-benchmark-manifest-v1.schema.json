@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewgate.lvtd.dev/schemas/reviewgate-benchmark-manifest-v1.schema.json",
+  "title": "ReviewGate benchmark manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "blinded",
+    "minimum_case_count",
+    "repetitions",
+    "thresholds",
+    "configurations",
+    "sources"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "reviewgate-benchmark-manifest/v1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "blinded": {
+      "const": true
+    },
+    "minimum_case_count": {
+      "type": "integer",
+      "minimum": 30
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "thresholds": {
+      "$ref": "#/$defs/thresholds"
+    },
+    "configurations": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/configuration"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    }
+  },
+  "$defs": {
+    "rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_blocking_precision",
+        "minimum_serious_defect_recall",
+        "maximum_false_blockers_per_case",
+        "maximum_contradiction_rate",
+        "minimum_rereview_stability",
+        "maximum_live_cost_usd",
+        "maximum_mean_latency_ms"
+      ],
+      "properties": {
+        "minimum_blocking_precision": {
+          "$ref": "#/$defs/rate"
+        },
+        "minimum_serious_defect_recall": {
+          "$ref": "#/$defs/rate"
+        },
+        "maximum_false_blockers_per_case": {
+          "$ref": "#/$defs/rate"
+        },
+        "maximum_contradiction_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "minimum_rereview_stability": {
+          "$ref": "#/$defs/rate"
+        },
+        "maximum_live_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maximum_mean_latency_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "pipeline"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "baseline",
+            "candidate"
+          ]
+        },
+        "pipeline": {
+          "enum": [
+            "raw_model",
+            "evidence_gate"
+          ]
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "evidence_grounding"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

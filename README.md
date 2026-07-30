@@ -948,6 +948,7 @@ cargo install --git https://github.com/LVTD-LLC/reviewgate --locked reviewgate-c
 | `recheck --repo <path> --workflow <selector>` | Safely rerun the newest completed ReviewGate run for the exact PR current head using `gh`. The selector may be an exact numeric workflow ID, workflow file name/path, or display name; non-numeric selectors must match exactly and unambiguously. |
 | `request-rereview --workflow <file>` | Validate an `issue_comment` event and safely request the exact PR current-head rerun. |
 | `eval-fixtures --dir <path>` | Evaluate committed artifact fixtures without publishing. |
+| `eval-replays --manifest <path>` | Replay a blinded baseline-versus-candidate benchmark without publishing; add `--live` for the explicit OpenRouter-backed mode. |
 | `publish-start-signal` | Action-internal command to create/update the running placeholder summary. |
 | `publish-findings` | Action-internal command to publish eligible findings as inline PR comments. |
 | `publish-summary` | Action-internal command to publish/update the canonical summary and append the step summary. |
@@ -1006,6 +1007,12 @@ GITHUB_EVENT_NAME=issue_comment cargo run --locked -p reviewgate-cli -- \
 
 # Evaluate all JSON fixtures in fixtures/.
 cargo run --locked -p reviewgate-cli -- eval-fixtures --dir fixtures
+
+# Run the deterministic, keyless replacement benchmark.
+cargo run --locked -p reviewgate-cli -- eval-replays \
+  --manifest fixtures/evaluation/manifest-v1.json \
+  --json-out .reviewgate/benchmark.json \
+  --markdown-out .reviewgate/benchmark.md
 ```
 
 ### Repository Checks

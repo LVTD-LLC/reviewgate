@@ -37,6 +37,8 @@ use reviewgate_github::{
 };
 use sha2::{Digest, Sha256};
 
+mod evaluation;
+
 const DEFAULT_CONTEXT_FILES: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
@@ -213,6 +215,25 @@ enum Command {
     EvalFixtures {
         #[arg(long, default_value = "fixtures")]
         dir: PathBuf,
+    },
+    /// Replay a blinded benchmark manifest without publishing to GitHub.
+    EvalReplays {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+        #[arg(long)]
+        live: bool,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        openrouter_base_url: Option<String>,
+        #[arg(long)]
+        max_cases: Option<usize>,
     },
     /// Publish or update the temporary running summary comment on a pull request.
     PublishStartSignal {
@@ -526,6 +547,25 @@ fn main() -> CliResult<()> {
             event_path,
         } => request_rereview(repo, workflow, event_path),
         Command::EvalFixtures { dir } => eval_fixtures(dir),
+        Command::EvalReplays {
+            repo,
+            manifest,
+            json_out,
+            markdown_out,
+            live,
+            model,
+            openrouter_base_url,
+            max_cases,
+        } => evaluation::eval_replays(evaluation::EvalReplayOptions {
+            repo,
+            manifest,
+            json_out,
+            markdown_out,
+            live,
+            model,
+            openrouter_base_url,
+            max_cases,
+        }),
         Command::PublishStartSignal { repo } => publish_start_signal(repo),
         Command::PublishFindings {
             repo,

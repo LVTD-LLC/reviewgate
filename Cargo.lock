@@ -227,6 +227,7 @@ dependencies = [
  "clap",
  "reviewgate-core",
  "reviewgate-github",
+ "serde",
  "serde_json",
  "sha2",
 ]

@@ -37,3 +37,4 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
       - run: cargo run --locked -p reviewgate-cli -- fixture-review --input fixtures/simple-review.json --json-out .reviewgate/review.json --summary-out .reviewgate/summary.md
+      - run: cargo run --locked -p reviewgate-cli -- eval-replays --manifest fixtures/evaluation/manifest-v1.json --json-out .reviewgate/benchmark.json --markdown-out .reviewgate/benchmark.md
