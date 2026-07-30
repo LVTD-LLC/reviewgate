@@ -26,6 +26,8 @@ jobs:
             exit 1
           fi
       - run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Run dogfood regression gate
+        run: cargo +1.96.0 test --locked --workspace
       - run: cargo +1.96.0 build --locked --release -p reviewgate-cli
       - name: Package runtime
         shell: bash
