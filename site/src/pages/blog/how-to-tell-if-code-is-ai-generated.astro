@@ -204,7 +204,7 @@ const jsonLd = [
       A review should leave a stable contract: what blocks the merge, where the evidence lives, and what must be rerun after a fix. Comments scattered across a long thread are difficult for humans and repair agents to consume. Keep one canonical summary and a structured finding list.
     </p>
     <p>
-      Then bind the next decision to the current commit. GitHub's required-check model evaluates the latest head SHA for the same reason: a passing result on old code is not evidence for the new diff. <a href="/docs#review-loop">ReviewGate's repair loop</a> follows that shape with a fixed 5/5 target, one updated summary, and a JSON artifact that external agents can read without treating review text as trusted instructions.
+      Then bind the next decision to the current commit. GitHub's required-check model evaluates the latest head SHA for the same reason: a passing result on old code is not evidence for the new diff. <a href="/docs/agent-workflows">ReviewGate's repair loop</a> follows that shape with a fixed 5/5 target, one updated summary, and a JSON artifact that external agents can read without treating review text as trusted instructions.
     </p>
   </section>
 
@@ -221,7 +221,7 @@ const jsonLd = [
       <li><strong>Rerun:</strong> after any fix, review the new head and replace the old summary rather than accumulating conflicting verdicts.</li>
     </ol>
     <p>
-      This is the same boundary used by the <a href="/docs#install">ReviewGate installation workflow</a>. The decision is grounded in event semantics and executable evidence, not in whether the YAML "looks generated."
+      This is the same boundary used by the <a href="/docs/github-actions">ReviewGate installation workflow</a>. The decision is grounded in event semantics and executable evidence, not in whether the YAML "looks generated."
     </p>
   </section>
 
