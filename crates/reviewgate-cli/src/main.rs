@@ -11015,7 +11015,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             .filter_map(serde_json::Value::as_str)
             .collect::<BTreeSet<_>>();
         assert!(semantic_keys.contains("fixture.pr365.runner_tooling"));
+        assert!(semantic_keys.contains("fixture.pr365.runner_tooling.repaired"));
         assert!(semantic_keys.contains("fixture.pr365.stale_release_assertion"));
+        assert!(semantic_keys.contains("fixture.pr365.stale_release_assertion.repaired"));
 
         for case in cases.as_array().expect("fixture cases") {
             let name = case["name"].as_str().expect("fixture name");

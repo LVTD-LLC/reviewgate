@@ -594,5 +594,70 @@
       }
     },
     "expected_blocking": true
+  },
+  {
+    "name": "PR 365 runner tooling repair clears the blocker",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo install just\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1,5 +1,7 @@\n jobs:\n   release:\n     runs-on: ubuntu-latest\n     steps:\n       - uses: actions/checkout@v4\n+      - run: cargo install just\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-repaired",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 7,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The release job correctly installs just before invocation, so this is fine and no issue exists here.",
+      "agent_instruction": "Install just before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling.repaired",
+        "claim": "The release job invokes just without installing it.",
+        "causal_path": "release job -> just package",
+        "test_assessment": "The changed workflow installs just immediately before the invocation.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The pre-repair location no longer contains the invocation"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job and observe the installation complete before just package.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
+  },
+  {
+    "name": "PR 365 release assertion repair clears the blocker",
+    "files": {
+      "action.yml": "runtime: v0.7.0\n",
+      "tests/release_contract.rs": "fn runtime_pin_matches_release() {\n    assert_eq!(runtime_version(), \"v0.7.0\");\n}\n"
+    },
+    "diff": "diff --git a/action.yml b/action.yml\n--- a/action.yml\n+++ b/action.yml\n@@ -1 +1 @@\n-runtime: v0.6.3\n+runtime: v0.7.0\n",
+    "finding": {
+      "id": "pr365-stale-release-assertion-repaired",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": "action.yml",
+      "line": 1,
+      "title": "Runtime pin update leaves the release assertion stale",
+      "detail": "The release-contract assertion correctly expects v0.7.0, so this is fine and no issue exists here.",
+      "agent_instruction": "Update the release-contract assertion to v0.7.0.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.stale_release_assertion.repaired",
+        "claim": "The runtime pin and release-contract assertion require different versions.",
+        "causal_path": "action runtime v0.7.0 -> matching test v0.7.0",
+        "test_assessment": "The exact release-contract assertion is updated to v0.7.0.",
+        "evidence": [
+          {"path": "action.yml", "side": "new", "line": 1, "excerpt": "runtime: v0.7.0", "reason": "The changed runtime contract advances to v0.7.0"}
+        ],
+        "related_tests": [
+          {"path": "tests/release_contract.rs", "side": "new", "line": 2, "excerpt": "assert_eq!(runtime_version(), \"v0.6.3\");", "reason": "The pre-repair assertion is no longer present"}
+        ],
+        "reproduction": "Run the release-contract test and observe the matching v0.7.0 assertion pass.",
+        "proof": null
+      }
+    },
+    "expected_blocking": false
   }
 ]
