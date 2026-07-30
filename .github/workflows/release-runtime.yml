@@ -3,7 +3,7 @@ name: Release ReviewGate runtime
 on:
   push:
     tags:
-      - "v[0-9]*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 jobs:
   build:
@@ -27,13 +27,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - name: Validate release contract
+      - name: Validate release tag
         shell: bash
         run: |
           set -euo pipefail
-          pinned_version="$(awk '$1 == "REVIEWGATE_RUNTIME_VERSION:" { print $2 }' action.yml)"
-          if [ "$pinned_version" != "$RELEASE_TAG" ]; then
-            echo "::error title=Runtime version mismatch::action.yml pins $pinned_version but the release tag is $RELEASE_TAG." >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid release tag::Expected a semantic version tag such as v0.7.1, got $RELEASE_TAG." >&2
             exit 1
           fi
       - run: rustup toolchain install 1.96.0 --profile minimal

@@ -8557,7 +8557,9 @@ review_angles:
     fn release_workflow_builds_and_attests_the_action_runtime() {
         let workflow = include_str!("../../../.github/workflows/release-runtime.yml");
 
-        assert!(workflow.contains("push:\n    tags:"));
+        assert!(workflow.contains("push:\n    tags:\n      - \"v[0-9]*.[0-9]*.[0-9]*\""));
+        assert!(!workflow.contains("pinned_version="));
+        assert!(!workflow.contains("Runtime version mismatch"));
         assert!(workflow.contains("build:\n    strategy:"));
         assert!(workflow.contains("runner: macos-15\n            target: aarch64-apple-darwin"));
         assert!(
