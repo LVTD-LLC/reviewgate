@@ -1096,9 +1096,9 @@
     "name": "PR 365 install-root environment does not guarantee PATH tooling",
     "fixture_id": "pr365.runner_tooling.install_root_env_broken",
     "files": {
-      ".github/workflows/release.yml": "jobs:\n  release:\n    env:\n      CARGO_INSTALL_ROOT: /tmp/reviewgate-tools\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n      - run: just package\n"
+      ".github/workflows/release.yml": "env:\n  CARGO_INSTALL_ROOT: /tmp/reviewgate-tools\njobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n      - run: just package\n"
     },
-    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,8 @@\n jobs:\n+  release:\n+    env:\n+      CARGO_INSTALL_ROOT: /tmp/reviewgate-tools\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+      - run: just package\n",
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,8 @@\n+env:\n+  CARGO_INSTALL_ROOT: /tmp/reviewgate-tools\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+      - run: just package\n",
     "finding": {
       "id": "pr365-runner-tool-install-root-env-real",
       "scope": "line",
@@ -1107,15 +1107,15 @@
       "file": ".github/workflows/release.yml",
       "line": 8,
       "title": "Release invokes unavailable runner tooling",
-      "detail": "The Cargo environment redirects just outside the runner's normal PATH.",
+      "detail": "The workflow-level Cargo environment redirects just outside the runner's normal PATH.",
       "agent_instruction": "Use the default Cargo install root or export the redirected bin directory before invoking just.",
       "grounding": {
         "semantic_key": "fixture.pr365.runner_tooling",
         "claim": "The release job invokes just without PATH-visible setup.",
         "causal_path": "CARGO_INSTALL_ROOT override -> unexported bin directory -> just command not found",
-        "test_assessment": "The job does not add /tmp/reviewgate-tools/bin to PATH.",
+        "test_assessment": "The workflow does not add /tmp/reviewgate-tools/bin to PATH.",
         "evidence": [
-          {"path": ".github/workflows/release.yml", "side": "new", "line": 4, "excerpt": "CARGO_INSTALL_ROOT: /tmp/reviewgate-tools", "reason": "The install destination is redirected"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 2, "excerpt": "CARGO_INSTALL_ROOT: /tmp/reviewgate-tools", "reason": "The workflow-level install destination is redirected"},
           {"path": ".github/workflows/release.yml", "side": "new", "line": 8, "excerpt": "- run: just package", "reason": "The next step invokes a bare executable"}
         ],
         "related_tests": [],

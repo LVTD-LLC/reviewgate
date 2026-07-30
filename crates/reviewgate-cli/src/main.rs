@@ -6181,7 +6181,7 @@ fn workflow_installs_invoked_tool_before_finding(
     let Some(job_start) = enclosing_workflow_job_start(&lines, invocation_index) else {
         return false;
     };
-    if lines[job_start..invocation_index].iter().any(|line| {
+    if lines.iter().any(|line| {
         let content = yaml_line_content(line);
         content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
     }) {
