@@ -6181,6 +6181,12 @@ fn workflow_installs_invoked_tool_before_finding(
     let Some(job_start) = enclosing_workflow_job_start(&lines, invocation_index) else {
         return false;
     };
+    if lines[job_start..invocation_index].iter().any(|line| {
+        let content = yaml_line_content(line);
+        content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
+    }) {
+        return false;
+    }
     (job_start..invocation_index).any(|index| {
         let content = yaml_step_line_content(lines[index]);
         let run_setup = content
@@ -11254,6 +11260,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.package_binary_mismatch_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.install_root_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.cross_installer_flag_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.install_root_env_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
