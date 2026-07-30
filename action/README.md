@@ -51,7 +51,7 @@ review_angles:
 
 Use `prompt` for short inline text, `prompt_file` for repo-relative prompt files, and `skill` for a repo-relative skill directory containing `SKILL.md` or a direct `SKILL.md` path. Skill-backed angles pass skill instructions to the reviewing model; ReviewGate does not execute repository scripts, skill tools, or pull request code.
 
-`deep` defaults to `false`. When enabled, ReviewGate extracts changed Rust definitions with tree-sitter and uses bounded direct `rg` calls plus a universal text fallback to add cited repository context once per exact-head review run. It does not persist a source index.
+`deep` defaults to `false`. When enabled, ReviewGate extracts changed Rust definitions with tree-sitter and uses bounded direct `rg` calls when ripgrep is available or a built-in fixed-string search over Git-tracked files otherwise. A universal text identifier fallback covers non-Rust formats. The context is built once per exact-head review run and no source index is persisted.
 
 ## Inputs
 

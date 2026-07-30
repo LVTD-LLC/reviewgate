@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,8 @@ const MAX_RG_OUTPUT_BYTES_PER_CALL: usize = 32 * 1024;
 const MAX_RG_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_SEARCH_TIME: Duration = Duration::from_secs(3);
 const MAX_RG_CALL_TIME: Duration = Duration::from_millis(800);
+const MAX_TRACKED_PATH_BYTES: usize = 512 * 1024;
+const BUILTIN_MATCH_ALLOCATION_BYTES: usize = 256;
 const MAX_SEMANTIC_FILE_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_EXCERPTS: usize = 16;
 const MAX_SEMANTIC_SOURCE_CANDIDATES: usize = MAX_SEMANTIC_EXCERPTS * 4;
@@ -88,6 +91,26 @@ struct SearchMatch {
     origin: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchBackend {
+    Ripgrep,
+    Builtin,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SearchOutput {
+    matches: Vec<SearchMatch>,
+    output_bytes: usize,
+    truncated: bool,
+    backend: SearchBackend,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SearchError {
+    RipgrepNotFound,
+    Failed(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RankedExcerpt {
     rank: u8,
@@ -118,7 +141,7 @@ fn collect_semantic_context_with_search<F>(
     mut search: F,
 ) -> SemanticContext
 where
-    F: FnMut(&Path, &str, usize, Duration) -> Result<(Vec<u8>, bool), String>,
+    F: FnMut(&Path, &str, &str, usize, Duration) -> Result<SearchOutput, SearchError>,
 {
     let parsed_diff = parse_diff_lines(diff);
     let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
@@ -206,14 +229,7 @@ where
         }
     }
 
-    let parser = match (used_rust_parser, used_text_fallback) {
-        (true, true) => "tree_sitter_rust+text+rg",
-        (true, false) => "tree_sitter_rust+rg",
-        (false, true) => "text+rg",
-        (false, false) => "text+rg",
-    }
-    .to_string();
-    let fallback_reason = if symbols.is_empty() {
+    let mut fallback_reason = if symbols.is_empty() {
         Some("no stable identifiers were found on added lines".to_string())
     } else if used_text_fallback {
         Some("text identifier fallback was used for unsupported or unparsed files".to_string())
@@ -226,9 +242,11 @@ where
     let mut rg_output_bytes = 0usize;
     let mut search_truncated = symbols.len() > MAX_RG_CALLS;
     let mut rg_unavailable = false;
+    let mut used_builtin_search = false;
     let mut matches = Vec::new();
 
-    for symbol in symbols.iter().take(MAX_RG_CALLS) {
+    let searched_symbols = symbols.iter().take(MAX_RG_CALLS).collect::<Vec<_>>();
+    for symbol in &searched_symbols {
         if search_started.elapsed() >= MAX_SEARCH_TIME || rg_output_bytes >= MAX_RG_OUTPUT_BYTES {
             search_truncated = true;
             break;
@@ -236,31 +254,69 @@ where
         rg_calls += 1;
         let remaining_bytes = MAX_RG_OUTPUT_BYTES - rg_output_bytes;
         let remaining_time = MAX_SEARCH_TIME.saturating_sub(search_started.elapsed());
+        let origin = symbol_origins
+            .get(*symbol)
+            .map(String::as_str)
+            .unwrap_or("[unknown]");
         match search(
             repo,
             symbol,
+            origin,
             remaining_bytes.min(MAX_RG_OUTPUT_BYTES_PER_CALL),
             remaining_time.min(MAX_RG_CALL_TIME),
         ) {
-            Ok((output, truncated)) => {
-                rg_output_bytes = rg_output_bytes.saturating_add(output.len());
-                search_truncated |= truncated;
-                if !truncated {
-                    matches.extend(parse_rg_matches(
-                        &output,
-                        symbol,
-                        symbol_origins
-                            .get(symbol)
-                            .map(String::as_str)
-                            .unwrap_or("[unknown]"),
-                    ));
+            Ok(output) => {
+                used_builtin_search |= output.backend == SearchBackend::Builtin;
+                if output.backend == SearchBackend::Ripgrep {
+                    rg_output_bytes = rg_output_bytes.saturating_add(output.output_bytes);
+                }
+                search_truncated |= output.truncated;
+                if !output.truncated {
+                    matches.extend(output.matches);
                 }
             }
-            Err(_) => {
+            Err(SearchError::RipgrepNotFound) => {
+                let remaining_time = MAX_SEARCH_TIME.saturating_sub(search_started.elapsed());
+                match search_symbols_in_tracked_files(
+                    repo,
+                    &searched_symbols,
+                    &symbol_origins,
+                    MAX_RG_OUTPUT_BYTES - rg_output_bytes,
+                    remaining_time,
+                ) {
+                    Ok(output) => {
+                        used_builtin_search = true;
+                        search_truncated |= output.truncated;
+                        if !output.truncated {
+                            matches.extend(output.matches);
+                        }
+                    }
+                    Err(_) => rg_unavailable = true,
+                }
+                break;
+            }
+            Err(SearchError::Failed(_)) => {
                 rg_unavailable = true;
                 break;
             }
         }
+    }
+
+    let parser = match (used_rust_parser, used_text_fallback, used_builtin_search) {
+        (true, true, true) => "tree_sitter_rust+text+builtin_search",
+        (true, false, true) => "tree_sitter_rust+builtin_search",
+        (false, _, true) => "text+builtin_search",
+        (true, true, false) => "tree_sitter_rust+text+rg",
+        (true, false, false) => "tree_sitter_rust+rg",
+        (false, _, false) => "text+rg",
+    }
+    .to_string();
+    if used_builtin_search {
+        let reason = "built-in tracked-file search was used because ripgrep was unavailable";
+        fallback_reason = Some(match fallback_reason {
+            Some(existing) => format!("{existing}; {reason}"),
+            None => reason.to_string(),
+        });
     }
 
     if rg_unavailable {
@@ -342,7 +398,7 @@ where
 
     let status = if rg_unavailable {
         SemanticContextStatus::Unavailable
-    } else if used_text_fallback || symbols.is_empty() {
+    } else if used_text_fallback || used_builtin_search || symbols.is_empty() {
         SemanticContextStatus::Fallback
     } else {
         SemanticContextStatus::Collected
@@ -689,10 +745,29 @@ fn parse_diff_lines(diff: &str) -> ParsedDiffLines {
 fn search_symbol(
     repo: &Path,
     symbol: &str,
+    origin: &str,
     max_output_bytes: usize,
     timeout: Duration,
-) -> Result<(Vec<u8>, bool), String> {
-    let mut child = Command::new("rg")
+) -> Result<SearchOutput, SearchError> {
+    search_symbol_with_program(
+        OsStr::new("rg"),
+        repo,
+        symbol,
+        origin,
+        max_output_bytes,
+        timeout,
+    )
+}
+
+fn search_symbol_with_program(
+    program: &OsStr,
+    repo: &Path,
+    symbol: &str,
+    origin: &str,
+    max_output_bytes: usize,
+    timeout: Duration,
+) -> Result<SearchOutput, SearchError> {
+    let child = match Command::new(program)
         .args([
             "--json",
             "--fixed-strings",
@@ -716,11 +791,138 @@ fn search_symbol(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(SearchError::RipgrepNotFound);
+        }
+        Err(error) => return Err(SearchError::Failed(error.to_string())),
+    };
+    let (output, truncated, status) =
+        read_bounded_child_output(child, max_output_bytes, timeout, "ripgrep")
+            .map_err(SearchError::Failed)?;
+    if !truncated && !matches!(status.code(), Some(0 | 1)) {
+        return Err(SearchError::Failed(format!(
+            "ripgrep exited with status {status}"
+        )));
+    }
+    let matches = if truncated {
+        Vec::new()
+    } else {
+        parse_rg_matches(&output, symbol, origin)
+    };
+    Ok(SearchOutput {
+        matches,
+        output_bytes: output.len(),
+        truncated,
+        backend: SearchBackend::Ripgrep,
+    })
+}
+
+fn search_symbols_in_tracked_files(
+    repo: &Path,
+    symbols: &[&String],
+    symbol_origins: &BTreeMap<String, String>,
+    max_output_bytes: usize,
+    timeout: Duration,
+) -> Result<SearchOutput, String> {
+    let started = Instant::now();
+    let child = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| error.to_string())?;
+    let (tracked_paths, paths_truncated, status) =
+        read_bounded_child_output(child, MAX_TRACKED_PATH_BYTES, timeout, "git ls-files")?;
+    if !paths_truncated && !status.success() {
+        return Err(format!("git ls-files exited with status {status}"));
+    }
+    let mut matches = Vec::new();
+    let mut output_bytes = 0usize;
+    let mut truncated = paths_truncated;
+
+    if !truncated {
+        for path_bytes in tracked_paths.split(|byte| *byte == b'\0') {
+            if path_bytes.is_empty() {
+                continue;
+            }
+            if started.elapsed() >= timeout {
+                truncated = true;
+                break;
+            }
+            let Ok(relative) = std::str::from_utf8(path_bytes) else {
+                continue;
+            };
+            let Some(path) = confined_repo_file(repo, relative) else {
+                continue;
+            };
+            let Ok(Some(source)) = read_bounded_text(&path, MAX_SEMANTIC_FILE_BYTES) else {
+                continue;
+            };
+            if source.len() > MAX_SEMANTIC_FILE_BYTES {
+                continue;
+            }
+            for (line_index, line) in source.lines().enumerate() {
+                for symbol in symbols {
+                    if !line.contains(symbol.as_str()) {
+                        continue;
+                    }
+                    let event_bytes = relative
+                        .len()
+                        .saturating_add(line.len())
+                        .saturating_add(symbol.len())
+                        .saturating_add(
+                            symbol_origins
+                                .get(symbol.as_str())
+                                .map_or("[unknown]".len(), String::len),
+                        )
+                        .max(BUILTIN_MATCH_ALLOCATION_BYTES);
+                    if output_bytes.saturating_add(event_bytes) > max_output_bytes {
+                        truncated = true;
+                        break;
+                    }
+                    output_bytes = output_bytes.saturating_add(event_bytes);
+                    matches.push(SearchMatch {
+                        path: relative.to_string(),
+                        line: line_index.saturating_add(1),
+                        text: line.to_string(),
+                        symbol: (*symbol).clone(),
+                        origin: symbol_origins
+                            .get(symbol.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| "[unknown]".to_string()),
+                    });
+                }
+                if truncated {
+                    break;
+                }
+            }
+            if truncated {
+                break;
+            }
+        }
+    }
+
+    Ok(SearchOutput {
+        matches,
+        output_bytes,
+        truncated,
+        backend: SearchBackend::Builtin,
+    })
+}
+
+fn read_bounded_child_output(
+    mut child: Child,
+    max_output_bytes: usize,
+    timeout: Duration,
+    label: &str,
+) -> Result<(Vec<u8>, bool, ExitStatus), String> {
     let stdout = child
         .stdout
         .take()
-        .ok_or("ripgrep stdout was unavailable")?;
+        .ok_or_else(|| format!("{label} stdout was unavailable"))?;
     let reader = thread::spawn(move || {
         let mut output = Vec::new();
         stdout
@@ -730,38 +932,38 @@ fn search_symbol(
     });
     let started = Instant::now();
     let mut timed_out = false;
+    let status;
     loop {
-        if child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
+        if let Some(completed) = child.try_wait().map_err(|error| error.to_string())? {
+            status = completed;
             break;
         }
         if started.elapsed() >= timeout || reader.is_finished() {
             timed_out = started.elapsed() >= timeout;
-            stop_or_reap_child(&mut child)?;
+            status = stop_or_reap_child(&mut child)?;
             break;
         }
         thread::sleep(Duration::from_millis(5));
     }
     let mut output = reader
         .join()
-        .map_err(|_| "ripgrep reader failed".to_string())?
+        .map_err(|_| format!("{label} reader failed"))?
         .map_err(|error| error.to_string())?;
     let output_truncated = output.len() > max_output_bytes;
     output.truncate(max_output_bytes);
-    Ok((output, timed_out || output_truncated))
+    Ok((output, timed_out || output_truncated, status))
 }
 
-fn stop_or_reap_child(child: &mut Child) -> Result<(), String> {
-    match child.kill() {
-        Ok(()) => child.wait().map(|_| ()).map_err(|error| error.to_string()),
-        Err(kill_error) => match child.try_wait() {
-            Ok(Some(_)) => Ok(()),
-            Ok(None) => Err(kill_error.to_string()),
-            Err(wait_error) => Err(wait_error.to_string()),
-        },
+fn stop_or_reap_child(child: &mut Child) -> Result<ExitStatus, String> {
+    let kill_error = child.kill().err();
+    match child.wait() {
+        Ok(status) => Ok(status),
+        Err(wait_error) => Err(match kill_error {
+            Some(kill_error) => {
+                format!("failed to stop child ({kill_error}) and reap it ({wait_error})")
+            }
+            None => wait_error.to_string(),
+        }),
     }
 }
 
@@ -929,16 +1131,18 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::process::Command;
     use std::time::Duration;
 
     use super::{
-        MAX_SEMANTIC_SOURCE_CANDIDATES, MAX_SEMANTIC_SOURCE_PATHS, SearchMatch,
-        SemanticContextStatus, bound_source_candidates, collect_semantic_context_with_search,
-        extract_deleted_symbols, extract_rust_changed_symbols, extract_text_changed_symbols,
-        parse_diff_lines, parse_rg_matches, search_symbol, stop_or_reap_child,
+        MAX_SEMANTIC_SOURCE_CANDIDATES, MAX_SEMANTIC_SOURCE_PATHS, SearchBackend, SearchError,
+        SearchMatch, SearchOutput, SemanticContextStatus, bound_source_candidates,
+        collect_semantic_context_with_search, extract_deleted_symbols,
+        extract_rust_changed_symbols, extract_text_changed_symbols, parse_diff_lines,
+        parse_rg_matches, search_symbol, search_symbol_with_program,
+        search_symbols_in_tracked_files, stop_or_reap_child,
     };
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {
@@ -967,6 +1171,24 @@ mod tests {
         .into_bytes();
         output.push(b'\n');
         output
+    }
+
+    fn rg_search_output(
+        output: Vec<u8>,
+        truncated: bool,
+        symbol: &str,
+        origin: &str,
+    ) -> SearchOutput {
+        SearchOutput {
+            matches: if truncated {
+                Vec::new()
+            } else {
+                parse_rg_matches(&output, symbol, origin)
+            },
+            output_bytes: output.len(),
+            truncated,
+            backend: SearchBackend::Ripgrep,
+        }
     }
 
     #[test]
@@ -1016,20 +1238,259 @@ pub fn changed(value: bool) -> bool {
         .expect("write reference");
 
         for _ in 0..64 {
-            let (output, truncated) = search_symbol(
+            let output = search_symbol(
                 &repo,
                 "canExportBillingData",
+                "src/permissions.js",
                 32 * 1024,
                 Duration::from_millis(800),
             )
             .expect("fast ripgrep search");
-            assert!(!truncated);
-            assert_eq!(
-                parse_rg_matches(&output, "canExportBillingData", "src/permissions.js").len(),
-                1
-            );
+            assert!(!output.truncated);
+            assert_eq!(output.matches.len(), 1);
         }
 
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn missing_ripgrep_program_selects_the_fallback_error() {
+        let repo = unique_test_dir("semantic-context-missing-rg");
+        let missing = repo.join("definitely-missing-rg");
+
+        let error = search_symbol_with_program(
+            missing.as_os_str(),
+            &repo,
+            "changed",
+            "src/lib.rs",
+            32 * 1024,
+            Duration::from_millis(800),
+        )
+        .expect_err("missing executable");
+
+        assert_eq!(error, SearchError::RipgrepNotFound);
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn builtin_search_finds_tracked_references_when_ripgrep_is_unavailable() {
+        let repo = unique_test_dir("semantic-context-builtin-search");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::create_dir_all(repo.join("tests")).expect("create tests");
+        fs::write(
+            repo.join("src/permissions.js"),
+            "export function canExportBillingData(requester, owner) {\n  return requester === owner;\n}\n",
+        )
+        .expect("write source");
+        fs::write(
+            repo.join("tests/permissions.test.js"),
+            "assert.equal(canExportBillingData(\"owner\", \"owner\"), true);\n",
+        )
+        .expect("write reference");
+        fs::write(
+            repo.join("tests/untracked.test.js"),
+            "canExportBillingData(\"untracked\", \"reference\");\n",
+        )
+        .expect("write untracked reference");
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .expect("initialize repository")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["add", "src/permissions.js", "tests/permissions.test.js"])
+                .current_dir(&repo)
+                .status()
+                .expect("track fixtures")
+                .success()
+        );
+        let diff = r#"diff --git a/src/permissions.js b/src/permissions.js
+--- a/src/permissions.js
++++ b/src/permissions.js
+@@ -1 +1,3 @@
+-export function canExportBillingData(requester, owner) {
++export function canExportBillingData(
++  requester,
++  owner,
+"#;
+
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "head",
+            &["src/permissions.js".to_string()],
+            diff,
+            |_, _, _, _, _| Err(SearchError::RipgrepNotFound),
+        );
+
+        assert_eq!(context.report.status, SemanticContextStatus::Fallback);
+        assert_eq!(context.report.parser, "text+builtin_search");
+        assert!(context.report.changed_symbol_count > 0);
+        assert_eq!(context.report.selected_count, 1);
+        assert_eq!(context.report.rg_calls, 1);
+        assert_eq!(context.report.rg_output_bytes, 0);
+        assert!(
+            context
+                .report
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("built-in tracked-file search was used"))
+        );
+        assert!(
+            context
+                .excerpts
+                .iter()
+                .any(|excerpt| excerpt.path == "tests/permissions.test.js")
+        );
+        assert!(
+            context
+                .excerpts
+                .iter()
+                .all(|excerpt| excerpt.path != "tests/untracked.test.js")
+        );
+        assert!(context.report.excerpts.iter().all(|excerpt| {
+            excerpt.path != "src/permissions.js" && excerpt.reviewed_sha == "head"
+        }));
+
+        let symbol = "canExportBillingData".to_string();
+        let origins = BTreeMap::from([(symbol.clone(), "src/permissions.js".to_string())]);
+        let output =
+            search_symbols_in_tracked_files(&repo, &[&symbol], &origins, 32 * 1024, Duration::MAX)
+                .expect("built-in search");
+        assert!(!output.truncated);
+        assert_eq!(output.backend, SearchBackend::Builtin);
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn builtin_search_batches_multiple_symbols_in_one_tracked_file_scan() {
+        let repo = unique_test_dir("semantic-context-builtin-batch");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::create_dir_all(repo.join("tests")).expect("create tests");
+        fs::write(
+            repo.join("src/lib.js"),
+            "export function firstChanged() {}\nexport function secondChanged() {}\n",
+        )
+        .expect("write source");
+        fs::write(repo.join("tests/first.test.js"), "firstChanged();\n").expect("write first test");
+        fs::write(repo.join("tests/second.test.js"), "secondChanged();\n")
+            .expect("write second test");
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .expect("initialize repository")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["add", "src/lib.js", "tests"])
+                .current_dir(&repo)
+                .status()
+                .expect("track fixtures")
+                .success()
+        );
+        let first = "firstChanged".to_string();
+        let second = "secondChanged".to_string();
+        let origins = BTreeMap::from([
+            (first.clone(), "src/lib.js".to_string()),
+            (second.clone(), "src/lib.js".to_string()),
+        ]);
+
+        let output = search_symbols_in_tracked_files(
+            &repo,
+            &[&first, &second],
+            &origins,
+            32 * 1024,
+            Duration::MAX,
+        )
+        .expect("built-in batch search");
+
+        assert!(!output.truncated);
+        assert!(
+            output
+                .matches
+                .iter()
+                .any(|found| { found.symbol == first && found.path == "tests/first.test.js" })
+        );
+        assert!(
+            output
+                .matches
+                .iter()
+                .any(|found| { found.symbol == second && found.path == "tests/second.test.js" })
+        );
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn builtin_search_caps_dense_match_allocations() {
+        let repo = unique_test_dir("semantic-context-builtin-dense");
+        fs::write(repo.join("dense.txt"), "changed\n".repeat(100)).expect("write dense fixture");
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .expect("initialize repository")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["add", "dense.txt"])
+                .current_dir(&repo)
+                .status()
+                .expect("track fixture")
+                .success()
+        );
+        let symbol = "changed".to_string();
+        let origins = BTreeMap::from([(symbol.clone(), "src/lib.rs".to_string())]);
+
+        let output =
+            search_symbols_in_tracked_files(&repo, &[&symbol], &origins, 1024, Duration::MAX)
+                .expect("built-in dense search");
+
+        assert!(output.truncated);
+        assert!(output.matches.len() <= 4);
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn builtin_search_rejects_failed_git_enumeration() {
+        let repo = unique_test_dir("semantic-context-builtin-git-failure");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::write(
+            repo.join("src/lib.js"),
+            "export function canExportBillingData() {}\n",
+        )
+        .expect("write source");
+        let symbol = "canExportBillingData".to_string();
+        let origins = BTreeMap::from([(symbol.clone(), "src/lib.rs".to_string())]);
+
+        let error =
+            search_symbols_in_tracked_files(&repo, &[&symbol], &origins, 1024, Duration::MAX)
+                .expect_err("non-repository git enumeration must fail");
+
+        assert!(error.contains("git ls-files exited with status"));
+
+        let diff = r#"diff --git a/src/lib.js b/src/lib.js
+--- /dev/null
++++ b/src/lib.js
+@@ -0,0 +1 @@
++export function canExportBillingData() {}
+"#;
+        let context = collect_semantic_context_with_search(
+            &repo,
+            "head",
+            &["src/lib.js".to_string()],
+            diff,
+            |_, _, _, _, _| Err(SearchError::RipgrepNotFound),
+        );
+        assert_eq!(context.report.status, SemanticContextStatus::Unavailable);
+        assert!(context.excerpts.is_empty());
         fs::remove_dir_all(repo).ok();
     }
 
@@ -1089,15 +1550,13 @@ pub fn changed(value: bool) -> bool {
             "head",
             &["src/lib.rs".to_string()],
             diff,
-            |_, symbol, _, _| {
+            |_, symbol, origin, _, _| {
                 searched.push(symbol.to_string());
-                Ok((
-                    format!(
+                let output = format!(
                         "{{\"type\":\"match\",\"data\":{{\"path\":{{\"text\":\"./src/caller.rs\"}},\"lines\":{{\"text\":\"let result = {symbol}();\\n\"}},\"line_number\":1}}}}\n"
                     )
-                    .into_bytes(),
-                    false,
-                ))
+                    .into_bytes();
+                Ok(rg_search_output(output, false, symbol, origin))
             },
         );
 
@@ -1157,18 +1616,16 @@ pub fn changed(value: bool) -> bool {
             "head",
             &["src/lib.rs".to_string()],
             diff,
-            |_, symbol, _, _| {
+            |_, symbol, origin, _, _| {
                 calls += 1;
                 if calls == 1 {
-                    Ok((
-                        format!(
+                    let output = format!(
                             "{{\"type\":\"match\",\"data\":{{\"path\":{{\"text\":\"./src/caller.rs\"}},\"lines\":{{\"text\":\"{symbol}();\\n\"}},\"line_number\":1}}}}\n"
                         )
-                        .into_bytes(),
-                        false,
-                    ))
+                        .into_bytes();
+                    Ok(rg_search_output(output, false, symbol, origin))
                 } else {
-                    Err("synthetic rg failure".to_string())
+                    Err(SearchError::Failed("synthetic rg failure".to_string()))
                 }
             },
         );
@@ -1203,9 +1660,14 @@ pub fn changed(value: bool) -> bool {
             "head",
             &["src/removed.rs".to_string()],
             diff,
-            |_, symbol, _, _| {
+            |_, symbol, origin, _, _| {
                 assert_eq!(symbol, "old_handler");
-                Ok((rg_match("src/caller.rs", 2, "    old_handler();"), false))
+                Ok(rg_search_output(
+                    rg_match("src/caller.rs", 2, "    old_handler();"),
+                    false,
+                    symbol,
+                    origin,
+                ))
             },
         );
 
@@ -1252,7 +1714,7 @@ pub fn changed(value: bool) -> bool {
             "0123456789abcdef",
             &["src/lib.rs".to_string()],
             diff,
-            |_, symbol, _, _| {
+            |_, symbol, origin, _, _| {
                 assert_eq!(symbol, "changed");
                 let mut output = rg_match(
                     "tests/changed_test.rs",
@@ -1260,7 +1722,7 @@ pub fn changed(value: bool) -> bool {
                     "    assert!(!crate::changed(true));",
                 );
                 output.extend(rg_match("src/caller.rs", 2, "    crate::changed(false)"));
-                Ok((output, false))
+                Ok(rg_search_output(output, false, symbol, origin))
             },
         );
 
@@ -1321,11 +1783,13 @@ pub fn changed(value: bool) -> bool {
             "head",
             &["src/lib.rs".to_string()],
             diff,
-            |_, symbol, _, _| {
+            |_, symbol, origin, _, _| {
                 assert_eq!(symbol, "changed");
-                Ok((
+                Ok(rg_search_output(
                     rg_match("src/leak.rs", 1, "pub fn leak() { let _ = changed(); }"),
                     false,
+                    symbol,
+                    origin,
                 ))
             },
         );

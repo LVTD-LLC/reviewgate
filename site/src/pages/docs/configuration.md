@@ -68,9 +68,9 @@ Set `deep: true` when the reviewer should receive bounded context beyond changed
 deep: true
 ```
 
-ReviewGate builds this context once for the exact checked-out PR head and shares it across every angle. It uses tree-sitter to identify changed Rust definitions, then invokes `rg` directly with fixed arguments to find related definitions, references, tests, and configuration. Unsupported text formats and deleted identifiers use the same bounded text-search fallback.
+ReviewGate builds this context once for the exact checked-out PR head and shares it across every angle. It uses tree-sitter to identify changed Rust definitions, then invokes `rg` directly with fixed arguments when ripgrep is available or uses a built-in fixed-string search over Git-tracked files otherwise. Unsupported text formats and deleted identifiers use the same bounded identifier extraction.
 
-The context is in memory only. ReviewGate does not create a repository index, use embeddings, execute PR code, or persist excerpt source in the review artifact. Artifact metrics record paths, line ranges, reasons, relations, byte counts, truncation, and the reviewed SHA. If the checkout does not equal the PR head or `rg` is unavailable, the artifact reports semantic context as unavailable and the ordinary review still runs.
+The context is in memory only. ReviewGate does not create a repository index, use embeddings, execute PR code, or persist excerpt source in the review artifact. Artifact metrics record paths, line ranges, reasons, relations, byte counts, truncation, and the reviewed SHA. If the checkout does not equal the PR head or both search paths fail, the artifact reports semantic context as unavailable and the ordinary review still runs.
 
 ## Add custom review angles
 
