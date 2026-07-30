@@ -35,6 +35,17 @@ const serializedJsonLd = jsonLd ? JSON.stringify(jsonLd).replace(/</g, "\\u003c"
     <link rel="canonical" href={Astro.url.href} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     {serializedJsonLd && <script type="application/ld+json" is:inline set:html={serializedJsonLd} />}
+    <script
+      is:inline
+      defer
+      data-domain="reviewgate.lvtd.dev"
+      src="https://plausible-v2.cr.lvtd.dev/js/script.outbound-links.js"
+    ></script>
+    <script is:inline>
+      window.plausible = window.plausible || function() {
+        (window.plausible.q = window.plausible.q || []).push(arguments);
+      };
+    </script>
     <title>{title}</title>
   </head>
   <body>
