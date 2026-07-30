@@ -15,6 +15,7 @@
 | `/docs#review-loop` | https://reviewgate.lvtd.dev/docs/#review-loop | Run the ReviewGate repair loop | A, B, C, D, E |
 | `/blog` | https://reviewgate.lvtd.dev/blog/ | ReviewGate engineering field notes | E |
 | `/blog/how-to-tell-if-code-is-ai-generated` | https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/ | How to review code when AI authorship is uncertain | E |
+| `/blog/best-ai-code-review-tools` | https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/ | Best AI code review tools for agent-written PRs | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -88,3 +89,10 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “provenance-blind pull request review”
 - “evidence gate for agent-written code”
 - “signs of AI-generated code”
+
+### Comparison content
+
+- “best AI code review tools”
+- “AI code review tool comparison”
+- “agent-written PR review tools”
+- “how to choose AI code review tools”

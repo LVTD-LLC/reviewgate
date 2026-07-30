@@ -1,0 +1,449 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Best AI Code Review Tools for Agent PRs";
+const description =
+  "A practical 2026 guide for choosing AI code review tools for agent PRs: trust boundaries, pricing signals, and concrete tradeoffs.";
+const canonical = "https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/";
+const publishedAt = "2026-07-30";
+
+const comparedTools = [
+  {
+    name: "ReviewGate",
+    shortTake: "Score-driven, review-only, BYOK, OpenRouter-native",
+    fit: "Teams wanting deterministic output for repair loops and strict fork-safe review ownership.",
+  },
+  {
+    name: "CodeRabbit",
+    shortTake: "Fast onboarding, polished review UX, commercial workflow polish",
+    fit: "Teams that need an ergonomic hosted reviewer and low setup friction.",
+  },
+  {
+    name: "Greptile",
+    shortTake: "Autonomous test agent (TREX) and repo-context adaptation",
+    fit: "Teams wanting aggressive feedback velocity and heavier workflow automation.",
+  },
+  {
+    name: "Qodo",
+    shortTake: "Context-heavy platform for cross-repo and standard enforcement",
+    fit: "Organizations with multi-repo governance requirements and higher product maturity.",
+  },
+  {
+    name: "PR-Agent",
+    shortTake: "Open-source, provider-flexible PR review engine",
+    fit: "Teams preferring self-hosted OSS control and model/provider choice.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: "Best AI Code Review Tools for Agent-Written PRs",
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    name: "Best AI code review tools for agent-written pull requests",
+    itemListElement: comparedTools.map((tool, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      name: tool.name,
+      item: canonical,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: "Best AI code review tools for agent PRs",
+        item: canonical,
+      },
+    ],
+  },
+];
+
+const criteria = [
+  {
+    title: "Evidence surface",
+    weight: "30%",
+    checks: [
+      "Does it emit machine-readable, reviewable output (not only chat-like prose)?",
+      "Can an external agent replay the result without re-running the full PR workflow from memory?",
+      "Can findings be mapped to current-head evidence and re-runs?",
+    ],
+  },
+  {
+    title: "Security boundary behavior",
+    weight: "25%",
+    checks: [
+      "Does it keep secret handling and privileged workflow boundaries explicit?",
+      "Does it avoid ambiguous behavior when repos run from untrusted forks?",
+      "Can you run it without signing up for a vendor account?",
+    ],
+  },
+  {
+    title: "Signal quality",
+    weight: "20%",
+    checks: [
+      "Can the tool prioritize blocking defects (not just style noise)?",
+      "Does it reduce noisy comments that block reviews without enough evidence?",
+      "Can teams tune signal/precision for their own risk posture?",
+    ],
+  },
+  {
+    title: "Cost and operability",
+    weight: "15%",
+    checks: [
+      "How predictable is model cost for typical PR volume?",
+      "Can teams control provider selection?",
+      "Is setup friction low enough for daily use by contributors?",
+    ],
+  },
+  {
+    title: "Actionability",
+    weight: "10%",
+    checks: [
+      "Does the output support a repair loop (human or agent)",
+      "Can feedback be linked to PR changes and versioned across reruns?",
+      "Do maintainers keep control over merge criteria?",
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  eyebrow="FIELD NOTE / 002 / AI CODE REVIEW"
+  publishedAt={publishedAt}
+  readingTime="13 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">The right AI code review tool for agent-written PRs.</Fragment>
+  <Fragment slot="deck">
+    Not every review engine that catches bugs is right for agent-authored pull requests.
+    In 2026, the stronger fit usually depends on your repair loop, trust boundaries, and whether your team wants score-centric determinism or feature-rich automation.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#selection-framework">How to pick your tool</a></li>
+    <li><a href="#quick-comparison">Quick comparison (listicle)</a></li>
+    <li><a href="#reviewgate-differentiator">Where ReviewGate differs</a></li>
+    <li><a href="#selection-for-junior">Recommended shortlist by team profile</a></li>
+    <li><a href="#implementation-checklist">Implementation checklist before choosing</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>Short answer</h2>
+    <p class="article-lead">
+      If you review agent PRs, choose the tool that makes your <strong>merge decision reproducible</strong>, not the loudest dashboard.
+      Start from one deterministic gate that writes stable evidence, then add extra coverage only where your team has sustained capacity to consume it.
+    </p>
+    <p>
+      In practical terms, tools that are BYOK, PR-head aware, and output machine-readable findings usually support safer agent workflows than tools that optimize only for reviewer convenience.
+      That is why many teams now combine a lightweight, score-centered reviewer for merge readiness with optional broader automation for deeper context.
+    </p>
+  </section>
+
+  <section id="selection-framework">
+    <h2>How to pick before you install anything</h2>
+    <p>
+      Product pages often frame this as “faster feedback.” That matters, but for agent-written changes it is incomplete.
+      Review is a safety decision with a trust boundary: model output must become evidence before it influences merges.
+    </p>
+    <p>
+      Score each candidate against these weighted criteria in order:
+    </p>
+
+    <ol>
+      {criteria.map((criterion) => (
+        <li>
+          <strong>{criterion.title}</strong> ({criterion.weight})
+          <ul>
+            {criterion.checks.map((check) => (
+              <li>{check}</li>
+            ))}
+          </ul>
+        </li>
+      ))}
+    </ol>
+
+    <h3>A minimum acceptance baseline</h3>
+    <p>
+      Do not compare only against marketing claims. If a tool does not produce a stable, versioned summary artifact and a path back to a specific pull-request head, assume low merge trust.
+      A review decision should be tied to exact code and exact SHA, not to yesterday's model transcript.
+    </p>
+    <p>
+      This is the core contract for modern agent loops.
+      For GitHub-native teams, the review loop is not a single static decision—it is repeated until current-head evidence passes.
+    </p>
+    <aside class="article-callout">
+      <strong>Non-negotiable for PR-loop workflows</strong>
+      <p>If your reviewer cannot tell you exactly which findings still apply to the current head and which were resolved, the tool is only partially useful for autonomous loops.</p>
+    </aside>
+  </section>
+
+  <section id="quick-comparison">
+    <h2>Quick comparison: 5 options, 2 pages of tradeoffs</h2>
+    <p>
+      This is the shortlist anchored by real tool behavior and public claims.
+    </p>
+
+    <article>
+      <h3>1) ReviewGate</h3>
+      <p>
+        ReviewGate is open-source and GitHub Actions-first. Its own README states that it is review-only, runs in CI, uses OpenRouter with the user’s own key, outputs a visible <strong>0-5</strong> score, a canonical summary comment, and structured JSON for repair loops.
+        It updates the same summary when rerunning and keeps the merge authority with humans.
+      </p>
+      <p>
+        Source-level claim verification:
+      </p>
+      <ul>
+        <li>Open-source, GitHub Actions-first PR review gate.</li>
+        <li>Visible score, canonical summary, and machine-readable JSON artifact.</li>
+        <li>Current-head rerun and evidence preservation path for agent loops.</li>
+      </ul>
+      <p>
+        Official product source: <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/README.md">ReviewGate README</a> and <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/PRODUCT.md">Product contract</a>.
+      </p>
+
+      <h4>Strengths</h4>
+      <ul>
+        <li>Deterministic scoring target and score visibility.</li>
+        <li>By-design fit for merge-readiness automation and external-agent repair loops.</li>
+        <li>BYOK model strategy and repository-owned workflow path reduce black-box risk.</li>
+      </ul>
+      <h4>Weaknesses</h4>
+      <ul>
+        <li>Fewer “consumer-style” UI layers than hosted alternatives.</li>
+        <li>Teams need to own review policy and workflow wiring.</li>
+      </ul>
+    </article>
+
+    <article>
+      <h3>2) CodeRabbit</h3>
+      <p>
+        CodeRabbit positions itself as a polished, high-velocity reviewer with quick setup and built-in conversational review UX.
+        The site headline claims faster code review and bug reductions and a two-click install path.
+      </p>
+      <p>
+        On public extraction, code-review workflows and inline summaries are obvious and the tool is easy to adopt for teams that want speed and convenience.
+      </p>
+      <h4>Strengths</h4>
+      <ul>
+        <li>Lowest setup friction.</li>
+        <li>High-visibility inline review flows and conversation model.</li>
+        <li>Good fit when teams value hosted UX and fast rollout.</li>
+      </ul>
+      <h4>Weaknesses</h4>
+      <ul>
+        <li>Hosted model and service assumptions are stronger than BYOK-first governance.</li>
+        <li>Built-in workflow may trade auditability for convenience in strict enterprise fork settings.</li>
+      </ul>
+      <p>Official page: <a href="https://www.coderabbit.ai/">CodeRabbit homepage</a>.</p>
+    </article>
+
+    <article>
+      <h3>3) Greptile</h3>
+      <p>
+        Greptile emphasizes adaptive context and automation extensions.
+        Its public page says it supports faster merging and higher bug catch with team context learning, and includes TREX, an agent that writes/runs tests for PRs.
+      </p>
+      <h4>Strengths</h4>
+      <ul>
+        <li>Cross-surface automation with test-oriented PR coverage.</li>
+        <li>Context learning and stronger “catch issues earlier” positioning.</li>
+      </ul>
+      <h4>Weaknesses</h4>
+      <ul>
+        <li>Tool behavior can be heavier for small repos with simple review needs.</li>
+        <li>Operational complexity increases if your team values minimal moving parts.</li>
+      </ul>
+      <p>Official page: <a href="https://www.greptile.com/">Greptile homepage</a>.</p>
+    </article>
+
+    <article>
+      <h3>4) Qodo</h3>
+      <p>
+        Qodo’s messaging is broad and platform-like: it presents context-aware reviews across multi-repo dependencies, requirements coverage, and rule enforcement.
+        The product page states security/compliance language and SOC2 posture, and it markets high-precision finding quality.
+      </p>
+      <h4>Strengths</h4>
+      <ul>
+        <li>Strong fit for teams managing multiple repos and cross-repo breaks.</li>
+        <li>Higher workflow depth for organizations with robust review compliance.</li>
+      </ul>
+      <h4>Weaknesses</h4>
+      <ul>
+        <li>Heavier operational surface; onboarding cost can be significant.</li>
+        <li>Potentially less lightweight for open-source maintainer loops.</li>
+      </ul>
+      <p>Official page: <a href="https://www.qodo.ai/products/qodo-merge/">Qodo Merge</a>.</p>
+    </article>
+
+    <article>
+      <h3>5) PR-Agent</h3>
+      <p>
+        PR-Agent is the open-source line descendant of Qodo’s tooling history, with broad Git provider support and configurable tool actions.
+        The README explicitly says it is now separate from Qodo’s hosted product, which is useful context for teams choosing OSS control versus managed service.
+      </p>
+      <h4>Strengths</h4>
+      <ul>
+        <li>Open-source and customizable prompt/action surface.</li>
+        <li>Provider and platform flexibility.</li>
+      </ul>
+      <h4>Weaknesses</h4>
+      <ul>
+        <li>Less structured merge-readiness contract than a tool with a canonical score+artifact-first model.</li>
+        <li>Operates with higher hands-on maintenance expectations.</li>
+      </ul>
+      <p>Repository source: <a href="https://github.com/qodo-ai/pr-agent">PR-Agent</a>.</p>
+    </article>
+  </section>
+
+  <section id="reviewgate-differentiator">
+    <h2>What ReviewGate contributes that most competitor pages miss</h2>
+    <p>
+      The biggest gap across most marketing pages is not “more comments,” but <strong>stateful repairability</strong>.
+      A useful AI reviewer for agent PRs should let you answer three questions on each rerun:
+    </p>
+    <ol>
+      <li>What is the current result for this exact head?</li>
+      <li>Which findings are still unresolved blockers?</li>
+      <li>Can an external actor consume structured results without guessing what the model wrote?</li>
+    </ol>
+    <p>
+      ReviewGate’s contract explicitly answers these through current-head behavior and structured output.
+      It also publishes one canonical summary path, avoiding duplicated comment history that can confuse humans and repair agents.
+    </p>
+    <aside class="article-callout">
+      <strong>Practical information gain from this article</strong>
+      <p>When the same commit gets rechecked after a fix, you should compare only current-head findings and keep a stable contract for blockers and dispositions. That pattern is rarer than generic “tool overview” pages.</p>
+    </aside>
+    <p>
+      Use this differentiator only when your team is actively looping fixes through bots. If your process is ad hoc and human-only, a hosted tool can still be sufficient.
+    </p>
+  </section>
+
+  <section id="selection-for-junior">
+    <h2>Recommended shortlist for common team profiles</h2>
+
+    <h3>Open-source maintainer with agent PRs (small team)</h3>
+    <p>
+      Start with <strong>ReviewGate + repo-native policy</strong>.
+      You already control branch protection, workflow permissions, and scoring rubric. You get deterministic merge readiness and no mandatory app-hosted account lock-in.
+      Add one hosted convenience tool only if the signal volume becomes overwhelming.
+    </p>
+
+    <h3>Fast-growth SaaS team</h3>
+    <p>
+      Evaluate <strong>ReviewGate + Qodo/Greptile</strong> as a tandem only if team capacity exists.
+      Let ReviewGate stay the merge gate, and use the second option for broader context if your PR topology truly needs cross-repo enforcement.
+    </p>
+
+    <h3>Enterprise governance and compliance</h3>
+    <p>
+      Start with <strong>Qodo</strong> or a similarly strict platform if your policy requires structured enterprise controls at onboarding.
+      Keep a lightweight canonical artifact reviewer in front for deterministic acceptance criteria.
+    </p>
+
+    <h3>Teams that need maximum control and customization</h3>
+    <p>
+      Choose <strong>PR-Agent</strong> only if you can absorb the operational burden and want full source-control of prompts.
+      Be explicit about validation boundaries, otherwise “more options” becomes “more drift.”
+    </p>
+  </section>
+
+  <section id="implementation-checklist">
+    <h2>Implementation checklist before shipping your tool choice</h2>
+    <p>
+      Don’t treat this as another shopping list.
+      Use the checklist as a pre-merge safety gate.
+    </p>
+    <ol>
+      <li>
+        <strong>Pick one merge gate contract first.</strong>
+        A scoring threshold (or a fixed blocker policy) needs to be visible and auditable before tools are compared.
+      </li>
+      <li>
+        <strong>Verify current-head behavior.</strong>
+        A rerun on the same commit is not enough. Re-run after the next push and verify stale findings are not preserved by accident.
+      </li>
+      <li>
+        <strong>Map outputs to an external repair path.</strong>
+        Confirm findings can be consumed by your bots or downstream process without extra scraping.
+      </li>
+      <li>
+        <strong>Test the boundary.</strong>
+        Inspect secrets, workflow permissions, token scope, and fork rules in a realistic PR from an untrusted source.
+      </li>
+      <li>
+        <strong>Keep one canonical summary place.</strong>
+        Merging with duplicated bot summaries creates unbounded human confusion and weakens traceability.
+      </li>
+      <li>
+        <strong>Document your team rubric.</strong>
+        Publish the “what counts as blocker” rules somewhere discoverable, versioned, and visible in onboarding.
+      </li>
+    </ol>
+
+    <p class="article-lead">
+      If you have to ask “which tool can I add today without changing my merge policy?” the answer is often simpler:
+      start with deterministic review output, then layer the polished tool around it.
+    </p>
+  </section>
+
+  <section class="article-cta">
+    <p class="docs-kicker">READY TO COMPARE YOUR ROUTES</p>
+    <h2>Want to operationalize this for your repo?</h2>
+    <p>
+      ReviewGate ships as open-source, actions-first review infrastructure with a BYOK model path, a visible score, and artifacts you can consume in repair loops.
+      It is designed around the same contract most teams use today: stable signals, current-head correctness, and explicit human merge authority.
+    </p>
+    <div class="signal-actions">
+      <a
+        class="signal-primary"
+        href="/docs"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >Install ReviewGate <span aria-hidden="true">↗</span></a>
+      <a class="signal-secondary" href="/blog">Back to field notes</a>
+    </div>
+    <p class="article-lead">
+      Additional references used for this comparison:
+      <a href="https://github.com/qodo-ai/pr-agent">PR-Agent</a>,
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/README.md">ReviewGate README</a>, and
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/PRODUCT.md">ReviewGate product contract</a>.
+    </p>
+  </section>
+</ArticleLayout>

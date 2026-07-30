@@ -194,6 +194,7 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:reviewgate.lvt
 | Date | Type | Title | Target | Status |
 |---|---|---|---|---|
 | 2026-07-29 | How-to / tutorial | How to Tell If Code Is AI-Generated: What Actually Works | `how to tell if code is ai generated` (US volume 260, KD 11) | In PR |
+| 2026-07-30 | Listicle / roundup | Best AI Code Review Tools for Agent-Written Pull Requests | `best ai code review tools` (US volume 110, KD 10) | In PR |
 
 The article adds a provenance-blind five-step evidence gate, links to the live docs and product surfaces, and receives inbound links from `/blog` and `/docs`. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
 

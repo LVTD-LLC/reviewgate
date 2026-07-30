@@ -6,12 +6,20 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
 
 const firstPost = {
+  href: "/blog/best-ai-code-review-tools",
+  number: "NOTE / 002",
+  title: "Best AI code review tools for agent-written PRs",
+  description:
+    "A practical 2026 selection guide for score-first, merge-safe AI review tools and agent repair loops.",
+  date: "JUL 30 / 2026",
+};
+
+const previousPost = {
   href: "/blog/how-to-tell-if-code-is-ai-generated",
   number: "NOTE / 001",
   title: "How to tell if code is AI-generated: what actually works",
   description:
     "Why style-based detection is weak evidence, and the five-step review gate that works regardless of who wrote the diff.",
-  date: "JUL 29 / 2026",
 };
 ---
 
@@ -50,18 +58,23 @@ const firstPost = {
       <aside class="utility-console" aria-label="Latest field note">
         <div class="console-topline">
           <span>CHANNEL / RG</span>
-          <span>POSTS / 01</span>
+          <span>POSTS / 02</span>
           <strong>LIVE</strong>
         </div>
         <div class="utility-status">
           <p>LATEST TRANSMISSION</p>
-          <strong>001_</strong>
+          <strong>002_</strong>
           <span>{firstPost.description}</span>
         </div>
         <a class="blog-entry" href={firstPost.href}>
           <span>{firstPost.number}</span>
           <strong>{firstPost.title}</strong>
           <small>{firstPost.date}</small>
+        </a>
+        <a class="blog-entry" href={previousPost.href}>
+          <span>{previousPost.number}</span>
+          <strong>{previousPost.title}</strong>
+          <small>{previousPost.description}</small>
         </a>
         <div class="console-footer">
           <span>/blog</span>
