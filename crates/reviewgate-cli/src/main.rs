@@ -1029,6 +1029,17 @@ fn attested_disposition_comment_ids(
         .collect()
 }
 
+fn writer_authorized_disposition_comment_ids(
+    comments: &[AgentDispositionComment],
+    writer_logins: &BTreeSet<String>,
+) -> BTreeSet<u64> {
+    comments
+        .iter()
+        .filter(|comment| writer_logins.contains(&comment.author_login))
+        .map(|comment| comment.id)
+        .collect()
+}
+
 fn load_attested_disposition_comment_ids(
     repo: &Path,
     repository: &str,
@@ -1038,8 +1049,37 @@ fn load_attested_disposition_comment_ids(
     if comments.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let statuses = fetch_commit_status_records(repo, repository, reviewed_sha)?;
-    Ok(attested_disposition_comment_ids(comments, &statuses))
+    let mut authorized = match fetch_commit_status_records(repo, repository, reviewed_sha) {
+        Ok(statuses) => attested_disposition_comment_ids(comments, &statuses),
+        Err(error) => {
+            eprintln!(
+                "ReviewGate warning: commit-status disposition receipts were unavailable: {error}"
+            );
+            BTreeSet::new()
+        }
+    };
+    let mut writer_logins = BTreeSet::new();
+    for author_login in comments
+        .iter()
+        .map(|comment| comment.author_login.as_str())
+        .filter(|author| !author.is_empty())
+        .collect::<BTreeSet<_>>()
+    {
+        match fetch_actor_write_permission(repo, repository, author_login) {
+            Ok(true) => {
+                writer_logins.insert(author_login.to_string());
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "ReviewGate warning: could not verify disposition author {author_login}: {error}"
+            ),
+        }
+    }
+    authorized.extend(writer_authorized_disposition_comment_ids(
+        comments,
+        &writer_logins,
+    ));
+    Ok(authorized)
 }
 
 fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
@@ -8703,6 +8743,30 @@ review_angles:
             )
             .expect("empty disposition set")
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn repository_writers_authorize_dispositions_when_statuses_are_cross_token_invisible() {
+        let comments = vec![
+            AgentDispositionComment {
+                id: 41,
+                author_login: "repair-agent".to_string(),
+                body: "trusted".to_string(),
+            },
+            AgentDispositionComment {
+                id: 42,
+                author_login: "drive-by-reader".to_string(),
+                body: "untrusted".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            writer_authorized_disposition_comment_ids(
+                &comments,
+                &BTreeSet::from(["repair-agent".to_string()])
+            ),
+            BTreeSet::from([41])
         );
     }
 
