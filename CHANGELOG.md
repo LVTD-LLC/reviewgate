@@ -4,7 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
-- Loaded agent disposition receipts from GitHub's combined commit-status response so workflow tokens can consume exact writer-created receipts that the paginated status endpoint omits.
+- Loaded agent disposition receipts from GitHub's combined commit-status response so workflow tokens can consume exact writer-created receipts that the paginated status endpoint omits. Advanced the action runtime pin to `v0.6.2`.
 - Preserved exact-head agent disposition receipts when GitHub Actions redacts the commit-status creator, while continuing to reject visible creator mismatches and requiring the exact writer-only status context, payload digest, and success state. Advanced the action runtime pin to `v0.6.1`.
 - Added site-wide Plausible pageview and outbound-link tracking for `reviewgate.lvtd.dev`.
 - Moved ReviewGate's own dogfood workflow to OpenRouter's free model router while preserving the public price-to-value model default.
