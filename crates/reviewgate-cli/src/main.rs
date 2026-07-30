@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::process::Stdio;
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -71,6 +72,9 @@ const AGENT_DISPOSITION_DIGEST_PREFIX: &str = "receipt-sha256:";
 const MAX_DISPOSITION_PERMISSION_LOOKUPS: usize = 32;
 const AGENT_RESULT_ARTIFACT_PREFIX: &str = "reviewgate-agent-result";
 const CURL_HTTP_STATUS_WRITE_OUT: &str = "%{stderr}reviewgate-http-status=%{http_code}\\n";
+const HOMEBREW_FORMULA: &str = "LVTD-LLC/tap/reviewgate";
+const INSTALLER_URL: &str =
+    "https://raw.githubusercontent.com/LVTD-LLC/reviewgate/main/scripts/install.sh";
 
 type CliResult<T> = anyhow::Result<T>;
 
@@ -84,6 +88,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Upgrade ReviewGate using Homebrew or the standalone installer.
+    Upgrade,
     /// Print the current pull request head's validated agent result as JSON.
     Check {
         #[arg(long, default_value = ".")]
@@ -417,6 +423,7 @@ fn main() -> CliResult<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Upgrade => upgrade(),
         Command::Check {
             repo,
             pr,
@@ -547,6 +554,102 @@ fn main() -> CliResult<()> {
             input,
             output,
         } => publish_agent_result(repo, input, output),
+    }
+}
+
+fn upgrade() -> CliResult<()> {
+    let current_exe = std::env::current_exe().context("locate the current ReviewGate binary")?;
+
+    if homebrew_owns_executable(&current_exe) {
+        let status = ProcessCommand::new("brew")
+            .args(["upgrade", HOMEBREW_FORMULA])
+            .status()
+            .context("run Homebrew upgrade")?;
+        if !status.success() {
+            bail!("Homebrew could not upgrade {HOMEBREW_FORMULA}");
+        }
+        return Ok(());
+    }
+
+    let install_dir = current_exe
+        .parent()
+        .context("the current ReviewGate binary has no parent directory")?;
+    let installer_path = std::env::temp_dir().join(format!(
+        "reviewgate-install-{}-{}.sh",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _installer_cleanup = TemporaryFile::new(installer_path.clone());
+    let installer_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&installer_path)
+        .context("create a temporary file for the ReviewGate installer")?;
+
+    let status = ProcessCommand::new("curl")
+        .args(["--proto", "=https", "--tlsv1.2", "-LsSf"])
+        .arg(INSTALLER_URL)
+        .stdout(Stdio::from(installer_file))
+        .status()
+        .context("download the ReviewGate installer with curl")?;
+    if !status.success() {
+        bail!("could not download the ReviewGate installer from {INSTALLER_URL}");
+    }
+
+    let status = ProcessCommand::new("sh")
+        .arg(&installer_path)
+        .env("REVIEWGATE_INSTALL_DIR", install_dir)
+        .status()
+        .context("run the ReviewGate installer")?;
+    if !status.success() {
+        bail!("the ReviewGate installer could not complete the upgrade");
+    }
+    Ok(())
+}
+
+fn homebrew_owns_executable(current_exe: &Path) -> bool {
+    let Ok(output) = ProcessCommand::new("brew")
+        .args(["--prefix", HOMEBREW_FORMULA])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let Ok(prefix) = String::from_utf8(output.stdout) else {
+        return false;
+    };
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return false;
+    }
+    let prefix = Path::new(prefix);
+    let resolved_exe = fs::canonicalize(current_exe).unwrap_or_else(|_| current_exe.to_path_buf());
+    let resolved_prefix = fs::canonicalize(prefix).unwrap_or_else(|_| prefix.to_path_buf());
+    path_is_within_prefix(&resolved_exe, &resolved_prefix)
+}
+
+fn path_is_within_prefix(path: &Path, prefix: &Path) -> bool {
+    path.starts_with(prefix)
+}
+
+struct TemporaryFile {
+    path: PathBuf,
+}
+
+impl TemporaryFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -7119,6 +7222,37 @@ mod tests {
     }
 
     #[test]
+    fn homebrew_ownership_requires_the_executable_to_be_inside_the_formula_prefix() {
+        assert!(path_is_within_prefix(
+            Path::new("/opt/homebrew/Cellar/reviewgate/0.8.0/bin/reviewgate"),
+            Path::new("/opt/homebrew/Cellar/reviewgate/0.8.0")
+        ));
+        assert!(!path_is_within_prefix(
+            Path::new("/Users/test/.local/bin/reviewgate"),
+            Path::new("/opt/homebrew/Cellar/reviewgate/0.8.0")
+        ));
+    }
+
+    #[test]
+    fn upgrade_is_a_first_class_cli_command() {
+        let cli = Cli::try_parse_from(["reviewgate", "upgrade"]).expect("parse upgrade");
+        assert!(matches!(cli.command, Command::Upgrade));
+    }
+
+    #[test]
+    fn standalone_installer_verifies_supported_release_archives() {
+        let installer = include_str!("../../../scripts/install.sh");
+
+        assert!(installer.contains("x86_64-unknown-linux-gnu"));
+        assert!(installer.contains("aarch64-apple-darwin"));
+        assert!(installer.contains("x86_64-apple-darwin"));
+        assert!(installer.contains("releases/latest/download"));
+        assert!(installer.contains("sha256sum"));
+        assert!(installer.contains("shasum -a 256"));
+        assert!(installer.contains("[ \"$actual_checksum\" = \"$expected_checksum\" ]"));
+    }
+
+    #[test]
     fn workflow_wait_state_requires_attempt_status_event_and_head() {
         let state = parse_workflow_run_state(
             r#"{
@@ -8424,20 +8558,28 @@ review_angles:
         let workflow = include_str!("../../../.github/workflows/release-runtime.yml");
 
         assert!(workflow.contains("push:\n    tags:"));
-        assert!(workflow.contains("build:\n    permissions:\n      contents: read"));
+        assert!(workflow.contains("build:\n    strategy:"));
+        assert!(workflow.contains("runner: macos-15\n            target: aarch64-apple-darwin"));
+        assert!(
+            workflow.contains("runner: macos-15-intel\n            target: x86_64-apple-darwin")
+        );
+        assert!(workflow.contains("target: x86_64-unknown-linux-gnu"));
+        assert!(workflow.contains("permissions:\n      contents: read"));
         assert!(workflow.contains("attest:\n    needs: build"));
         assert!(workflow.contains("verify:\n    needs: attest"));
         assert!(workflow.contains("publish:\n    needs: verify"));
         assert!(workflow.contains("persist-credentials: false"));
-        assert!(workflow.contains("cargo +1.96.0 build --locked --release -p reviewgate-cli"));
+        assert!(workflow.contains(
+            "cargo +1.96.0 build --locked --release -p reviewgate-cli --target \"$TARGET\""
+        ));
         let regression_gate = workflow
             .find("cargo +1.96.0 test --locked --workspace")
             .expect("release regression gate");
         let release_build = workflow
-            .find("cargo +1.96.0 build --locked --release -p reviewgate-cli")
+            .find("cargo +1.96.0 build --locked --release -p reviewgate-cli --target \"$TARGET\"")
             .expect("release build");
         assert!(regression_gate < release_build);
-        assert!(workflow.contains("reviewgate-x86_64-unknown-linux-gnu.tar.gz"));
+        assert!(workflow.contains("archive=\"reviewgate-$TARGET.tar.gz\""));
         assert!(workflow.contains("actions/upload-artifact@"));
         assert!(workflow.contains("actions/download-artifact@"));
         assert!(workflow.contains("actions/attest-build-provenance@"));

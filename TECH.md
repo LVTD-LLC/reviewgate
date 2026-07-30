@@ -12,7 +12,7 @@ ReviewGate is a Rust workspace with a thin composite GitHub Action wrapper.
   - `crates/reviewgate-github`: GitHub publishing primitives.
 - Action wrapper:
   - `action.yml`: composite action entrypoint.
-  - `.github/workflows/release-runtime.yml`: reproducible Linux X64 runtime build, attestation, and release upload.
+  - `.github/workflows/release-runtime.yml`: reproducible Linux X64 and macOS Apple Silicon/Intel runtime builds, attestations, and release uploads.
   - `action/`: action documentation.
 - Marketing site:
   - `site/`: Astro static site for `reviewgate.lvtd.dev`.
@@ -86,6 +86,7 @@ Required CI steps:
 - CLI orchestration belongs in `crates/reviewgate-cli`.
 - The composite action should stay thin and delegate to the Rust binary.
 - Consumer workflows must use the version-pinned, provenance-verified release binary; they must not compile ReviewGate source.
+- The standalone CLI installer must verify the published SHA-256 checksum before replacing a binary.
 - Live OpenRouter calls must have explicit per-angle and whole-review time budgets.
 
 ## Security Constraints

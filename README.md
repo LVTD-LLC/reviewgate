@@ -26,6 +26,7 @@ Website: <https://reviewgate.lvtd.dev>
 - [Project Status](#project-status)
 - [GitHub Action Quick Start](#github-action-quick-start)
 - [Prerequisites](#prerequisites)
+- [Install the CLI](#install-the-cli)
 - [Getting Started Locally](#getting-started-locally)
 - [Architecture](#architecture)
 - [Review Lifecycle](#review-lifecycle)
@@ -247,6 +248,30 @@ nvm install 24
 nvm use 24
 ```
 
+## Install the CLI
+
+Install the latest release on macOS or Linux with one command:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/LVTD-LLC/reviewgate/main/scripts/install.sh | sh
+```
+
+The installer detects macOS Apple Silicon, macOS Intel, and Linux x86_64, verifies the release archive checksum, and installs `reviewgate` to `~/.local/bin` by default. Set `REVIEWGATE_INSTALL_DIR` to choose another directory.
+
+On macOS, you can use the LVTD Homebrew tap instead:
+
+```bash
+brew install LVTD-LLC/tap/reviewgate
+```
+
+Upgrade either installation with the same command:
+
+```bash
+reviewgate upgrade
+```
+
+ReviewGate detects when the running binary belongs to Homebrew and delegates to `brew upgrade`. Other installations are replaced in their current directory by the checksum-verified installer.
+
 ## Getting Started Locally
 
 ### 1. Clone the Repository
@@ -351,7 +376,7 @@ GITHUB_BASE_REF=main OPENROUTER_API_KEY=sk-or-... cargo run --locked -p reviewga
   --summary-out .reviewgate/summary.md
 ```
 
-### 7. Install the CLI Locally
+### 7. Install the Development CLI Locally
 
 The Cargo package binary is named `reviewgate`.
 
@@ -897,13 +922,13 @@ Use the Cargo form during development:
 cargo run --locked -p reviewgate-cli -- <subcommand>
 ```
 
-After `cargo install --path crates/reviewgate-cli --locked`, use:
+After installing the release or running `cargo install --path crates/reviewgate-cli --locked`, use:
 
 ```bash
 reviewgate <subcommand>
 ```
 
-From another repository, install the current released source with:
+To build the current released source with Cargo instead of using a release binary:
 
 ```bash
 cargo install --git https://github.com/LVTD-LLC/reviewgate --locked reviewgate-cli
@@ -913,6 +938,7 @@ cargo install --git https://github.com/LVTD-LLC/reviewgate --locked reviewgate-c
 
 | Command | Purpose |
 | --- | --- |
+| `upgrade` | Upgrade with Homebrew when the running binary is Homebrew-managed; otherwise download and checksum-verify the latest release into the current binary directory. |
 | `review --pr <number> --wait [--workflow <selector>]` | Rerun the exact current-head review, wait within a bounded timeout, reconcile bot-owned threads with the invoking writer's GitHub token, and print the canonical agent-result JSON. Without `--wait`, trigger only. |
 | `check --pr <number> [--workflow <selector>]` | Download, validate, and print the existing agent result from the configured ReviewGate workflow for the exact current PR head. |
 | `disposition --pr <number> --finding <fingerprint> --status <status> --evidence <text> [--workflow <selector>]` | Submit a structured, head-bound disposition without scraping or editing Markdown. |

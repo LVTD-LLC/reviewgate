@@ -22,15 +22,48 @@ The `reviewgate` binary is both the Action's runtime and a first-class local int
 
 Local review commands create artifacts. They do not automatically post PR comments, reconcile threads, or publish a check run. Those GitHub publishing commands need event payloads and authenticated GitHub context and are primarily Action internals.
 
+## Install the latest release
+
+Install the latest release on macOS or Linux with one command:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/LVTD-LLC/reviewgate/main/scripts/install.sh | sh
+```
+
+The installer detects macOS Apple Silicon, macOS Intel, and Linux x86_64, verifies the release archive checksum, and installs `reviewgate` to `~/.local/bin` by default. Set `REVIEWGATE_INSTALL_DIR` to choose another directory.
+
+On macOS, use the LVTD Homebrew tap instead:
+
+```bash
+brew install LVTD-LLC/tap/reviewgate
+```
+
+Confirm the command is on `PATH`:
+
+```bash
+command -v reviewgate
+reviewgate --help
+```
+
+## Upgrade the CLI
+
+Both installation methods use the same upgrade command:
+
+```bash
+reviewgate upgrade
+```
+
+ReviewGate detects whether the running binary belongs to Homebrew. Homebrew installations delegate to `brew upgrade`; standalone and Cargo installations download the latest checksum-verified release into the current binary directory.
+
 ## Prerequisites
 
 For local reviews:
 
 - Git;
-- Rustup and Cargo;
-- Rust `1.96.0`;
 - `curl` for live OpenRouter calls;
 - `jq` for the inspection examples.
+
+Rustup, Cargo, and Rust `1.96.0` are required only when building ReviewGate from source.
 
 For GitHub-facing commands such as `review`, `check`, `disposition`, `recheck`, and rereview handling:
 
@@ -70,13 +103,6 @@ cargo install \
   --git https://github.com/LVTD-LLC/reviewgate \
   --locked \
   reviewgate-cli
-```
-
-Confirm the command is on `PATH`:
-
-```bash
-command -v reviewgate
-reviewgate --help
 ```
 
 If `cargo` is a mise shim and reports that no version is selected, configure `rust@1.96.0` for the checkout or shell before installing.
