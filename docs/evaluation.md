@@ -24,8 +24,8 @@ The versioned manifest is
 `reviewgate-benchmark-report/v1`. Their JSON Schemas live under `schemas/`.
 Manifest parsing rejects unknown fields, unblinded corpora, fewer than 30
 cases, fewer than two repetitions, duplicate configuration/source IDs,
-escaping source paths, invalid thresholds, and anything other than exactly one
-baseline and one candidate.
+more than ten repetitions, escaping source paths, invalid thresholds, and
+anything other than exactly one baseline and one candidate.
 
 The committed corpus currently contains 44 cases:
 
@@ -60,9 +60,10 @@ Each configuration report includes:
   serious expected keys;
 - **false blockers per case:** unexpected or contradicted blockers divided by
   corpus cases;
-- **contradiction rate:** expected-clean cases incorrectly reported as
-  blocking;
-- **completion rate:** cases without a reviewer failure;
+- **contradiction rate:** adjudicated known non-findings incorrectly reported
+  as blocking;
+- **completion rate:** cases whose every required repetition completed without
+  a reviewer failure;
 - **rereview stability:** cases whose semantic-key/blocking set is identical
   across repetitions;
 - **rereview convergence:** cases whose final repetition agrees with the
@@ -93,12 +94,17 @@ OPENROUTER_API_KEY=... cargo run --locked -p reviewgate-cli -- eval-replays \
 ```
 
 Before the first request, ReviewGate prints the chosen model and the manifest's
-cost and latency budgets. Each captured case is materialized in an isolated
+cost and latency budgets, resolves model pricing once, and rejects runs above
+100 model requests. Each captured case is materialized in an isolated
 temporary directory. The model sees only the captured diff/files and normal
 review instructions—not expected keys or adjudication. The same model response
 feeds both configurations: the baseline scores raw calibrated findings, while
 the candidate passes them through the normal evidence gate. Failures produce
-incomplete runs and recall misses rather than being dropped.
+incomplete runs and recall misses rather than being dropped. Before each model
+request, the evaluator stops if cumulative provider-reported spend (or the
+pricing estimate when spend is unavailable) has reached
+`maximum_live_cost_usd`. Charged responses retain their cost even when their
+model artifact is malformed.
 
 Use `--max-cases <n>` for exploratory live runs. A subset smaller than the
 manifest minimum still writes reports but fails the replacement gate. Live
@@ -119,6 +125,7 @@ The committed gate requires:
 - false blockers per case at most `0.05`;
 - contradiction rate at most `0.05`;
 - rereview stability of `1.0`;
+- completion rate of `1.0`;
 - total live cost at most `$10`;
 - mean live latency at most `300000ms`.
 

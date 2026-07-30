@@ -8,15 +8,17 @@ use reviewgate_core::{
     BenchmarkExpectedFinding, BenchmarkKnownNonFinding, BenchmarkManifest,
     BenchmarkObservedFinding, BenchmarkObservedRun, BenchmarkPipeline, BenchmarkRunScore,
     ConfigurationMetrics, DEFAULT_TARGET_SCORE, ReviewAngleResult, ReviewArtifact, ReviewScope,
-    ReviewStatus, score_benchmark_run,
+    ReviewStatus, configuration_metrics_from_scores, score_benchmark_run,
 };
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CliResult, PullRequestContext, ReviewContext, aggregate_angle_artifacts,
+    CliResult, LiveCostInputs, PullRequestContext, ReviewContext, aggregate_angle_artifacts,
     append_failed_angle_reviews, general_review_angle, ground_artifact_findings,
-    run_live_angle_review, safe_relative_path,
+    resolve_model_cost_inputs, run_live_angle_review_with_cached_pricing, safe_relative_path,
 };
+
+const MAX_LIVE_BENCHMARK_REQUESTS: usize = 100;
 
 #[derive(Debug)]
 pub struct EvalReplayOptions {
@@ -47,7 +49,7 @@ struct EvidenceGroundingCase {
     #[serde(default)]
     configuration_findings: BTreeMap<String, Vec<reviewgate_core::Finding>>,
     #[serde(default)]
-    provenance: Option<serde_json::Value>,
+    provenance: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +69,7 @@ struct EvaluatedCase {
     language: String,
     risk_class: String,
     expected_blocking: bool,
-    provenance: Option<serde_json::Value>,
+    provenance: Option<serde_json::Map<String, serde_json::Value>>,
     runs: BTreeMap<String, Vec<EvaluatedRun>>,
 }
 
@@ -116,7 +118,7 @@ struct ConfigurationReport {
 struct CaseReport {
     case_id: String,
     name: String,
-    provenance: Option<serde_json::Value>,
+    provenance: Option<serde_json::Map<String, serde_json::Value>>,
     expected_blocking: bool,
     review_complete: bool,
     observed_blocking: bool,
@@ -217,29 +219,50 @@ fn evaluate_live(
         "ReviewGate live benchmark: model={model}, maximum configured cost=${:.2}, maximum mean latency={}ms",
         manifest.thresholds.maximum_live_cost_usd, manifest.thresholds.maximum_mean_latency_ms,
     );
-    let mut cases = Vec::new();
+    let mut source_cases = Vec::new();
+    let mut loaded_case_count = 0usize;
     for source in &manifest.sources {
         let source_path = confined_input_path(&repo, Path::new(&source.path), "benchmark source")?;
         let raw = std::fs::read_to_string(&source_path)
             .with_context(|| format!("failed to read {}", source_path.display()))?;
-        let mut source_cases = parse_evidence_cases(&raw)?;
+        let mut cases = parse_evidence_cases(&raw)?;
         if let Some(max_cases) = options.max_cases {
-            source_cases.truncate(max_cases.saturating_sub(cases.len()));
+            cases.truncate(max_cases.saturating_sub(loaded_case_count));
         }
-        cases.extend(evaluate_live_evidence_cases(
-            &source.id,
-            source_cases,
-            &manifest,
-            &base_url,
-            &api_key,
-            &model,
-        )?);
+        loaded_case_count += cases.len();
+        source_cases.push((source.id.clone(), cases));
         if options
             .max_cases
-            .is_some_and(|maximum| cases.len() >= maximum)
+            .is_some_and(|maximum| loaded_case_count >= maximum)
         {
             break;
         }
+    }
+    validate_live_request_count(loaded_case_count, manifest.repetitions)?;
+    let (pricing, source) =
+        resolve_model_cost_inputs(&base_url, &api_key, &model, Duration::from_secs(15));
+    if pricing.is_none() {
+        bail!(
+            "live benchmark cannot enforce maximum_live_cost_usd because pricing is unavailable for model `{model}`"
+        );
+    }
+    let mut cumulative_cost_usd = 0.0;
+    let cost_inputs = LiveCostInputs { pricing, source };
+    let mut cases = Vec::with_capacity(loaded_case_count);
+    for (source_id, source_cases) in source_cases {
+        let mut live = LiveEvaluationContext {
+            manifest: &manifest,
+            base_url: &base_url,
+            api_key: &api_key,
+            model: &model,
+            cost_inputs,
+            cumulative_cost_usd: &mut cumulative_cost_usd,
+        };
+        cases.extend(evaluate_live_evidence_cases(
+            &source_id,
+            source_cases,
+            &mut live,
+        )?);
     }
     let report = build_report(&manifest, &cases, "live")?;
     write_reports(
@@ -249,6 +272,18 @@ fn evaluate_live(
     )?;
     if !report.passed {
         bail!("live benchmark replacement thresholds did not pass");
+    }
+    Ok(())
+}
+
+fn validate_live_request_count(case_count: usize, repetitions: usize) -> CliResult<()> {
+    let request_count = case_count
+        .checked_mul(repetitions)
+        .context("live benchmark request count overflowed")?;
+    if request_count > MAX_LIVE_BENCHMARK_REQUESTS {
+        bail!(
+            "live benchmark requires {request_count} model requests; maximum is {MAX_LIVE_BENCHMARK_REQUESTS}. Use --max-cases or lower repetitions"
+        );
     }
     Ok(())
 }
@@ -264,13 +299,19 @@ fn require_live_api_key(value: Option<String>) -> CliResult<String> {
         })
 }
 
+struct LiveEvaluationContext<'a> {
+    manifest: &'a BenchmarkManifest,
+    base_url: &'a str,
+    api_key: &'a str,
+    model: &'a str,
+    cost_inputs: LiveCostInputs,
+    cumulative_cost_usd: &'a mut f64,
+}
+
 fn evaluate_live_evidence_cases(
     source_id: &str,
     cases: Vec<EvidenceGroundingCase>,
-    manifest: &BenchmarkManifest,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
+    live: &mut LiveEvaluationContext<'_>,
 ) -> CliResult<Vec<EvaluatedCase>> {
     let mut evaluated = Vec::with_capacity(cases.len());
     for (index, case) in cases.into_iter().enumerate() {
@@ -290,41 +331,50 @@ fn evaluate_live_evidence_cases(
             .risk_class
             .clone()
             .unwrap_or_else(|| case.finding.severity.as_str().to_ascii_lowercase());
-        let mut runs = manifest
+        let mut runs = live
+            .manifest
             .configurations
             .iter()
             .map(|configuration| (configuration.id.clone(), Vec::new()))
             .collect::<BTreeMap<_, _>>();
 
-        for repetition in 1..=manifest.repetitions {
+        for repetition in 1..=live.manifest.repetitions {
+            if *live.cumulative_cost_usd >= live.manifest.thresholds.maximum_live_cost_usd {
+                bail!(
+                    "live benchmark stopped before request {} for case `{case_id}` because cumulative cost ${:.4} reached maximum_live_cost_usd ${:.4}",
+                    repetition,
+                    *live.cumulative_cost_usd,
+                    live.manifest.thresholds.maximum_live_cost_usd,
+                );
+            }
             let angle = general_review_angle();
             let started = Instant::now();
-            let (raw_artifact, review_complete) = match run_live_angle_review(
+            let result = run_live_angle_review_with_cached_pricing(
                 &context,
                 &angle,
-                base_url,
-                api_key,
-                model,
+                live.base_url,
+                live.api_key,
+                live.model,
                 Duration::from_secs(180),
-            ) {
+                live.cost_inputs,
+            );
+            let estimated_cost_usd = result.estimated_cost_usd;
+            let spent_cost_usd = result.spent_cost_usd;
+            *live.cumulative_cost_usd += spent_cost_usd.or(estimated_cost_usd).unwrap_or(0.0);
+            let (raw_artifact, review_complete) = match result.review {
                 Ok(artifact) => (
-                    aggregate_angle_artifacts(&case_id, model, vec![(angle, artifact)])?,
+                    aggregate_angle_artifacts(&case_id, live.model, vec![(angle, artifact)])?,
                     true,
                 ),
                 Err(failure) => {
-                    let mut artifact = aggregate_angle_artifacts(&case_id, model, Vec::new())?;
-                    append_failed_angle_reviews(&mut artifact, model, vec![(angle, failure)])?;
+                    let mut artifact = aggregate_angle_artifacts(&case_id, live.model, Vec::new())?;
+                    append_failed_angle_reviews(&mut artifact, live.model, vec![(angle, failure)])?;
                     (artifact, false)
                 }
             };
             let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            let estimated_cost_usd = raw_artifact
-                .cost_summary
-                .as_ref()
-                .map(|summary| summary.current_run_usd)
-                .or(raw_artifact.estimated_cost_usd);
 
-            for configuration in &manifest.configurations {
+            for configuration in &live.manifest.configurations {
                 let mut artifact = raw_artifact.clone();
                 if configuration.pipeline == BenchmarkPipeline::EvidenceGate {
                     ground_artifact_findings(root.path(), &context, &mut artifact)?;
@@ -344,7 +394,7 @@ fn evaluate_live_evidence_cases(
                         observed_run,
                         score,
                         estimated_cost_usd,
-                        spent_cost_usd: None,
+                        spent_cost_usd,
                         latency_ms: Some(latency_ms),
                         agent_time_ms: None,
                     });
@@ -737,7 +787,15 @@ impl Drop for TempCaseRoot {
 fn parse_evidence_cases(raw: &str) -> CliResult<Vec<EvidenceGroundingCase>> {
     let value: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse evidence benchmark source")?;
-    let shared_provenance = value.get("provenance").cloned();
+    let shared_provenance = value
+        .get("provenance")
+        .map(|provenance| {
+            provenance
+                .as_object()
+                .cloned()
+                .context("shared benchmark provenance must be an object")
+        })
+        .transpose()?;
     let cases = value.get("cases").cloned().unwrap_or(value);
     let mut cases: Vec<EvidenceGroundingCase> =
         serde_json::from_value(cases).context("failed to parse evidence benchmark cases")?;
@@ -750,14 +808,13 @@ fn parse_evidence_cases(raw: &str) -> CliResult<Vec<EvidenceGroundingCase>> {
 }
 
 fn merge_json_objects(
-    shared: serde_json::Value,
-    case: Option<serde_json::Value>,
-) -> serde_json::Value {
-    let mut shared = shared.as_object().cloned().unwrap_or_default();
-    if let Some(case) = case.and_then(|value| value.as_object().cloned()) {
+    mut shared: serde_json::Map<String, serde_json::Value>,
+    case: Option<serde_json::Map<String, serde_json::Value>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    if let Some(case) = case {
         shared.extend(case);
     }
-    serde_json::Value::Object(shared)
+    shared
 }
 
 fn build_report(
@@ -770,7 +827,7 @@ fn build_report(
     }
     let mut configurations = Vec::with_capacity(manifest.configurations.len());
     for configuration in &manifest.configurations {
-        let mut observations = Vec::with_capacity(cases.len());
+        let mut scores = Vec::with_capacity(cases.len());
         let mut completed = 0;
         let mut stable = 0;
         let mut converged = 0;
@@ -798,11 +855,9 @@ fn build_report(
                     case.id, configuration.id
                 )
             })?;
-            observations.push(reviewgate_core::CaseObservation {
-                expected_blocking: case.expected_blocking,
-                observed_blocking: canonical.score.observed_blockers > 0,
-            });
-            completed += usize::from(canonical.observed_run.review_complete);
+            scores.push(canonical.score.clone());
+            let review_complete = runs.iter().all(|run| run.observed_run.review_complete);
+            completed += usize::from(review_complete);
             duplicate_finding_count += canonical.score.duplicate_findings.len();
             stable += usize::from(runs_are_stable(runs));
             let final_run = runs.last().expect("non-empty runs");
@@ -835,7 +890,7 @@ fn build_report(
                 name: case.name.clone(),
                 provenance: case.provenance.clone(),
                 expected_blocking: case.expected_blocking,
-                review_complete: canonical.observed_run.review_complete,
+                review_complete,
                 observed_blocking: canonical.score.observed_blockers > 0,
                 true_blockers: canonical.score.true_blockers,
                 false_blockers: canonical.score.false_blockers,
@@ -851,7 +906,7 @@ fn build_report(
             id: configuration.id.clone(),
             role: configuration.role,
             pipeline: configuration.pipeline,
-            metrics: reviewgate_core::configuration_metrics(&observations),
+            metrics: configuration_metrics_from_scores(&scores),
             completion_rate: ratio(completed, case_count),
             rereview_stability: ratio(stable, case_count),
             rereview_convergence: ratio(converged, case_count),
@@ -986,6 +1041,11 @@ fn threshold_results(
             candidate.rereview_stability,
             thresholds.minimum_rereview_stability,
         ),
+        minimum_threshold(
+            "completion_rate",
+            candidate.completion_rate,
+            thresholds.minimum_completion_rate,
+        ),
         maximum_threshold(
             "live_cost_usd",
             candidate.spent_cost_usd.or(candidate.estimated_cost_usd),
@@ -1064,6 +1124,7 @@ mod tests {
                 maximum_false_blockers_per_case: 0.1,
                 maximum_contradiction_rate: 0.1,
                 minimum_rereview_stability: 0.95,
+                minimum_completion_rate: 1.0,
                 maximum_live_cost_usd: 5.0,
                 maximum_mean_latency_ms: 120_000,
             },
@@ -1141,6 +1202,44 @@ mod tests {
     }
 
     #[test]
+    fn report_uses_finding_level_precision_and_fails_incomplete_repetitions() {
+        let cases = parse_evidence_cases(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("fixtures parse");
+        let manifest = manifest();
+        let mut evaluated =
+            evaluate_evidence_cases("grounding", cases, &manifest).expect("fixtures replay");
+        let candidate_runs = evaluated[0]
+            .runs
+            .get_mut("candidate")
+            .expect("candidate runs");
+        candidate_runs[0].score.observed_blockers = 2;
+        candidate_runs[0].score.true_blockers = 1;
+        candidate_runs[0].score.false_blockers = 1;
+        candidate_runs[1].observed_run.review_complete = false;
+
+        let report = build_report(&manifest, &evaluated, "live").expect("report builds");
+        let candidate = &report.configurations[1];
+
+        assert!(candidate.metrics.false_positives >= 1);
+        assert!(
+            candidate
+                .metrics
+                .blocking_precision
+                .is_some_and(|value| value < 1.0)
+        );
+        assert!(candidate.completion_rate.is_some_and(|value| value < 1.0));
+        assert!(!report.passed);
+        assert!(
+            report
+                .threshold_results
+                .iter()
+                .any(|threshold| { threshold.name == "completion_rate" && !threshold.passed })
+        );
+    }
+
+    #[test]
     fn live_mode_requires_an_explicit_non_blank_api_key() {
         assert!(
             require_live_api_key(None)
@@ -1152,6 +1251,17 @@ mod tests {
         assert_eq!(
             require_live_api_key(Some("test-key".to_string())).expect("key accepted"),
             "test-key"
+        );
+    }
+
+    #[test]
+    fn live_mode_bounds_model_request_count_before_dispatch() {
+        assert!(validate_live_request_count(44, 2).is_ok());
+        assert!(
+            validate_live_request_count(51, 2)
+                .expect_err("request count must be bounded")
+                .to_string()
+                .contains("maximum is 100")
         );
     }
 
@@ -1173,8 +1283,20 @@ mod tests {
             cases[0]
                 .provenance
                 .as_ref()
-                .and_then(|provenance| provenance.pointer("/external_comparison/availability")),
+                .and_then(|provenance| provenance.get("external_comparison"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|comparison| comparison.get("availability")),
             Some(&serde_json::json!("unavailable"))
         );
+    }
+
+    #[test]
+    fn source_provenance_must_be_an_object() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/evaluation/pr-53.json"))
+                .expect("PR 53 JSON");
+        value["cases"][0]["provenance"] = serde_json::json!("not-an-object");
+
+        assert!(parse_evidence_cases(&value.to_string()).is_err());
     }
 }

@@ -31,7 +31,8 @@
     },
     "repetitions": {
       "type": "integer",
-      "minimum": 2
+      "minimum": 2,
+      "maximum": 10
     },
     "thresholds": {
       "$ref": "#/$defs/thresholds"
@@ -39,6 +40,31 @@
     "configurations": {
       "type": "array",
       "minItems": 2,
+      "maxItems": 2,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+              "role": { "const": "baseline" }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+              "role": { "const": "candidate" }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ],
       "items": {
         "$ref": "#/$defs/configuration"
       }
@@ -66,6 +92,7 @@
         "maximum_false_blockers_per_case",
         "maximum_contradiction_rate",
         "minimum_rereview_stability",
+        "minimum_completion_rate",
         "maximum_live_cost_usd",
         "maximum_mean_latency_ms"
       ],
@@ -83,6 +110,9 @@
           "$ref": "#/$defs/rate"
         },
         "minimum_rereview_stability": {
+          "$ref": "#/$defs/rate"
+        },
+        "minimum_completion_rate": {
           "$ref": "#/$defs/rate"
         },
         "maximum_live_cost_usd": {

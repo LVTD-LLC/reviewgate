@@ -10,6 +10,7 @@
     "maximum_false_blockers_per_case": 0.05,
     "maximum_contradiction_rate": 0.05,
     "minimum_rereview_stability": 1.0,
+    "minimum_completion_rate": 1.0,
     "maximum_live_cost_usd": 10.0,
     "maximum_mean_latency_ms": 300000
   },

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const BENCHMARK_MANIFEST_SCHEMA_VERSION: &str = "reviewgate-benchmark-manifest/v1";
 pub const BENCHMARK_REPORT_SCHEMA_VERSION: &str = "reviewgate-benchmark-report/v1";
+pub const MAX_BENCHMARK_REPETITIONS: usize = 10;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +27,7 @@ pub struct BenchmarkThresholds {
     pub maximum_false_blockers_per_case: f64,
     pub maximum_contradiction_rate: f64,
     pub minimum_rereview_stability: f64,
+    pub minimum_completion_rate: f64,
     pub maximum_live_cost_usd: f64,
     pub maximum_mean_latency_ms: u64,
 }
@@ -134,6 +136,7 @@ pub struct BenchmarkRunScore {
     pub review_complete: bool,
     pub expected_serious_defects: usize,
     pub detected_serious_defects: usize,
+    pub known_non_findings: usize,
     pub missed_serious_defects: Vec<String>,
     pub observed_blockers: usize,
     pub true_blockers: usize,
@@ -162,6 +165,11 @@ pub fn validate_manifest(manifest: &BenchmarkManifest) -> Result<(), String> {
     if manifest.repetitions < 2 {
         return Err("benchmark manifest repetitions must be at least 2".to_string());
     }
+    if manifest.repetitions > MAX_BENCHMARK_REPETITIONS {
+        return Err(format!(
+            "benchmark manifest repetitions must not exceed {MAX_BENCHMARK_REPETITIONS}"
+        ));
+    }
     validate_rate(
         "minimum_blocking_precision",
         manifest.thresholds.minimum_blocking_precision,
@@ -181,6 +189,10 @@ pub fn validate_manifest(manifest: &BenchmarkManifest) -> Result<(), String> {
     validate_rate(
         "minimum_rereview_stability",
         manifest.thresholds.minimum_rereview_stability,
+    )?;
+    validate_rate(
+        "minimum_completion_rate",
+        manifest.thresholds.minimum_completion_rate,
     )?;
     if !manifest.thresholds.maximum_live_cost_usd.is_finite()
         || manifest.thresholds.maximum_live_cost_usd < 0.0
@@ -288,6 +300,43 @@ pub fn configuration_metrics(observations: &[CaseObservation]) -> ConfigurationM
             false_positives as f64 / case_count as f64
         },
         contradiction_rate: ratio(false_positives, expected_non_findings),
+    }
+}
+
+pub fn configuration_metrics_from_scores(scores: &[BenchmarkRunScore]) -> ConfigurationMetrics {
+    let case_count = scores.len();
+    let expected_serious_defects = scores
+        .iter()
+        .map(|score| score.expected_serious_defects)
+        .sum();
+    let detected_serious_defects = scores
+        .iter()
+        .map(|score| score.detected_serious_defects)
+        .sum();
+    let observed_blockers = scores.iter().map(|score| score.observed_blockers).sum();
+    let true_positives = scores.iter().map(|score| score.true_blockers).sum();
+    let false_positives = scores.iter().map(|score| score.false_blockers).sum();
+    let expected_non_findings: usize = scores.iter().map(|score| score.known_non_findings).sum();
+    let contradicted_non_findings: usize = scores
+        .iter()
+        .map(|score| score.contradicted_non_findings.len())
+        .sum();
+    ConfigurationMetrics {
+        case_count,
+        expected_serious_defects,
+        observed_blockers,
+        true_positives,
+        false_positives,
+        false_negatives: expected_serious_defects.saturating_sub(detected_serious_defects),
+        true_negatives: expected_non_findings.saturating_sub(contradicted_non_findings),
+        blocking_precision: ratio(true_positives, observed_blockers),
+        serious_defect_recall: ratio(detected_serious_defects, expected_serious_defects),
+        false_blockers_per_case: if case_count == 0 {
+            0.0
+        } else {
+            false_positives as f64 / case_count as f64
+        },
+        contradiction_rate: ratio(contradicted_non_findings, expected_non_findings),
     }
 }
 
@@ -400,6 +449,7 @@ pub fn score_benchmark_run(
         review_complete: run.review_complete,
         expected_serious_defects: expected_serious_keys.len(),
         detected_serious_defects: detected_serious_keys.len(),
+        known_non_findings: known_non_findings.len(),
         missed_serious_defects,
         observed_blockers,
         true_blockers,
@@ -445,6 +495,7 @@ mod tests {
                 maximum_false_blockers_per_case: 0.1,
                 maximum_contradiction_rate: 0.1,
                 minimum_rereview_stability: 0.95,
+                minimum_completion_rate: 1.0,
                 maximum_live_cost_usd: 5.0,
                 maximum_mean_latency_ms: 120_000,
             },
@@ -508,12 +559,28 @@ mod tests {
                 .contains("repetitions")
         );
 
+        let mut too_many_repetitions = valid_manifest();
+        too_many_repetitions.repetitions = MAX_BENCHMARK_REPETITIONS + 1;
+        assert!(
+            validate_manifest(&too_many_repetitions)
+                .expect_err("repetitions must be bounded")
+                .contains("must not exceed")
+        );
+
         let mut bad_threshold = valid_manifest();
         bad_threshold.thresholds.minimum_blocking_precision = 1.1;
         assert!(
             validate_manifest(&bad_threshold)
                 .expect_err("out of range threshold")
                 .contains("minimum_blocking_precision")
+        );
+
+        let mut bad_completion = valid_manifest();
+        bad_completion.thresholds.minimum_completion_rate = 1.1;
+        assert!(
+            validate_manifest(&bad_completion)
+                .expect_err("completion threshold")
+                .contains("minimum_completion_rate")
         );
 
         let mut escaping_path = valid_manifest();
@@ -607,6 +674,59 @@ mod tests {
                 blocking_precision: Some(0.5),
                 serious_defect_recall: Some(0.5),
                 false_blockers_per_case: 0.25,
+                contradiction_rate: Some(0.5),
+            }
+        );
+    }
+
+    #[test]
+    fn computes_finding_level_metrics_from_scored_runs() {
+        let scores = [
+            BenchmarkRunScore {
+                case_id: "mixed".to_string(),
+                repetition: 1,
+                review_complete: true,
+                expected_serious_defects: 1,
+                detected_serious_defects: 1,
+                known_non_findings: 1,
+                missed_serious_defects: vec![],
+                observed_blockers: 2,
+                true_blockers: 1,
+                false_blockers: 1,
+                contradicted_non_findings: vec!["known-clean".to_string()],
+                unexpected_blockers: vec![],
+                duplicate_findings: vec![],
+            },
+            BenchmarkRunScore {
+                case_id: "missed".to_string(),
+                repetition: 1,
+                review_complete: true,
+                expected_serious_defects: 1,
+                detected_serious_defects: 0,
+                known_non_findings: 1,
+                missed_serious_defects: vec!["serious-defect".to_string()],
+                observed_blockers: 0,
+                true_blockers: 0,
+                false_blockers: 0,
+                contradicted_non_findings: vec![],
+                unexpected_blockers: vec![],
+                duplicate_findings: vec![],
+            },
+        ];
+
+        assert_eq!(
+            configuration_metrics_from_scores(&scores),
+            ConfigurationMetrics {
+                case_count: 2,
+                expected_serious_defects: 2,
+                observed_blockers: 2,
+                true_positives: 1,
+                false_positives: 1,
+                false_negatives: 1,
+                true_negatives: 1,
+                blocking_precision: Some(0.5),
+                serious_defect_recall: Some(0.5),
+                false_blockers_per_case: 0.5,
                 contradiction_rate: Some(0.5),
             }
         );

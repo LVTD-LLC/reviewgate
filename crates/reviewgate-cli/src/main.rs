@@ -5596,6 +5596,86 @@ fn run_live_angle_review(
     Ok(artifact)
 }
 
+#[derive(Debug)]
+struct LiveAngleBenchmarkResult {
+    review: Result<ReviewArtifact, AngleReviewFailure>,
+    estimated_cost_usd: Option<f64>,
+    spent_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveCostInputs {
+    pricing: Option<ModelPricing>,
+    source: Option<CostSource>,
+}
+
+fn run_live_angle_review_with_cached_pricing(
+    context: &ReviewContext,
+    angle: &ReviewAngle,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    timeout: Duration,
+    cost_inputs: LiveCostInputs,
+) -> LiveAngleBenchmarkResult {
+    let prompt = build_review_prompt_for_angle(context, angle);
+    let pull_request_scope = build_pull_request_scope_message(&context.pull_request);
+    let response = match call_openrouter_with_curl(
+        base_url,
+        api_key,
+        model,
+        pull_request_scope.as_deref(),
+        &prompt,
+        timeout,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return LiveAngleBenchmarkResult {
+                review: Err(AngleReviewFailure::from_request_error(&error)),
+                estimated_cost_usd: None,
+                spent_cost_usd: None,
+            };
+        }
+    };
+    finish_live_angle_benchmark(
+        response,
+        model,
+        cost_inputs.pricing,
+        cost_inputs.source,
+        &angle.id,
+    )
+}
+
+fn finish_live_angle_benchmark(
+    response: OpenRouterCompletion,
+    model: &str,
+    pricing: Option<ModelPricing>,
+    cost_source: Option<CostSource>,
+    angle_id: &str,
+) -> LiveAngleBenchmarkResult {
+    let estimated_cost_usd = estimated_usage_cost(model, response.usage, pricing);
+    let spent_cost_usd = response.usage.and_then(|usage| usage.cost_usd);
+    let review = parse_angle_artifact_content(&response.content).map(|mut artifact| {
+        if artifact.models.is_empty() {
+            artifact.models = vec![model.to_string()];
+        }
+        apply_usage_cost_summary(
+            &mut artifact,
+            model,
+            response.usage,
+            pricing,
+            cost_source,
+            angle_id,
+        );
+        artifact
+    });
+    LiveAngleBenchmarkResult {
+        review,
+        estimated_cost_usd,
+        spent_cost_usd,
+    }
+}
+
 fn parse_angle_artifact_content(content: &str) -> Result<ReviewArtifact, AngleReviewFailure> {
     if content.trim().is_empty() {
         return Err(AngleReviewFailure::empty_response());
@@ -6905,13 +6985,14 @@ fn operational_data_sync_review_needed(changed_files: &[String], diff: &str) -> 
     path_signal && (django_orm_signal || deploy_startup_signal)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct OpenRouterUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
+    cost_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct OpenRouterCompletion {
     content: String,
     usage: Option<OpenRouterUsage>,
@@ -7064,6 +7145,10 @@ fn timeout_seconds_ceil(timeout: Duration) -> u64 {
 }
 
 fn parse_openrouter_usage(response: &serde_json::Value) -> Option<OpenRouterUsage> {
+    let cost_usd = response
+        .pointer("/usage/cost")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0);
     Some(OpenRouterUsage {
         prompt_tokens: response
             .pointer("/usage/prompt_tokens")
@@ -7071,7 +7156,25 @@ fn parse_openrouter_usage(response: &serde_json::Value) -> Option<OpenRouterUsag
         completion_tokens: response
             .pointer("/usage/completion_tokens")
             .and_then(serde_json::Value::as_u64)?,
+        cost_usd,
     })
+}
+
+fn estimated_usage_cost(
+    model: &str,
+    usage: Option<OpenRouterUsage>,
+    pricing: Option<ModelPricing>,
+) -> Option<f64> {
+    let usage = usage?;
+    if let Some(pricing) = pricing {
+        pricing
+            .estimate_cost_usd(usage.prompt_tokens, usage.completion_tokens)
+            .ok()
+    } else {
+        estimate_model_cost_usd(model, usage.prompt_tokens, usage.completion_tokens)
+            .ok()
+            .flatten()
+    }
 }
 
 fn apply_usage_cost_summary(
@@ -7088,16 +7191,7 @@ fn apply_usage_cost_summary(
     let Some(usage) = usage else {
         return;
     };
-    let cost = if let Some(pricing) = pricing {
-        match pricing.estimate_cost_usd(usage.prompt_tokens, usage.completion_tokens) {
-            Ok(cost) => cost,
-            Err(_) => return,
-        }
-    } else if let Ok(Some(cost)) =
-        estimate_model_cost_usd(model, usage.prompt_tokens, usage.completion_tokens)
-    {
-        cost
-    } else {
+    let Some(cost) = estimated_usage_cost(model, Some(usage), pricing) else {
         artifact.notes.push(format!(
             "OpenRouter returned token usage for `{model}`, but ReviewGate has no pricing fallback for that model."
         ));
@@ -9998,7 +10092,8 @@ Thanks {also not json}."#;
             "choices": [{"message": {"content": "{}"}}],
             "usage": {
                 "prompt_tokens": 1200,
-                "completion_tokens": 300
+                "completion_tokens": 300,
+                "cost": 0.0042
             }
         });
 
@@ -10009,6 +10104,7 @@ Thanks {also not json}."#;
             OpenRouterUsage {
                 prompt_tokens: 1200,
                 completion_tokens: 300,
+                cost_usd: Some(0.0042),
             }
         );
     }
@@ -10040,6 +10136,7 @@ Thanks {also not json}."#;
             Some(OpenRouterUsage {
                 prompt_tokens: 1_000_000,
                 completion_tokens: 500_000,
+                cost_usd: None,
             }),
             None,
             Some(CostSource::FallbackPricing),
@@ -10049,6 +10146,31 @@ Thanks {also not json}."#;
         let summary = artifact.cost_summary.expect("cost summary added");
         assert!((summary.current_run_usd - 0.18).abs() < f64::EPSILON);
         assert_eq!(summary.source, Some(CostSource::FallbackPricing));
+    }
+
+    #[test]
+    fn live_benchmark_keeps_cost_for_a_malformed_charged_response() {
+        let result = finish_live_angle_benchmark(
+            OpenRouterCompletion {
+                content: "not-json".to_string(),
+                usage: Some(OpenRouterUsage {
+                    prompt_tokens: 1_000,
+                    completion_tokens: 500,
+                    cost_usd: Some(0.0123),
+                }),
+            },
+            "benchmark/model",
+            Some(ModelPricing {
+                prompt_usd_per_million: 1.0,
+                completion_usd_per_million: 2.0,
+            }),
+            Some(CostSource::OpenRouterUsage),
+            "general",
+        );
+
+        assert_eq!(result.review, Err(AngleReviewFailure::MalformedResponse));
+        assert_eq!(result.estimated_cost_usd, Some(0.002));
+        assert_eq!(result.spent_cost_usd, Some(0.0123));
     }
 
     #[test]
