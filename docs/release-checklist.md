@@ -4,6 +4,7 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 
 ## Code and CI
 
+- Merge every feature and release-workflow change intended for the release before creating the runtime tag; verify the tag commit contains those changes.
 - `cargo fmt --all --check` passes.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings` passes.
 - `cargo test --locked --workspace` passes.
@@ -19,6 +20,7 @@ Do not publish to GitHub Marketplace until this checklist is complete.
 - Cargo package versions are set to `0.1.0`.
 - The release tag is immutable after publish.
 - The release runtime workflow uploads and attests Linux X64 and macOS Apple Silicon/Intel archives plus SHA-256 checksum files.
+- Publish and verify the new runtime release before advancing `REVIEWGATE_RUNTIME_VERSION` in `action.yml`; update that pin in a follow-up change so `main` never references a missing release.
 - A clean `ubuntu-latest` consumer run verifies the attestation, performs no source compilation, and records startup at or below 15 seconds.
 - The standalone installer downloads and checksum-verifies the new release on each supported platform.
 - `Formula/reviewgate.rb` in `LVTD-LLC/homebrew-tap` points to the new release URL and checksum.
