@@ -6177,9 +6177,21 @@ fn workflow_installs_invoked_tool_before_finding(
         return false;
     };
     let tool = tool.to_ascii_lowercase();
+    let invocation_index = line_number.saturating_sub(1) as usize;
+    let job_start = (0..invocation_index)
+        .rev()
+        .find(|index| {
+            let line = lines[*index];
+            yaml_indent(line) == 2
+                && line.trim_end().ends_with(':')
+                && !line.trim_start().starts_with('#')
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
     lines
         .iter()
-        .take(line_number.saturating_sub(1) as usize)
+        .take(invocation_index)
+        .skip(job_start)
         .map(|line| {
             line.split('#')
                 .next()
@@ -11099,6 +11111,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             .filter_map(serde_json::Value::as_str)
             .collect::<BTreeSet<_>>();
         assert!(fixture_ids.contains("pr365.runner_tooling.broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.cross_job_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.release_assertion.broken"));
         assert!(fixture_ids.contains("pr365.release_assertion.repaired"));

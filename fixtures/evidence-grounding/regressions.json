@@ -598,6 +598,39 @@
     "expected_blocking": true
   },
   {
+    "name": "PR 365 setup in another job does not repair runner tooling",
+    "fixture_id": "pr365.runner_tooling.cross_job_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  prepare:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,10 @@\n jobs:\n+  prepare:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: actions/checkout@v4\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-cross-job-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 10,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The separate prepare job installs just on a different runner; the release job invokes it without local setup.",
+      "agent_instruction": "Install just in the release job before invoking it.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without installing it in that job.",
+        "causal_path": "isolated release runner -> just package -> command not found",
+        "test_assessment": "The only installation is in a separate job with an isolated runner.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install just", "reason": "The installation belongs to the separate prepare job"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 10, "excerpt": "- run: just package", "reason": "The release job invokes just without a same-job setup step"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job after prepare and observe that just is unavailable on the release job's fresh runner.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 runner tooling repair clears the blocker",
     "fixture_id": "pr365.runner_tooling.repaired",
     "files": {
