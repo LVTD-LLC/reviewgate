@@ -29,6 +29,7 @@ a {
 }
 
 a:focus-visible,
+button:focus-visible,
 summary:focus-visible {
   outline: 3px solid #a8ff60;
   outline-offset: 4px;
@@ -399,52 +400,11 @@ h2 {
   padding-block: clamp(88px, 11vw, 154px);
 }
 
-.agent-setup {
-  border-block-end: 1px solid var(--signal-line);
-  display: grid;
-  gap: clamp(40px, 6vw, 88px);
-  grid-template-columns: minmax(0, 9fr) minmax(420px, 11fr);
-  margin-inline: auto;
-  max-width: 1440px;
-  padding: clamp(88px, 10vw, 144px) clamp(22px, 4vw, 64px);
-  width: 100%;
-}
-
-.agent-setup-copy > p:first-child,
-.agent-prompt-preview,
-.agent-copy-status {
-  font-family: "IBM Plex Mono", monospace;
-}
-
-.agent-setup-copy > p:first-child {
-  color: var(--signal-green);
-  font-size: 0.76rem;
-  letter-spacing: 0.08em;
-  margin-block-end: 18px;
-}
-
-.agent-setup-copy h2 {
-  font-size: clamp(3rem, 5.5vw, 5.8rem);
-  font-weight: 500;
-  letter-spacing: -0.06em;
-  line-height: 0.92;
-  margin-block-end: 28px;
-  max-width: 8ch;
-}
-
-.agent-setup-copy > p:nth-of-type(2) {
-  color: var(--signal-muted);
-  font-size: 1.08rem;
-  line-height: 1.6;
-  max-width: 44ch;
-}
-
 .agent-copy-button {
   border: 0;
   cursor: pointer;
   font-family: inherit;
   font-size: 1rem;
-  margin-block-start: 30px;
 }
 
 .agent-copy-button:active {
@@ -454,69 +414,6 @@ h2 {
 .agent-copy-button:disabled {
   cursor: wait;
   opacity: 0.82;
-}
-
-.agent-copy-status {
-  color: var(--signal-muted);
-  font-size: 0.72rem;
-  min-height: 1.2em;
-  margin-block: 12px 0;
-}
-
-.agent-prompt-preview {
-  align-self: start;
-  background: rgb(13 18 15 / 0.92);
-  border: 1px solid rgb(168 255 96 / 0.5);
-  min-width: 0;
-}
-
-.agent-prompt-topline {
-  border-block-end: 1px solid var(--signal-line);
-  color: var(--signal-muted);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 0.68rem;
-  gap: 8px 18px;
-  justify-content: space-between;
-  padding: 13px 16px;
-}
-
-.agent-prompt-preview > p {
-  color: var(--signal-ink);
-  font-family: "Space Grotesk", sans-serif;
-  font-size: clamp(1.2rem, 2.2vw, 1.8rem);
-  line-height: 1.45;
-  margin: 0;
-  padding: clamp(26px, 4vw, 42px) 24px;
-}
-
-.agent-prompt-preview code {
-  color: var(--signal-green);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 0.78em;
-}
-
-.agent-prompt-preview details {
-  border-block-start: 1px solid var(--signal-line);
-}
-
-.agent-prompt-preview summary {
-  color: var(--signal-green);
-  cursor: pointer;
-  font-size: 0.72rem;
-  list-style-position: inside;
-  padding: 16px 24px;
-}
-
-.agent-prompt-preview pre {
-  border-block-start: 1px solid var(--signal-line);
-  color: var(--signal-muted);
-  font: 0.72rem/1.65 "IBM Plex Mono", monospace;
-  margin: 0;
-  max-height: 360px;
-  overflow: auto;
-  padding: 24px;
-  white-space: pre-wrap;
 }
 
 .signal-loop-heading > p {
@@ -1272,7 +1169,6 @@ h2 {
   }
 
   .signal-hero,
-  .agent-setup,
   .signal-loop,
   .utility-hero {
     grid-template-columns: 1fr;
@@ -1392,19 +1288,6 @@ h2 {
 
   .signal-loop {
     padding-block: 80px;
-  }
-
-  .agent-setup {
-    gap: 44px;
-    padding-block: 80px;
-  }
-
-  .agent-setup-copy h2 {
-    max-width: 10ch;
-  }
-
-  .agent-copy-button {
-    width: 100%;
   }
 
   .signal-loop dl > div {

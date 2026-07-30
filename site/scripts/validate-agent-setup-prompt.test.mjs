@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const promptUrl = new URL("../src/content/agent-setup-prompt.txt", import.meta.url);
+const homepageUrl = new URL("../src/pages/index.astro", import.meta.url);
 
 test("agent setup prompt covers local and GitHub installation", async () => {
   const prompt = await readFile(promptUrl, "utf8");
@@ -18,4 +19,16 @@ test("agent setup prompt covers local and GitHub installation", async () => {
   assert.match(prompt, /OPENROUTER_API_KEY/);
   assert.match(prompt, /pull_request_target/);
   assert.doesNotMatch(prompt, /sk-or-[A-Za-z0-9]/);
+});
+
+test("homepage exposes one setup-prompt copy CTA in the hero", async () => {
+  const homepage = await readFile(homepageUrl, "utf8");
+
+  assert.match(
+    homepage,
+    /<div class="signal-actions">[\s\S]*?<button[\s\S]*?data-copy-agent-prompt[\s\S]*?Copy setup prompt[\s\S]*?<\/button>/,
+  );
+  assert.match(homepage, /data-agent-setup-prompt=\{encodedAgentSetupPrompt\}/);
+  assert.doesNotMatch(homepage, /<section class="agent-setup"/);
+  assert.doesNotMatch(homepage, /Install ReviewGate <span/);
 });
