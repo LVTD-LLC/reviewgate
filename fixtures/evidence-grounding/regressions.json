@@ -527,5 +527,72 @@
       }
     },
     "expected_blocking": true
+  },
+  {
+    "name": "PR 365 unavailable runner tooling is a real defect",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: just package\n",
+      ".github/runner-tools.txt": "cargo\ntar\nsha256sum\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1,5 +1,6 @@\n jobs:\n   release:\n     runs-on: ubuntu-latest\n     steps:\n       - uses: actions/checkout@v4\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The release job invokes just without installing it or declaring it in the repository runner-tool contract.",
+      "agent_instruction": "Install just before invoking it or replace the command with available tooling.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just even though the runner contract does not provide it.",
+        "causal_path": "release job -> just package -> command not found",
+        "test_assessment": "The checked runner-tool contract lists cargo, tar, and sha256sum but not just.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The changed release step invokes the unavailable command"},
+          {"path": ".github/runner-tools.txt", "side": "new", "line": 1, "excerpt": "cargo", "reason": "The repository runner contract begins its bounded available-tool list"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the release job on its declared runner image and observe `just: command not found`.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 stale release assertion is a real defect",
+    "files": {
+      "action.yml": "runtime: v0.7.0\n",
+      "tests/release_contract.rs": "fn runtime_pin_matches_release() {\n    assert_eq!(runtime_version(), \"v0.6.3\");\n}\n"
+    },
+    "diff": "diff --git a/action.yml b/action.yml\n--- a/action.yml\n+++ b/action.yml\n@@ -1 +1 @@\n-runtime: v0.6.3\n+runtime: v0.7.0\n",
+    "finding": {
+      "id": "pr365-stale-release-assertion-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": "action.yml",
+      "line": 1,
+      "title": "Runtime pin update leaves the release assertion stale",
+      "detail": "The runtime now reports v0.7.0 while the checked release-contract test still requires v0.6.3.",
+      "agent_instruction": "Update the release-contract assertion in the same change as the runtime pin.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.stale_release_assertion",
+        "claim": "The runtime pin and release-contract assertion require different versions.",
+        "causal_path": "action runtime v0.7.0 -> test expects v0.6.3 -> deterministic test failure",
+        "test_assessment": "The exact release-contract assertion remains pinned to v0.6.3.",
+        "evidence": [
+          {"path": "action.yml", "side": "new", "line": 1, "excerpt": "runtime: v0.7.0", "reason": "The changed runtime contract advances to v0.7.0"}
+        ],
+        "related_tests": [
+          {"path": "tests/release_contract.rs", "side": "new", "line": 2, "excerpt": "assert_eq!(runtime_version(), \"v0.6.3\");", "reason": "The repository assertion still requires the prior runtime version"}
+        ],
+        "reproduction": "Run the release-contract test and observe v0.7.0 fail the v0.6.3 assertion.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
   }
 ]

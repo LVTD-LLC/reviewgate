@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Added sanitized PR #365 recall fixtures for unavailable runner tooling and stale release assertions, and made the full deterministic dogfood regression suite block runtime releases before compilation and publication.
 - Revalidated disposition authors through GitHub's repository-permission endpoint when workflow-token status filtering hides a valid human-created receipt, while retaining exact status receipts as an independent writer attestation. Advanced the action runtime pin to `v0.6.3`.
 - Loaded agent disposition receipts from GitHub's combined commit-status response so workflow tokens can consume exact writer-created receipts that the paginated status endpoint omits. Advanced the action runtime pin to `v0.6.2`.
 - Preserved exact-head agent disposition receipts when GitHub Actions redacts the commit-status creator, while continuing to reject visible creator mismatches and requiring the exact writer-only status context, payload digest, and success state. Advanced the action runtime pin to `v0.6.1`.
