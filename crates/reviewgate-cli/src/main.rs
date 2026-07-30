@@ -68,6 +68,7 @@ const AGENT_DISPOSITIONS_MARKER_PREFIX: &str = "<!-- reviewgate-agent-dispositio
 const AGENT_DISPOSITIONS_MARKER_SUFFIX: &str = " -->";
 const AGENT_DISPOSITION_STATUS_PREFIX: &str = "reviewgate/disposition/";
 const AGENT_DISPOSITION_DIGEST_PREFIX: &str = "receipt-sha256:";
+const MAX_DISPOSITION_PERMISSION_LOOKUPS: usize = 32;
 const AGENT_RESULT_ARTIFACT_PREFIX: &str = "reviewgate-agent-result";
 const CURL_HTTP_STATUS_WRITE_OUT: &str = "%{stderr}reviewgate-http-status=%{http_code}\\n";
 
@@ -1029,7 +1030,79 @@ fn attested_disposition_comment_ids(
         .collect()
 }
 
-fn load_attested_disposition_comment_ids(
+fn writer_authorized_disposition_comment_ids(
+    comments: &[AgentDispositionComment],
+    writer_logins: &BTreeSet<String>,
+) -> BTreeSet<u64> {
+    comments
+        .iter()
+        .filter(|comment| writer_logins.contains(&comment.author_login))
+        .map(|comment| comment.id)
+        .collect()
+}
+
+fn resolve_authorized_disposition_comment_ids(
+    comments: &[AgentDispositionComment],
+    statuses: CliResult<Vec<CommitStatusRecord>>,
+    mut has_write_permission: impl FnMut(&str) -> CliResult<bool>,
+) -> CliResult<BTreeSet<u64>> {
+    let (mut authorized, statuses_unavailable) = match statuses {
+        Ok(statuses) => (attested_disposition_comment_ids(comments, &statuses), false),
+        Err(_) => (BTreeSet::new(), true),
+    };
+    let pending_authors = comments
+        .iter()
+        .filter(|comment| !authorized.contains(&comment.id))
+        .map(|comment| comment.author_login.as_str())
+        .filter(|author| !author.is_empty())
+        .collect::<BTreeSet<_>>();
+    if pending_authors.len() > MAX_DISPOSITION_PERMISSION_LOOKUPS {
+        bail!(
+            "agent disposition verification requires {} permission lookups, above the limit of {}",
+            pending_authors.len(),
+            MAX_DISPOSITION_PERMISSION_LOOKUPS
+        );
+    }
+
+    let mut writer_logins = BTreeSet::new();
+    let mut indeterminate = BTreeSet::new();
+    for author_login in pending_authors {
+        match has_write_permission(author_login) {
+            Ok(true) => {
+                writer_logins.insert(author_login.to_string());
+            }
+            Ok(false) if statuses_unavailable => {
+                indeterminate.insert(author_login.to_string());
+            }
+            Ok(false) => {}
+            Err(_) => {
+                indeterminate.insert(author_login.to_string());
+            }
+        }
+    }
+    if statuses_unavailable
+        && comments
+            .iter()
+            .any(|comment| !authorized.contains(&comment.id) && comment.author_login.is_empty())
+    {
+        indeterminate.insert("<unknown>".to_string());
+    }
+    if !indeterminate.is_empty() {
+        bail!(
+            "agent disposition authorization was unavailable for {} author(s): {}",
+            indeterminate.len(),
+            indeterminate.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+
+    authorized.extend(writer_authorized_disposition_comment_ids(
+        comments,
+        &writer_logins,
+    ));
+    Ok(authorized)
+}
+
+fn load_authorized_disposition_comment_ids(
     repo: &Path,
     repository: &str,
     reviewed_sha: &str,
@@ -1038,8 +1111,11 @@ fn load_attested_disposition_comment_ids(
     if comments.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let statuses = fetch_commit_status_records(repo, repository, reviewed_sha)?;
-    Ok(attested_disposition_comment_ids(comments, &statuses))
+    resolve_authorized_disposition_comment_ids(
+        comments,
+        fetch_commit_status_records(repo, repository, reviewed_sha),
+        |author| fetch_actor_write_permission(repo, repository, author),
+    )
 }
 
 fn resolve_repository(repo: &Path, repository: Option<String>) -> CliResult<String> {
@@ -3213,14 +3289,14 @@ fn publish_summary(options: PublishSummaryOptions) -> CliResult<()> {
     if let Some(previous) = previous_state.as_mut() {
         previous.validate_for_scope(&scope)?;
         let disposition_comments = agent_disposition_comments(&comment_records);
-        let attested_ids = load_attested_disposition_comment_ids(
+        let authorized_ids = load_authorized_disposition_comment_ids(
             &repo,
             &repository,
             &previous.last_reviewed_sha,
             &disposition_comments,
         )?;
         let replay =
-            apply_agent_disposition_comments(previous, &disposition_comments, &attested_ids)?;
+            apply_agent_disposition_comments(previous, &disposition_comments, &authorized_ids)?;
         report_agent_disposition_replay("summary publish", replay);
     }
     let mut artifact = read_prepared_artifact(&options.input, &head_sha)?;
@@ -4666,14 +4742,14 @@ fn load_previous_summary_state(
     };
     state.validate_for_scope(scope)?;
     let disposition_comments = agent_disposition_comments(&comment_records);
-    let attested_ids = load_attested_disposition_comment_ids(
+    let authorized_ids = load_authorized_disposition_comment_ids(
         repo,
         repository,
         &state.last_reviewed_sha,
         &disposition_comments,
     )?;
     let replay =
-        apply_agent_disposition_comments(&mut state, &disposition_comments, &attested_ids)?;
+        apply_agent_disposition_comments(&mut state, &disposition_comments, &authorized_ids)?;
     report_agent_disposition_replay("review", replay);
     Ok(Some(state))
 }
@@ -5203,7 +5279,7 @@ fn build_review_prompt_for_angle(context: &ReviewContext, angle: &ReviewAngle) -
     ));
     append_convergence_prompt_context(&mut prompt, context);
     prompt.push_str(
-        "GitHub workflow claims require a contract trace across the actual `on` triggers, workflow-level permissions, job-level permission overrides, local reusable-workflow callers, and the step that consumes the permission. Job-level permissions determine that job's effective grant, while a reusable workflow cannot elevate above its caller. `actions/upload-artifact` uses the Actions runtime artifact service and does not require `actions: write` on GITHUB_TOKEN. Check step-level env before claiming a value is missing. An explicit `git fetch --depth=1 origin <sha>` is not invalid merely because the initial checkout is shallow. Python 3 can resolve namespace packages for `python -m` without `__init__.py`. For CLI parsing claims, trace the argument slice at every call site and inspect exact-path tests before alleging that positional operands reach a flag parser.\n\nReviewGate workflow guidance: if the diff adds or updates a GitHub Actions workflow using `LVTD-LLC/reviewgate`, evaluate it against ReviewGate's documented installation contract. `uses: LVTD-LLC/reviewgate@v0` is the documented default install; do not emit a finding solely because it uses the moving v0 tag unless repository instructions require SHA-pinned third-party actions, the PR weakens an existing pin, or the diff provides concrete evidence that this repository must pin every action. For a full-featured ReviewGate workflow, `contents: read`, `pull-requests: write`, `issues: write`, and `checks: write` are the documented least-privilege permissions: `issues: write` publishes the canonical summary PR comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run. Do not flag that permission set as excessive for a fork-safe ReviewGate workflow. Flag permissions above that set, use of `pull_request_target` for untrusted code, or missing same-repository/Dependabot guards when repository secrets are used. Concurrency findings for workflow group expressions need a concrete collision or cancellation risk within the workflow's declared triggers; do not flag normal `cancel-in-progress` behavior or hypothetical collisions with unrelated workflows when the group is workflow-scoped. Optional hardening preferences such as action SHA pinning, job timeouts, extra secret preflight checks, or alternative concurrency fallback keys should not become findings unless repository policy requires them or the diff creates a material failure mode.\n\n",
+        "GitHub workflow claims require a contract trace across the actual `on` triggers, workflow-level permissions, job-level permission overrides, local reusable-workflow callers, and the step that consumes the permission. Job-level permissions determine that job's effective grant, while a reusable workflow cannot elevate above its caller. `actions/upload-artifact` uses the Actions runtime artifact service and does not require `actions: write` on GITHUB_TOKEN. Check step-level env before claiming a value is missing. An explicit `git fetch --depth=1 origin <sha>` is not invalid merely because the initial checkout is shallow. Python 3 can resolve namespace packages for `python -m` without `__init__.py`. For CLI parsing claims, trace the argument slice at every call site and inspect exact-path tests before alleging that positional operands reach a flag parser. For release and workflow changes, compare every invoked nonstandard executable with setup steps and checked repository tool manifests, and compare changed versions or pins with repository release-contract assertions.\n\nReviewGate workflow guidance: if the diff adds or updates a GitHub Actions workflow using `LVTD-LLC/reviewgate`, evaluate it against ReviewGate's documented installation contract. `uses: LVTD-LLC/reviewgate@v0` is the documented default install; do not emit a finding solely because it uses the moving v0 tag unless repository instructions require SHA-pinned third-party actions, the PR weakens an existing pin, or the diff provides concrete evidence that this repository must pin every action. For a full-featured ReviewGate workflow, `contents: read`, `pull-requests: write`, `issues: write`, and `checks: write` are the documented least-privilege permissions: `issues: write` publishes the canonical summary PR comment, `pull-requests: write` publishes inline review comments, and `checks: write` publishes the ReviewGate check run. Do not flag that permission set as excessive for a fork-safe ReviewGate workflow. Flag permissions above that set, use of `pull_request_target` for untrusted code, or missing same-repository/Dependabot guards when repository secrets are used. Concurrency findings for workflow group expressions need a concrete collision or cancellation risk within the workflow's declared triggers; do not flag normal `cancel-in-progress` behavior or hypothetical collisions with unrelated workflows when the group is workflow-scoped. Optional hardening preferences such as action SHA pinning, job timeouts, extra secret preflight checks, or alternative concurrency fallback keys should not become findings unless repository policy requires them or the diff creates a material failure mode.\n\n",
     );
     prompt.push_str(
         "For deploy hooks, startup tasks, background jobs, data sync code, and ORM/database writes, explicitly check concurrency, idempotency, transaction boundaries, database-enforced uniqueness, partial failure behavior, and retry safety.\n\n",
@@ -5997,6 +6073,13 @@ fn contradicts_checked_contract(
         .as_deref()
         .is_some_and(|path| path.starts_with(".github/workflows/"))
     {
+        if (claim.contains("unavailable")
+            || claim.contains("runner contract")
+            || claim.contains("without install"))
+            && workflow_installs_invoked_tool_before_finding(&source, finding)
+        {
+            return Ok(true);
+        }
         for trigger in [
             "workflow_dispatch",
             "workflow_call",
@@ -6051,11 +6134,271 @@ fn contradicts_checked_contract(
     {
         return Ok(true);
     }
+    if (claim.contains("different versions") || claim.contains("different version"))
+        && checked_contract_versions_match(finding)
+    {
+        return Ok(true);
+    }
 
     if finding_location_evidence_disproves_absence(finding, &claim) {
         return Ok(true);
     }
     Ok(false)
+}
+
+fn workflow_installs_invoked_tool_before_finding(
+    workflow: &str,
+    finding: &reviewgate_core::Finding,
+) -> bool {
+    let Some(line_number) = finding.line else {
+        return false;
+    };
+    let lines = workflow.lines().collect::<Vec<_>>();
+    let invocation_index = line_number.saturating_sub(1) as usize;
+    let Some(invocation) = lines.get(invocation_index) else {
+        return false;
+    };
+    let Some(command) = yaml_line_content(invocation)
+        .split_once("run:")
+        .map(|(_, command)| command.trim())
+    else {
+        return false;
+    };
+    let Some(tool) = command
+        .trim_matches(|character| character == '\'' || character == '"')
+        .split_whitespace()
+        .next()
+        .filter(|tool| {
+            !tool.is_empty()
+                && tool
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+    else {
+        return false;
+    };
+    let tool = tool.to_ascii_lowercase();
+    let Some(job_start) = enclosing_workflow_job_start(&lines, invocation_index) else {
+        return false;
+    };
+    let cargo_root_is_overridden = |line: &&str| {
+        let content = yaml_line_content(line);
+        content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
+    };
+    let job_key_index = job_start.saturating_sub(1);
+    let job_indent = yaml_indent(lines[job_key_index]);
+    let job_end = (job_start..lines.len())
+        .find(|index| {
+            let content = yaml_line_content(lines[*index]).trim();
+            !content.is_empty() && yaml_indent(lines[*index]) <= job_indent
+        })
+        .unwrap_or(lines.len());
+    if workflow_env_has_cargo_root_override(&lines)
+        || lines[job_start..job_end]
+            .iter()
+            .any(cargo_root_is_overridden)
+    {
+        return false;
+    }
+    (job_start..invocation_index).any(|index| {
+        let content = yaml_step_line_content(lines[index]);
+        let run_setup = content
+            .strip_prefix("run:")
+            .is_some_and(|command| run_command_installs_tool(command, &tool));
+        run_setup && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
+    })
+}
+
+fn workflow_env_has_cargo_root_override(lines: &[&str]) -> bool {
+    lines.iter().enumerate().any(|(index, line)| {
+        let content = yaml_line_content(line).trim();
+        if yaml_indent(line) != 0 || !content.starts_with("env:") {
+            return false;
+        }
+        if content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME") {
+            return true;
+        }
+        lines[index + 1..]
+            .iter()
+            .take_while(|line| {
+                let content = yaml_line_content(line).trim();
+                content.is_empty() || yaml_indent(line) > 0
+            })
+            .any(|line| {
+                let content = yaml_line_content(line);
+                content.contains("CARGO_INSTALL_ROOT") || content.contains("CARGO_HOME")
+            })
+    })
+}
+
+fn yaml_step_line_content(line: &str) -> &str {
+    let content = yaml_line_content(line).trim_start();
+    content.strip_prefix("- ").unwrap_or(content).trim_start()
+}
+
+fn run_command_installs_tool(command: &str, tool: &str) -> bool {
+    if ["||", ";", "|", "\n"]
+        .iter()
+        .any(|separator| command.contains(separator))
+    {
+        return false;
+    }
+    command
+        .split("&&")
+        .any(|segment| single_command_installs_tool(segment, tool))
+}
+
+fn single_command_installs_tool(command: &str, tool: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_' | '/')
+                })
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let Some(installer) = tokens.first().map(String::as_str) else {
+        return false;
+    };
+    if (installer, tool) != ("cargo", "just") {
+        return false;
+    }
+    let command_tokens = &tokens[1..];
+    let Some(install_index) = command_tokens.iter().position(|token| token == "install") else {
+        return false;
+    };
+    if install_index != 0 {
+        return false;
+    }
+    let package_tokens = &command_tokens[install_index + 1..];
+    let Some(package_index) = package_tokens.iter().position(|token| {
+        !matches!(
+            token.as_str(),
+            "--locked" | "--force" | "--offline" | "--quiet" | "-q"
+        )
+    }) else {
+        return false;
+    };
+    let package = &package_tokens[package_index];
+    package == tool
+        && package_tokens[package_index + 1..].iter().all(|token| {
+            matches!(
+                token.as_str(),
+                "--locked" | "--force" | "--offline" | "--quiet" | "-q"
+            )
+        })
+}
+
+fn yaml_line_content(line: &str) -> &str {
+    line.split('#').next().unwrap_or_default().trim_end()
+}
+
+fn enclosing_workflow_job_start(lines: &[&str], invocation_index: usize) -> Option<usize> {
+    let jobs_index = (0..invocation_index)
+        .rev()
+        .find(|index| yaml_line_content(lines[*index]).trim() == "jobs:")?;
+    let jobs_indent = yaml_indent(lines[jobs_index]);
+    let job_indent = lines
+        .iter()
+        .enumerate()
+        .take(invocation_index)
+        .skip(jobs_index + 1)
+        .filter_map(|(_, line)| {
+            let content = yaml_line_content(line).trim();
+            let indent = yaml_indent(line);
+            (!content.is_empty() && indent > jobs_indent).then_some(indent)
+        })
+        .min()?;
+    (jobs_index + 1..invocation_index)
+        .rev()
+        .find(|index| {
+            let content = yaml_line_content(lines[*index]).trim();
+            yaml_indent(lines[*index]) == job_indent && content.ends_with(':')
+        })
+        .map(|index| index + 1)
+}
+
+fn workflow_step_is_unconditional(
+    lines: &[&str],
+    job_start: usize,
+    setup_index: usize,
+    invocation_index: usize,
+) -> bool {
+    let step_start = (job_start..=setup_index)
+        .rev()
+        .find(|index| {
+            yaml_line_content(lines[*index])
+                .trim_start()
+                .starts_with("- ")
+        })
+        .unwrap_or(setup_index);
+    let step_indent = yaml_indent(lines[step_start]);
+    let step_end = (step_start + 1..invocation_index)
+        .find(|index| {
+            yaml_indent(lines[*index]) == step_indent
+                && yaml_line_content(lines[*index])
+                    .trim_start()
+                    .starts_with("- ")
+        })
+        .unwrap_or(invocation_index);
+    !lines[step_start..step_end].iter().any(|line| {
+        let property = yaml_step_line_content(line);
+        (property.starts_with("if:")
+            && !matches!(
+                property.trim_start_matches("if:").trim(),
+                "true" | "${{ true }}"
+            ))
+            || (property.starts_with("continue-on-error:")
+                && !matches!(
+                    property.trim_start_matches("continue-on-error:").trim(),
+                    "false" | "${{ false }}"
+                ))
+    })
+}
+
+fn checked_contract_versions_match(finding: &reviewgate_core::Finding) -> bool {
+    let Some(grounding) = finding.grounding.as_ref() else {
+        return false;
+    };
+    let versions = grounding
+        .evidence
+        .iter()
+        .chain(&grounding.related_tests)
+        .map(|evidence| versions_in_text(&evidence.excerpt))
+        .collect::<Vec<_>>();
+    versions.len() >= 2
+        && versions.iter().all(|values| values.len() == 1)
+        && versions
+            .iter()
+            .filter_map(|values| values.first())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == 1
+}
+
+fn versions_in_text(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut versions = Vec::new();
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index].eq_ignore_ascii_case(&b'v') && bytes[index + 1].is_ascii_digit() {
+            let start = index;
+            index += 2;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric()
+                    || matches!(bytes[index], b'.' | b'-' | b'_'))
+            {
+                index += 1;
+            }
+            versions.push(text[start..index].to_ascii_lowercase());
+        } else {
+            index += 1;
+        }
+    }
+    versions
 }
 
 fn claim_asserts_shallow_checkout_alone_prevents_fetch(claim: &str) -> bool {
@@ -8066,10 +8409,12 @@ review_angles:
         assert!(dogfood_workflow.contains("actions: read"));
         assert!(dogfood_workflow.contains("attestations: read"));
         assert!(dogfood_workflow.contains("checks: write"));
+        assert!(dogfood_workflow.contains("pull_request:\n    types:"));
         assert!(dogfood_workflow.contains("github.run_id"));
         assert!(dogfood_workflow.contains("timeout-minutes: 20"));
         assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@v0"));
         assert!(!dogfood_workflow.contains("uses: ./"));
+        assert!(!dogfood_workflow.contains("\n          model:"));
         assert!(dogfood_workflow.contains("min_severity"));
         assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
@@ -8085,6 +8430,13 @@ review_angles:
         assert!(workflow.contains("publish:\n    needs: verify"));
         assert!(workflow.contains("persist-credentials: false"));
         assert!(workflow.contains("cargo +1.96.0 build --locked --release -p reviewgate-cli"));
+        let regression_gate = workflow
+            .find("cargo +1.96.0 test --locked --workspace")
+            .expect("release regression gate");
+        let release_build = workflow
+            .find("cargo +1.96.0 build --locked --release -p reviewgate-cli")
+            .expect("release build");
+        assert!(regression_gate < release_build);
         assert!(workflow.contains("reviewgate-x86_64-unknown-linux-gnu.tar.gz"));
         assert!(workflow.contains("actions/upload-artifact@"));
         assert!(workflow.contains("actions/download-artifact@"));
@@ -8695,7 +9047,7 @@ review_angles:
     #[test]
     fn empty_disposition_set_does_not_require_commit_status_access() {
         assert!(
-            load_attested_disposition_comment_ids(
+            load_authorized_disposition_comment_ids(
                 Path::new("/does-not-exist"),
                 "LVTD-LLC/reviewgate",
                 &"a".repeat(40),
@@ -8703,6 +9055,71 @@ review_angles:
             )
             .expect("empty disposition set")
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn disposition_authorization_uses_either_channel_and_surfaces_indeterminacy() {
+        let comments = vec![
+            AgentDispositionComment {
+                id: 41,
+                author_login: "repair-agent".to_string(),
+                body: "trusted".to_string(),
+            },
+            AgentDispositionComment {
+                id: 42,
+                author_login: "repair-agent".to_string(),
+                body: "also trusted".to_string(),
+            },
+        ];
+        let status = CommitStatusRecord {
+            context: agent_disposition_status_context(41),
+            description: agent_disposition_digest(&comments[0].body),
+            creator_login: "repair-agent".to_string(),
+            state: "success".to_string(),
+        };
+
+        assert_eq!(
+            resolve_authorized_disposition_comment_ids(
+                &comments,
+                Err(anyhow::anyhow!("status endpoint unavailable")),
+                |_| Ok(true)
+            )
+            .expect("live permission authorizes both comments"),
+            BTreeSet::from([41, 42])
+        );
+
+        let mut permission_calls = Vec::new();
+        assert_eq!(
+            resolve_authorized_disposition_comment_ids(
+                &comments[..1],
+                Ok(vec![status]),
+                |author| {
+                    permission_calls.push(author.to_string());
+                    bail!("permission endpoint unavailable")
+                }
+            )
+            .expect("status receipt independently authorizes the comment"),
+            BTreeSet::from([41])
+        );
+        assert!(
+            permission_calls.is_empty(),
+            "an attested comment must not spend a permission lookup"
+        );
+
+        assert!(
+            resolve_authorized_disposition_comment_ids(
+                &comments,
+                Err(anyhow::anyhow!("status endpoint unavailable")),
+                |_| bail!("permission endpoint unavailable")
+            )
+            .is_err(),
+            "dual transport failure must be machine-visible"
+        );
+        assert!(
+            resolve_authorized_disposition_comment_ids(&comments, Ok(vec![]), |_| Ok(false))
+                .expect("both channels definitively deny")
+                .is_empty()
         );
     }
 
@@ -10230,6 +10647,8 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(prompt.contains("P0-P1 additionally require a concrete reproduction"));
         assert!(prompt.contains("actions/upload-artifact"));
         assert!(prompt.contains("argument slice at every call site"));
+        assert!(prompt.contains("invoked nonstandard executable"));
+        assert!(prompt.contains("repository release-contract assertions"));
         assert!(prompt.contains("1 | Read me"));
         assert!(prompt.contains("ReviewGate workflow guidance"));
         assert!(prompt.contains("LVTD-LLC/reviewgate@v0"));
@@ -10856,6 +11275,36 @@ diff --git a/src/lib.rs b/src/lib.rs
             "../../../fixtures/evidence-grounding/regressions.json"
         ))
         .expect("grounding fixtures parse");
+        let fixture_ids = cases
+            .as_array()
+            .expect("fixture cases")
+            .iter()
+            .filter_map(|case| case.get("fixture_id"))
+            .filter_map(serde_json::Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(fixture_ids.contains("pr365.runner_tooling.broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.cross_job_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.metadata_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.conditional_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.chained_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.action_near_match_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.action_metadata_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.action_exact_name_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.option_value_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.local_package_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.package_binary_mismatch_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.install_root_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.cross_installer_flag_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.install_root_env_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.reordered_job_env_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.unrelated_job_env_repaired"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.path_package_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
+        assert!(fixture_ids.contains("pr365.release_assertion.broken"));
+        assert!(fixture_ids.contains("pr365.release_assertion.embedded_mismatch"));
+        assert!(fixture_ids.contains("pr365.release_assertion.repaired"));
 
         for case in cases.as_array().expect("fixture cases") {
             let name = case["name"].as_str().expect("fixture name");
@@ -10929,7 +11378,8 @@ diff --git a/src/lib.rs b/src/lib.rs
                     .iter()
                     .any(|finding| finding.is_blocking(5)),
                 expected_blocking,
-                "{name}"
+                "{name}: {:?}",
+                artifact.notes
             );
             if !expected_blocking {
                 assert!(
