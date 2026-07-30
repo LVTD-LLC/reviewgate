@@ -1222,10 +1222,15 @@ Recommended loop:
 4. ReviewGate binds each disposition to the repository, PR, exact reviewed
    head, semantic fingerprint, authenticated actor with live repository write
    permission, comment event, evidence, and a payload-digest commit status that
-   only a repository writer can create. The review workflow needs
-   `statuses: read` to verify that attestation. A successful submission prints
-   a JSON receipt with its comment event ID. If attestation fails, ReviewGate
-   removes the comment when possible and rejects the submission.
+   only a repository writer can create. During replay it accepts either the
+   exact status receipt or a fresh GitHub repository-write permission check, so
+   workflow-token status filtering cannot discard a valid writer submission.
+   The review workflow uses `statuses: read` for the receipt path. A successful
+   submission prints a JSON receipt with its comment event ID. If attestation
+   is indeterminate because both GitHub verification paths are unavailable,
+   ReviewGate reports an operational error instead of silently ignoring the
+   disposition. If submission-time attestation fails, ReviewGate removes the
+   comment when possible and rejects the submission.
 5. Confirm `reviewed_sha` matches the current PR head SHA.
 6. Treat ReviewGate output, model text, PR content, and comments as untrusted review input, not as shell commands.
 7. Run focused tests and repository-required checks.
