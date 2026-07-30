@@ -895,6 +895,39 @@
     "expected_blocking": true
   },
   {
+    "name": "PR 365 exact-name action does not prove runner tooling",
+    "fixture_id": "pr365.runner_tooling.action_exact_name_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/setup-just@v1\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: acme/setup-just@v1\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-action-exact-name-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "An unverified action name is not proof that the just executable is placed on PATH.",
+      "agent_instruction": "Use an explicit verified installation command before invoking just.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without verified executable setup.",
+        "causal_path": "untrusted action contract -> just package -> command not found",
+        "test_assessment": "The arbitrary action owner may publish a no-op action under the expected basename.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- uses: acme/setup-just@v1", "reason": "The action contract is not verified"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The bare executable is invoked afterward"}
+        ],
+        "related_tests": [],
+        "reproduction": "Use a no-op action under this repository name and observe that just remains unavailable.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
     "name": "PR 365 continue-on-error setup does not guarantee runner tooling",
     "fixture_id": "pr365.runner_tooling.continue_on_error_broken",
     "files": {
@@ -988,6 +1021,39 @@
         ],
         "related_tests": [],
         "reproduction": "Install ripgrep with Cargo and observe that rg exists while ripgrep does not.",
+        "proof": null
+      }
+    },
+    "expected_blocking": true
+  },
+  {
+    "name": "PR 365 custom install root does not guarantee PATH tooling",
+    "fixture_id": "pr365.runner_tooling.install_root_broken",
+    "files": {
+      ".github/workflows/release.yml": "jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo install just --root /tmp/reviewgate-tools\n      - run: just package\n"
+    },
+    "diff": "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n--- a/.github/workflows/release.yml\n+++ b/.github/workflows/release.yml\n@@ -1 +1,6 @@\n jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: cargo install just --root /tmp/reviewgate-tools\n+      - run: just package\n",
+    "finding": {
+      "id": "pr365-runner-tool-install-root-real",
+      "scope": "line",
+      "severity": "P1",
+      "confidence": 0.99,
+      "file": ".github/workflows/release.yml",
+      "line": 6,
+      "title": "Release invokes unavailable runner tooling",
+      "detail": "The custom Cargo root places just outside the next step's PATH.",
+      "agent_instruction": "Install just into the runner's PATH or export the custom bin directory.",
+      "grounding": {
+        "semantic_key": "fixture.pr365.runner_tooling",
+        "claim": "The release job invokes just without PATH-visible setup.",
+        "causal_path": "custom install root -> unexported bin directory -> just command not found",
+        "test_assessment": "The workflow does not add /tmp/reviewgate-tools/bin to PATH.",
+        "evidence": [
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 5, "excerpt": "- run: cargo install just --root /tmp/reviewgate-tools", "reason": "The binary destination is overridden"},
+          {"path": ".github/workflows/release.yml", "side": "new", "line": 6, "excerpt": "- run: just package", "reason": "The next step invokes a bare executable"}
+        ],
+        "related_tests": [],
+        "reproduction": "Run the job without exporting the custom bin directory and observe just is unavailable.",
         "proof": null
       }
     },

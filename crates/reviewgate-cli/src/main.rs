@@ -6186,21 +6186,7 @@ fn workflow_installs_invoked_tool_before_finding(
         let run_setup = content
             .strip_prefix("run:")
             .is_some_and(|command| run_command_installs_tool(command, &tool));
-        let action_setup = content.strip_prefix("uses:").is_some_and(|action| {
-            let action = action
-                .trim()
-                .trim_matches(|character| character == '\'' || character == '"')
-                .split('@')
-                .next()
-                .unwrap_or_default()
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            action == format!("setup-{tool}") || action == format!("{tool}-action")
-        });
-        let setup_matches = run_setup || action_setup;
-        setup_matches && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
+        run_setup && workflow_step_is_unconditional(&lines, job_start, index, invocation_index)
     })
 }
 
@@ -6247,15 +6233,23 @@ fn single_command_installs_tool(command: &str, tool: &str) -> bool {
     if install_index != 0 {
         return false;
     }
-    command_tokens[install_index + 1..]
-        .iter()
-        .find(|token| {
-            !matches!(
+    let package_tokens = &command_tokens[install_index + 1..];
+    let Some(package_index) = package_tokens.iter().position(|token| {
+        !matches!(
+            token.as_str(),
+            "--locked" | "--force" | "--offline" | "--quiet" | "--yes" | "-q" | "-y"
+        )
+    }) else {
+        return false;
+    };
+    let package = &package_tokens[package_index];
+    (package == tool || package.rsplit('/').next() == Some(tool))
+        && package_tokens[package_index + 1..].iter().all(|token| {
+            matches!(
                 token.as_str(),
                 "--locked" | "--force" | "--offline" | "--quiet" | "--yes" | "-q" | "-y"
             )
         })
-        .is_some_and(|token| token == tool || token.rsplit('/').next() == Some(tool))
 }
 
 fn yaml_line_content(line: &str) -> &str {
@@ -11255,9 +11249,11 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.action_near_match_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.action_metadata_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.action_exact_name_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.option_value_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.local_package_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.package_binary_mismatch_broken"));
+        assert!(fixture_ids.contains("pr365.runner_tooling.install_root_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.continue_on_error_broken"));
         assert!(fixture_ids.contains("pr365.runner_tooling.repaired"));
         assert!(fixture_ids.contains("pr365.runner_tooling.chained_repaired"));
