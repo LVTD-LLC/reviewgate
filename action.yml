@@ -80,7 +80,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        REVIEWGATE_RUNTIME_VERSION: v0.6.2
+        REVIEWGATE_RUNTIME_VERSION: v0.6.3
       run: |
         set -euo pipefail
         started_ms="$(date +%s%3N)"
