@@ -8162,6 +8162,13 @@ review_angles:
         assert!(workflow.contains("publish:\n    needs: verify"));
         assert!(workflow.contains("persist-credentials: false"));
         assert!(workflow.contains("cargo +1.96.0 build --locked --release -p reviewgate-cli"));
+        let regression_gate = workflow
+            .find("cargo +1.96.0 test --locked --workspace")
+            .expect("release regression gate");
+        let release_build = workflow
+            .find("cargo +1.96.0 build --locked --release -p reviewgate-cli")
+            .expect("release build");
+        assert!(regression_gate < release_build);
         assert!(workflow.contains("reviewgate-x86_64-unknown-linux-gnu.tar.gz"));
         assert!(workflow.contains("actions/upload-artifact@"));
         assert!(workflow.contains("actions/download-artifact@"));
@@ -8183,31 +8190,6 @@ review_angles:
         assert!(!publish_job.contains("id-token: write"));
         assert!(!publish_job.contains("attestations: write"));
         assert!(!publish_job.contains("\"$runtime_dir/reviewgate\""));
-    }
-
-    #[test]
-    fn dogfood_release_gate_covers_recorded_pr365_recall_failures() {
-        let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../fixtures/evidence-grounding/regressions.json"
-        ))
-        .expect("grounding fixtures parse");
-        let names = cases
-            .as_array()
-            .expect("fixture cases")
-            .iter()
-            .filter_map(|case| case["name"].as_str())
-            .collect::<BTreeSet<_>>();
-        assert!(names.contains("PR 365 unavailable runner tooling is a real defect"));
-        assert!(names.contains("PR 365 stale release assertion is a real defect"));
-
-        let workflow = include_str!("../../../.github/workflows/release-runtime.yml");
-        let regression_gate = workflow
-            .find("cargo +1.96.0 test --locked --workspace")
-            .expect("release regression gate");
-        let release_build = workflow
-            .find("cargo +1.96.0 build --locked --release -p reviewgate-cli")
-            .expect("release build");
-        assert!(regression_gate < release_build);
     }
 
     #[test]
@@ -11023,6 +11005,15 @@ diff --git a/src/lib.rs b/src/lib.rs
             "../../../fixtures/evidence-grounding/regressions.json"
         ))
         .expect("grounding fixtures parse");
+        let semantic_keys = cases
+            .as_array()
+            .expect("fixture cases")
+            .iter()
+            .filter_map(|case| case.pointer("/finding/grounding/semantic_key"))
+            .filter_map(serde_json::Value::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(semantic_keys.contains("fixture.pr365.runner_tooling"));
+        assert!(semantic_keys.contains("fixture.pr365.stale_release_assertion"));
 
         for case in cases.as_array().expect("fixture cases") {
             let name = case["name"].as_str().expect("fixture name");
