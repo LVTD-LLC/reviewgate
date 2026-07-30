@@ -64,16 +64,16 @@ if (posthogKey && navigator.doNotTrack !== "1") {
       return;
     }
 
-    const link = event.target.closest<HTMLAnchorElement>("a[data-analytics-event]");
-    const eventName = link?.dataset.analyticsEvent;
+    const target = event.target.closest<HTMLElement>("[data-analytics-event]");
+    const eventName = target?.dataset.analyticsEvent;
 
-    if (!link || !eventName) {
+    if (!target || !eventName) {
       return;
     }
 
     capture(eventName, {
-      destination: safeDestination(link.href),
-      location: link.dataset.analyticsLocation ?? "unknown",
+      destination: target instanceof HTMLAnchorElement ? safeDestination(target.href) : "",
+      location: target.dataset.analyticsLocation ?? "unknown",
       page_path: window.location.pathname,
     });
   });

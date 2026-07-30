@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-30
 
+- Replaced the navbar initials tile with the ReviewGate shield logo and added a landing-page CTA that copies a complete AI-agent setup prompt for the local CLI and GitHub Action, including an explicit OpenRouter model choice.
 - Added sanitized PR #365 true-positive grounding fixtures and explicit review-prompt checks for unavailable runner tooling and stale release assertions, made the full deterministic dogfood regression suite block runtime releases before compilation and publication, restored automatic ReviewGate dogfooding on repository pull requests with the built-in balanced model, and advanced the action runtime pin to `v0.7.0`.
 - Revalidated disposition authors through GitHub's repository-permission endpoint when workflow-token status filtering hides a valid human-created receipt, while retaining exact status receipts as an independent writer attestation. Advanced the action runtime pin to `v0.6.3`.
 - Loaded agent disposition receipts from GitHub's combined commit-status response so workflow tokens can consume exact writer-created receipts that the paginated status endpoint omits. Advanced the action runtime pin to `v0.6.2`.
