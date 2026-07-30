@@ -4,6 +4,27 @@ import { readFile } from "node:fs/promises";
 const expectedPages = [
   ["index.html", "https://reviewgate.lvtd.dev/"],
   ["docs/index.html", "https://reviewgate.lvtd.dev/docs/"],
+  ["docs/quickstart/index.html", "https://reviewgate.lvtd.dev/docs/quickstart/"],
+  [
+    "docs/github-actions/index.html",
+    "https://reviewgate.lvtd.dev/docs/github-actions/",
+  ],
+  ["docs/cli/index.html", "https://reviewgate.lvtd.dev/docs/cli/"],
+  [
+    "docs/configuration/index.html",
+    "https://reviewgate.lvtd.dev/docs/configuration/",
+  ],
+  ["docs/features/index.html", "https://reviewgate.lvtd.dev/docs/features/"],
+  ["docs/artifacts/index.html", "https://reviewgate.lvtd.dev/docs/artifacts/"],
+  [
+    "docs/agent-workflows/index.html",
+    "https://reviewgate.lvtd.dev/docs/agent-workflows/",
+  ],
+  ["docs/security/index.html", "https://reviewgate.lvtd.dev/docs/security/"],
+  [
+    "docs/troubleshooting/index.html",
+    "https://reviewgate.lvtd.dev/docs/troubleshooting/",
+  ],
   ["blog/index.html", "https://reviewgate.lvtd.dev/blog/"],
   [
     "blog/how-to-tell-if-code-is-ai-generated/index.html",
@@ -13,9 +34,17 @@ const expectedPages = [
 
 const titles = new Set();
 const descriptions = new Set();
+const builtPages = new Map();
 
-for (const [file, expectedCanonical] of expectedPages) {
-  const html = await readFile(new URL(`../dist/${file}`, import.meta.url), "utf8");
+const pageSources = await Promise.all(
+  expectedPages.map(async ([file, expectedCanonical]) => [
+    file,
+    expectedCanonical,
+    await readFile(new URL(`../dist/${file}`, import.meta.url), "utf8"),
+  ]),
+);
+
+for (const [file, expectedCanonical, html] of pageSources) {
   const title = html.match(/<title>([^<]+)<\/title>/)?.[1];
   const description = html.match(/<meta name="description" content="([^"]+)"/)?.[1];
   const canonical = html.match(/<link rel="canonical" href="([^"]+)"/)?.[1];
@@ -31,9 +60,29 @@ for (const [file, expectedCanonical] of expectedPages) {
 
   titles.add(title);
   descriptions.add(description);
+  builtPages.set(new URL(expectedCanonical).pathname.replace(/\/$/, "") || "/", html);
 }
 
-const homepage = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+for (const [sourcePath, html] of builtPages) {
+  const internalDocLinks = [...html.matchAll(/href="(\/docs(?:\/[^"#?]*)?(?:#[^"]+)?)"/g)];
+
+  for (const [, href] of internalDocLinks) {
+    const [rawPath, fragment] = href.split("#");
+    const targetPath = rawPath.replace(/\/$/, "") || "/";
+    const targetHtml = builtPages.get(targetPath);
+
+    assert(targetHtml, `${sourcePath} links to missing documentation page ${rawPath}`);
+    if (fragment) {
+      assert(
+        targetHtml.includes(`id="${fragment}"`),
+        `${sourcePath} links to missing documentation section ${href}`,
+      );
+    }
+  }
+}
+
+const homepage = builtPages.get("/");
+assert(homepage, "homepage must be present in built pages");
 const jsonLdSource = homepage.match(
   /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
 )?.[1];
@@ -42,10 +91,8 @@ assert(jsonLdSource, "homepage must contain JSON-LD");
 const schemaTypes = JSON.parse(jsonLdSource).map((entry) => entry["@type"]);
 assert.deepEqual(schemaTypes, ["SoftwareApplication", "Organization"]);
 
-const article = await readFile(
-  new URL("../dist/blog/how-to-tell-if-code-is-ai-generated/index.html", import.meta.url),
-  "utf8",
-);
+const article = builtPages.get("/blog/how-to-tell-if-code-is-ai-generated");
+assert(article, "article must be present in built pages");
 const articleJsonLdSource = article.match(
   /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
 )?.[1];

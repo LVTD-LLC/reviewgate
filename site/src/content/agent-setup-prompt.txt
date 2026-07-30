@@ -1,0 +1,20 @@
+Set up ReviewGate in this repository for both local CLI reviews and GitHub pull request reviews.
+
+Before changing any files or running installation commands, ask me which exact OpenRouter model ID I want to use. Suggest these two starting points:
+
+- `openrouter/free` for zero-cost experimentation. Explain that OpenRouter selects an available free model, so availability, latency, and output quality can vary.
+- `deepseek/deepseek-v4-flash` for ReviewGate's built-in default.
+
+Tell me I can instead provide any exact OpenRouter model name, using the normal `provider/model-name` format. Do not continue until I choose.
+
+After I answer:
+
+1. Read this repository's agent instructions and inspect the existing GitHub workflows, `.reviewgate.yml`, ignore files, and working tree. Preserve unrelated changes.
+2. Read ReviewGate's current installation documentation at https://github.com/LVTD-LLC/reviewgate before choosing commands. Install the local `reviewgate` CLI from the current `v0` source using its locked Cargo package, then verify `reviewgate --help`. If this is the ReviewGate source repository itself, use `cargo install --path crates/reviewgate-cli --locked`.
+3. Make the selected model explicit in the local review command with `--model <exact-openrouter-model-id>`. Confirm a safe command for reviewing the current repository and writing `.reviewgate/review.json` plus `.reviewgate/summary.md`. Do not make a paid model call unless I explicitly approve it.
+4. Add or update `.github/workflows/reviewgate.yml` using the current GitHub Action quick start from ReviewGate's README and `LVTD-LLC/reviewgate@v0`. Preserve the documented fork and Dependabot guard, least-privilege permissions, full-history checkout, timeout, concurrency, and maintainer-only `@reviewgate review` rereview job. Pass the selected exact model through the Action's `model` input.
+5. Ensure generated `.reviewgate/` outputs are ignored unless this repository intentionally commits them.
+6. Tell me to add an OpenRouter key as the GitHub Actions secret `OPENROUTER_API_KEY`. Never ask me to paste the key into chat, never write it into a tracked file, and never print it. If a secure authenticated GitHub CLI flow is available, ask before changing the repository secret.
+7. Validate the workflow syntax and any repository-specific checks that apply. Show me the files changed, the exact local review command, and any remaining manual steps.
+
+ReviewGate is review-only. Do not add automatic code repair, hosted services, telemetry, billing, persistent storage, or `pull_request_target`.
