@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -740,8 +740,7 @@ fn search_symbol(
         }
         if started.elapsed() >= timeout || reader.is_finished() {
             timed_out = started.elapsed() >= timeout;
-            child.kill().map_err(|error| error.to_string())?;
-            child.wait().map_err(|error| error.to_string())?;
+            stop_or_reap_child(&mut child)?;
             break;
         }
         thread::sleep(Duration::from_millis(5));
@@ -753,6 +752,17 @@ fn search_symbol(
     let output_truncated = output.len() > max_output_bytes;
     output.truncate(max_output_bytes);
     Ok((output, timed_out || output_truncated))
+}
+
+fn stop_or_reap_child(child: &mut Child) -> Result<(), String> {
+    match child.kill() {
+        Ok(()) => child.wait().map(|_| ()).map_err(|error| error.to_string()),
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(kill_error.to_string()),
+            Err(wait_error) => Err(wait_error.to_string()),
+        },
+    }
 }
 
 fn parse_rg_matches(output: &[u8], symbol: &str, origin: &str) -> Vec<SearchMatch> {
@@ -921,12 +931,14 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
 mod tests {
     use std::collections::BTreeSet;
     use std::fs;
+    use std::process::Command;
+    use std::time::Duration;
 
     use super::{
         MAX_SEMANTIC_SOURCE_CANDIDATES, MAX_SEMANTIC_SOURCE_PATHS, SearchMatch,
         SemanticContextStatus, bound_source_candidates, collect_semantic_context_with_search,
         extract_deleted_symbols, extract_rust_changed_symbols, extract_text_changed_symbols,
-        parse_diff_lines,
+        parse_diff_lines, parse_rg_matches, search_symbol, stop_or_reap_child,
     };
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {
@@ -988,6 +1000,51 @@ pub fn changed(value: bool) -> bool {
 
         assert!(symbols.contains(&"created_at".to_string()));
         assert!(symbols.contains(&"run_started_at".to_string()));
+    }
+
+    #[test]
+    fn search_symbol_handles_a_fast_ripgrep_exit() {
+        if Command::new("rg").arg("--version").output().is_err() {
+            return;
+        }
+        let repo = unique_test_dir("semantic-context-fast-rg");
+        fs::create_dir_all(repo.join("tests")).expect("create tests");
+        fs::write(
+            repo.join("tests/permissions.test.js"),
+            "assert.equal(canExportBillingData(\"owner\", \"owner\"), true);\n",
+        )
+        .expect("write reference");
+
+        for _ in 0..64 {
+            let (output, truncated) = search_symbol(
+                &repo,
+                "canExportBillingData",
+                32 * 1024,
+                Duration::from_millis(800),
+            )
+            .expect("fast ripgrep search");
+            assert!(!truncated);
+            assert_eq!(
+                parse_rg_matches(&output, "canExportBillingData", "src/permissions.js").len(),
+                1
+            );
+        }
+
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn stopping_an_already_exited_search_process_is_successful() {
+        let mut child = Command::new("rustc")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn fast process");
+        while child.try_wait().expect("poll fast process").is_none() {
+            std::thread::yield_now();
+        }
+
+        stop_or_reap_child(&mut child).expect("reap already exited process");
     }
 
     #[test]
