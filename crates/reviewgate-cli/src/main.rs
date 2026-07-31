@@ -3830,6 +3830,7 @@ fn validate_serialized_disposition_updates(
         .map(|update| update.resolution.clone())
         .collect();
     candidates.disposition_updates.clear();
+    candidates.tracked_findings.clear();
     candidates.metrics = None;
     candidates.angle_results.clear();
     candidates.angle_errors.clear();
@@ -14412,6 +14413,34 @@ diff --git a/src/lib.rs b/src/lib.rs
         let mut published_artifact: ReviewArtifact =
             serde_json::from_str(&serde_json::to_string(&artifact).expect("serialize artifact"))
                 .expect("deserialize artifact");
+        let mut concurrent_advisory = prior_artifact.findings[0].clone();
+        concurrent_advisory.id = "direct-action-precedence-advisory".to_string();
+        concurrent_advisory.angle_id = None;
+        concurrent_advisory.severity = Severity::P4;
+        concurrent_advisory.classification = FindingClassification::Suggestion;
+        concurrent_advisory.verification = None;
+        concurrent_advisory.file = Some(".reviewgate.yml".to_string());
+        concurrent_advisory.line = Some(1);
+        concurrent_advisory.title =
+            "Document direct Action input precedence in the smoke fixture".to_string();
+        concurrent_advisory
+            .grounding
+            .as_mut()
+            .expect("grounding")
+            .semantic_key = "direct_action_precedence_smoke".to_string();
+        concurrent_advisory.calibrate_policy();
+        let advisory_tracking = reconcile_findings(
+            vec![concurrent_advisory.clone()],
+            &[],
+            &reviewgate_core::ConvergenceDelta::first_review(&published_artifact.reviewed_sha),
+        )
+        .expect("advisory tracking");
+        published_artifact.findings.push(concurrent_advisory);
+        published_artifact
+            .tracked_findings
+            .extend(advisory_tracking.tracked_findings);
+        recompute_artifact_outcome(&mut published_artifact)
+            .expect("mixed fixed and open artifact validates");
         published_artifact.score = None;
         published_artifact.status = ReviewStatus::ReviewError;
         published_artifact.angle_errors = vec![ReviewAngleError {
