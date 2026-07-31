@@ -25,6 +25,7 @@ When `.reviewgate.yml` is absent:
 
 - `min_severity` defaults to `P4`;
 - semantic context is disabled;
+- independent blocker verification is disabled;
 - the built-in `general` angle runs;
 - the built-in `adversarial` angle runs;
 - the balanced model is selected unless the caller overrides it;
@@ -71,6 +72,43 @@ deep: true
 ReviewGate builds this context once for the exact checked-out PR head and shares it across every angle. It uses tree-sitter to identify changed Rust definitions, then invokes `rg` directly with fixed arguments when ripgrep is available or uses a built-in fixed-string search over Git-tracked files otherwise. Unsupported text formats and deleted identifiers use the same bounded identifier extraction.
 
 The context is in memory only. ReviewGate does not create a repository index, use embeddings, execute PR code, or persist excerpt source in the review artifact. Artifact metrics record paths, line ranges, reasons, relations, byte counts, truncation, and the reviewed SHA. If the checkout does not equal the PR head or both search paths fail, the artifact reports semantic context as unavailable and the ordinary review still runs.
+
+## Independently verify blocker candidates
+
+Blocker verification is opt-in because it can add one model call:
+
+```yaml
+verify_blockers: true
+```
+
+The verifier defaults to the primary review model. Select a different model
+only through the trusted GitHub Action `verifier_model` input or direct CLI
+`--verifier-model` option. ReviewGate rejects that selector in
+pull-request-controlled repository configuration. Selecting a model does not
+enable verification by itself.
+
+ReviewGate makes no additional call when verification is disabled or when
+deterministic grounding leaves no blocker candidates. When candidates exist,
+all are checked in one batched call.
+
+The verifier sees normalized claims, causal paths, test assessments,
+reproductions, proofs, checked evidence, and capped line windows around that
+evidence. It
+does not see the first model's finding title, detail, or repair instruction.
+A verified candidate can block, a rejected candidate remains in the full JSON
+artifact without publishing or blocking, and an inconclusive decision makes
+the review a `review_error`. If a later verifier rejects an already verified
+open obligation, ReviewGate retains the obligation until convergence approves
+resolution evidence and records the new rejection as structured
+`verification.conflicting_decisions` audit data.
+
+The GitHub Action can override repository settings directly:
+
+```yaml
+with:
+  verify_blockers: true
+  verifier_model: anthropic/claude-sonnet-4
+```
 
 ## Add custom review angles
 
@@ -258,6 +296,11 @@ For `review-pr`, the effective value follows this order:
 3. built-in default.
 
 The GitHub Action translates its inputs into CLI flags. Because `min_severity` has an Action default of `P4`, Action runs should set `min_severity` in the workflow. A `.reviewgate.yml` `min_severity` is primarily the direct-CLI default and is overridden by the Action input passed to the CLI.
+
+The Action's `verify_blockers` input defaults to empty, so `.reviewgate.yml`
+remains authoritative unless the workflow explicitly passes `true` or `false`.
+An explicit CLI or Action value wins over repository config. The verifier model
+uses the same precedence and falls back to the primary review model.
 
 `review_angles` comes from the config file because there is no Action or CLI flag for the list.
 

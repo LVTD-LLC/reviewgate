@@ -31,13 +31,14 @@ ReviewGate does not repair code, execute PR code, merge the pull request, host a
 7. Each enabled review angle receives the bounded context and calls OpenRouter.
 8. Model output is parsed into strict ReviewGate JSON.
 9. Potential blockers pass deterministic policy and repository-evidence validation.
-10. Successful angle results and typed angle errors are aggregated.
-11. ReviewGate recomputes the top-level score and status.
-12. JSON and Markdown artifacts are written.
-13. Eligible findings are published inline when GitHub has a valid anchor.
-14. The canonical summary is updated in place.
-15. A dedicated check run reports `passed`, `needs_changes`, or unavailable review.
-16. A stable agent result is projected and uploaded for the exact reviewed SHA.
+10. If independent blocker verification is enabled and candidates exist, one batched verifier call checks every normalized claim.
+11. Successful angle results and typed angle errors are aggregated.
+12. ReviewGate recomputes the top-level score and status.
+13. JSON and Markdown artifacts are written.
+14. Eligible findings are published inline when GitHub has a valid anchor.
+15. The canonical summary is updated in place.
+16. A dedicated check run reports `passed`, `needs_changes`, or unavailable review.
+17. A stable agent result is projected and uploaded for the exact reviewed SHA.
 
 The model proposes findings. ReviewGate owns validation, scoring, status, and publication invariants.
 
@@ -69,6 +70,25 @@ Repositories can replace the list with inline prompts, prompt files, or repo-loc
 An angle failure is not converted into `0/5`. It becomes a typed `angle_errors` entry and makes the whole review inconclusive.
 
 See [Configure custom review angles](/docs/configuration#add-custom-review-angles).
+
+## Optionally verify blockers with an independent call
+
+Repositories can enable a second, independent inference pass for blocker
+candidates. This is off by default. It makes no call when the initial review
+has no grounded blockers and batches all remaining candidates into at most one
+call. The verifier can use the primary model or a separately configured model.
+
+Only normalized claims and checked repository evidence cross this boundary;
+the discovery model's persuasive title, prose detail, and repair instruction
+do not. Verified candidates retain their normal blocking behavior. Rejected
+candidates stay auditable in the full artifact but are not comments or open
+agent obligations. A later rejection cannot silently clear an already verified
+open obligation: ReviewGate retains the obligation until convergence approves
+resolution evidence and stores the disagreement in
+`verification.conflicting_decisions`. Inconclusive or malformed verification
+fails closed as `review_error`.
+
+See [Independently verify blocker candidates](/docs/configuration#independently-verify-blocker-candidates).
 
 ## Separate finding dimensions
 
