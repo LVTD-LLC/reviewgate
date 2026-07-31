@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-31
 
+- Isolated serialized fixed-resolution proof revalidation from the completed review's tracked finding state, so a fixed blocker can publish alongside unrelated open advisories without turning a valid review into a summary-publication error.
 - Made reconciled finding IDs deterministically unique when reviewer drift repeats one model-generated ID for distinct semantic findings, keeping the canonical artifact and tracked convergence state synchronized instead of failing the rereview. Advanced the action runtime pin to `v0.9.3`.
 - Prevented verifier-rejected candidates from becoming inline comments and added cleanup for any matching unresolved ReviewGate-owned thread created by an older runtime. Advanced the action runtime pin to `v0.9.2`.
 - Deduplicated independently grounded findings that share one semantic fingerprint before blocker verification and convergence, selecting one deterministic strongest representative and recording the collapsed fingerprint so two review angles cannot turn the same defect into an invalid artifact.
