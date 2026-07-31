@@ -1974,6 +1974,7 @@ fn recompute_artifact_outcome(artifact: &mut ReviewArtifact) -> CliResult<()> {
             tracked.finding.angle_id = None;
         }
     }
+    make_reconciled_finding_ids_unique(artifact);
     for angle in &mut artifact.angle_results {
         angle.finding_ids = artifact
             .findings
@@ -2011,6 +2012,56 @@ fn recompute_artifact_outcome(artifact: &mut ReviewArtifact) -> CliResult<()> {
     }
     artifact.validate()?;
     Ok(())
+}
+
+fn make_reconciled_finding_ids_unique(artifact: &mut ReviewArtifact) {
+    let id_counts =
+        artifact
+            .findings
+            .iter()
+            .fold(BTreeMap::<String, usize>::new(), |mut counts, finding| {
+                *counts.entry(finding.id.clone()).or_default() += 1;
+                counts
+            });
+    let mut used_ids = id_counts
+        .iter()
+        .filter(|(_, count)| **count == 1)
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+
+    for finding in &mut artifact.findings {
+        if id_counts.get(&finding.id) == Some(&1) {
+            continue;
+        }
+        let base = finding.id.clone();
+        let fingerprint = semantic_fingerprint(finding);
+        let angle_id = finding
+            .angle_id
+            .as_deref()
+            .or_else(|| base.split_once(':').map(|(prefix, _)| prefix))
+            .unwrap_or("finding");
+        let candidate_base = format!("{base}~{}", stable_id_hash(&fingerprint));
+        let mut candidate = bounded_generated_finding_id(angle_id, &candidate_base);
+        for suffix in 2.. {
+            if used_ids.insert(candidate.clone()) {
+                break;
+            }
+            candidate =
+                bounded_generated_finding_id(angle_id, &format!("{candidate_base}~{suffix}"));
+        }
+        finding.id = candidate;
+    }
+
+    let ids_by_fingerprint = artifact
+        .findings
+        .iter()
+        .map(|finding| (semantic_fingerprint(finding), finding.id.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for tracked in &mut artifact.tracked_findings {
+        if let Some(id) = ids_by_fingerprint.get(&tracked.semantic_fingerprint) {
+            tracked.finding.id = id.clone();
+        }
+    }
 }
 
 fn finalize_review_artifact(
@@ -12726,6 +12777,55 @@ diff --git a/src/lib.rs b/src/lib.rs
             reason: "The changed line propagates the failure.".to_string(),
         }];
         artifact.with_computed_score().expect("fixture scores")
+    }
+
+    #[test]
+    fn recompute_makes_reconciled_finding_ids_unique_without_losing_semantic_identity() {
+        let mut artifact = verifier_candidate_artifact();
+        let first = artifact.findings[0].clone();
+        let mut second = first.clone();
+        second.title = "A distinct repeated suggestion".to_string();
+        second.grounding.as_mut().expect("grounding").semantic_key =
+            "distinct_repeated_suggestion".to_string();
+        artifact.findings = vec![first, second];
+        artifact.tracked_findings = artifact
+            .findings
+            .iter()
+            .map(|finding| TrackedFinding {
+                semantic_fingerprint: semantic_fingerprint(finding),
+                finding: finding.clone(),
+                disposition: FindingDisposition::StillOpen,
+                disposition_history: vec![reviewgate_core::FindingDispositionRecord {
+                    disposition: FindingDisposition::StillOpen,
+                    submitted_disposition: None,
+                    submission_id: None,
+                    evidence_summary: "Observed in the current review.".to_string(),
+                    actor: "reviewgate".to_string(),
+                    reviewed_sha: artifact.reviewed_sha.clone(),
+                    code_fingerprint: finding_code_fingerprint(finding),
+                }],
+            })
+            .collect();
+
+        recompute_artifact_outcome(&mut artifact).expect("reconciled IDs normalize");
+
+        assert_ne!(artifact.findings[0].id, artifact.findings[1].id);
+        assert_ne!(
+            semantic_fingerprint(&artifact.findings[0]),
+            semantic_fingerprint(&artifact.findings[1])
+        );
+        assert_eq!(
+            artifact
+                .findings
+                .iter()
+                .map(|finding| finding.id.as_str())
+                .collect::<BTreeSet<_>>(),
+            artifact
+                .tracked_findings
+                .iter()
+                .map(|tracked| tracked.finding.id.as_str())
+                .collect::<BTreeSet<_>>()
+        );
     }
 
     fn verifier_context(reviewed_sha: &str, previous_state: Option<SummaryState>) -> ReviewContext {
