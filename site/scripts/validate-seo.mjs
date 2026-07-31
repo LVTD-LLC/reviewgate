@@ -30,6 +30,14 @@ const expectedPages = [
     "blog/how-to-tell-if-code-is-ai-generated/index.html",
     "https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/",
   ],
+  [
+    "blog/best-ai-code-review-tools/index.html",
+    "https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/",
+  ],
+  [
+    "blog/ai-code-review-github/index.html",
+    "https://reviewgate.lvtd.dev/blog/ai-code-review-github/",
+  ],
 ];
 
 const titles = new Set();
@@ -99,6 +107,17 @@ const articleJsonLdSource = article.match(
 assert(articleJsonLdSource, "article must contain JSON-LD");
 const articleSchemaTypes = JSON.parse(articleJsonLdSource).map((entry) => entry["@type"]);
 assert.deepEqual(articleSchemaTypes, ["Article", "HowTo", "FAQPage", "BreadcrumbList"]);
+
+const githubReviewArticle = builtPages.get("/blog/ai-code-review-github");
+assert(githubReviewArticle, "GitHub review article must be present in built pages");
+const githubReviewJsonLdSource = githubReviewArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(githubReviewJsonLdSource, "GitHub review article must contain JSON-LD");
+const githubReviewSchemaTypes = JSON.parse(githubReviewJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(githubReviewSchemaTypes, ["BlogPosting", "HowTo", "BreadcrumbList"]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);

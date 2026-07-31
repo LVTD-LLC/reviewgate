@@ -1098,6 +1098,35 @@ h2 {
   margin-block-start: 12px;
 }
 
+.article-body table {
+  border-collapse: collapse;
+  display: block;
+  font-size: 0.91rem;
+  margin-block: 30px;
+  max-width: 100%;
+  overflow-x: auto;
+  width: max-content;
+}
+
+.article-body th,
+.article-body td {
+  border: 1px solid var(--signal-line);
+  min-width: 128px;
+  padding: 11px 13px;
+  text-align: start;
+  vertical-align: top;
+}
+
+.article-body th {
+  background: rgb(168 255 96 / 0.06);
+  color: var(--signal-ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
 .article-faq {
   border-block-start: 1px solid var(--signal-line);
   padding-block: 18px;

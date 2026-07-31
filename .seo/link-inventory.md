@@ -16,6 +16,7 @@
 | `/blog` | https://reviewgate.lvtd.dev/blog/ | ReviewGate engineering field notes | E |
 | `/blog/how-to-tell-if-code-is-ai-generated` | https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/ | How to review code when AI authorship is uncertain | E |
 | `/blog/best-ai-code-review-tools` | https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/ | Best AI code review tools for agent-written PRs | E |
+| `/blog/ai-code-review-github` | https://reviewgate.lvtd.dev/blog/ai-code-review-github/ | Merge-safe AI code review on GitHub | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -96,3 +97,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “AI code review tool comparison”
 - “agent-written PR review tools”
 - “how to choose AI code review tools”
+
+### GitHub AI review field note
+
+- “AI code review on GitHub”
+- “merge-safe AI review workflow”
+- “five bindings for AI code review”
+- “exact-head review check”
+- “repository-owned AI reviewer”
