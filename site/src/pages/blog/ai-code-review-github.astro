@@ -1,0 +1,703 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "AI Code Review on GitHub: A Merge-Safe Workflow";
+const description =
+  "Set up AI code review on GitHub with least-privilege Actions, exact-head checks, grounded findings, and a human merge decision.";
+const canonical = "https://reviewgate.lvtd.dev/blog/ai-code-review-github/";
+const publishedAt = "2026-07-31";
+
+const workflowSteps = [
+  {
+    name: "Bind the review to a trusted event",
+    text: "Use the pull_request event for same-repository pull requests, keep model secrets out of fork and Dependabot runs, and never execute untrusted pull request code in a privileged pull_request_target job.",
+  },
+  {
+    name: "Bind the reviewer to a trusted runtime",
+    text: "Run evidence validation and deterministic scoring from a pinned or attested release that the pull request cannot replace, with only the GitHub token permissions the reviewer needs.",
+  },
+  {
+    name: "Bind every blocker to repository evidence",
+    text: "Require an exact path, diff side, changed line, excerpt, causal path, and test assessment before an AI finding can affect the merge decision.",
+  },
+  {
+    name: "Bind the verdict to deterministic policy",
+    text: "Convert grounded findings into a check result with explicit severity and failure rules instead of letting free-form model prose decide whether a pull request passes.",
+  },
+  {
+    name: "Bind the final result to the current head",
+    text: "Publish a structured result for the exact pull request head SHA, supersede older runs, and let humans merge only after the required current-head checks and review obligations are satisfied.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to make AI code review merge-safe on GitHub",
+    description:
+      "A five-binding workflow for running an AI reviewer without confusing model feedback with merge authority.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+      url: `${canonical}#binding-${index + 1}`,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  eyebrow="FIELD NOTE / 003 / GITHUB"
+  publishedAt={publishedAt}
+  readingTime="15 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">AI code review on GitHub needs a merge contract.</Fragment>
+  <Fragment slot="deck">
+    The useful question is not whether an AI reviewer can leave comments. It is whether
+    your workflow can prove which code it reviewed, why a finding matters, and who still
+    owns the merge decision.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#choose-integration">Choose an integration</a></li>
+    <li><a href="#coverage">What the reviewer can catch</a></li>
+    <li><a href="#five-bindings">The five bindings</a></li>
+    <li><a href="#setup">Set up the workflow</a></li>
+    <li><a href="#failure-policy">Define failure behavior</a></li>
+    <li><a href="#pilot">Run a useful pilot</a></li>
+    <li><a href="#require-check">Before you require the check</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should AI code review work on GitHub?</h2>
+    <p class="article-lead">
+      AI code review on GitHub should run as an evidence-producing check, not as an
+      autonomous merge authority. Bind the run to a trusted event and runtime, require
+      exact repository evidence for blockers, derive the verdict from deterministic
+      policy, and accept only a result for the pull request's current head SHA. Human
+      maintainers still decide whether to merge.
+    </p>
+    <p>
+      Separating defect detection from merge authorization matters because they are
+      different jobs.
+      A model can surface a plausible defect, suggest a test, or point to a risky
+      boundary. It cannot prove by confidence alone that the defect exists, that the
+      repository's policy was applied, or that a later push resolved the problem.
+    </p>
+    <aside class="article-callout">
+      <strong>The merge-safe rule</strong>
+      <p>
+        A positive bot comment is not a merge result. A merge result is a current-head
+        check whose blocking findings are grounded in code and whose policy is owned by
+        the repository.
+      </p>
+    </aside>
+    <p>The workflow is easy to remember as five bindings:</p>
+    <ol>
+      {workflowSteps.map((step, index) => (
+        <li><strong>{index + 1}. {step.name}.</strong> {step.text}</li>
+      ))}
+    </ol>
+    <p>
+      GitHub makes the same distinction in its native product. Copilot code review
+      submits a <code>COMMENT</code> review rather than <code>APPROVE</code> or
+      <code>REQUEST_CHANGES</code>, so its review does not satisfy required approvals or
+      block merging. GitHub also says Copilot can miss issues or make mistakes and
+      recommends human review. See GitHub's
+      <a href="https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review">
+        Copilot code review guide
+      </a>
+      and
+      <a href="https://docs.github.com/en/copilot/concepts/agents/code-review">
+        product limitations
+      </a>.
+    </p>
+  </section>
+
+  <section id="choose-integration">
+    <h2>Choose the integration before you tune the prompt</h2>
+    <p>
+      Search results mix four different products under “AI code review”: GitHub's native
+      Copilot reviewer, hosted GitHub Apps, secret-backed Actions, and self-hosted or
+      CI-invoked command-line tools. All can leave useful feedback. Their trust and
+      operating models are not interchangeable.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Pattern</th>
+          <th scope="col">Credential owner</th>
+          <th scope="col">Provider control</th>
+          <th scope="col">Enforcement path</th>
+          <th scope="col">Maintenance</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">GitHub Copilot</th>
+          <td>GitHub</td>
+          <td>Managed</td>
+          <td>Advisory review; pair with required checks</td>
+          <td>Low</td>
+        </tr>
+        <tr>
+          <th scope="row">Hosted GitHub App</th>
+          <td>Service operator</td>
+          <td>Varies by service</td>
+          <td>App review or check</td>
+          <td>Medium</td>
+        </tr>
+        <tr>
+          <th scope="row">Repository Action</th>
+          <td>Repository secret</td>
+          <td>High</td>
+          <td>Workflow check</td>
+          <td>High</td>
+        </tr>
+        <tr>
+          <th scope="row">Self-hosted CLI</th>
+          <td>CI or runner operator</td>
+          <td>High</td>
+          <td>CI check or GitHub App</td>
+          <td>Highest</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Use GitHub Copilot when managed operation is the priority</h3>
+    <p>
+      Copilot fits teams that already license it and want a
+      GitHub-native experience. It can gather repository context, follow custom
+      instructions, review new pushes automatically, and offer inline suggestions.
+      Managed operation removes much of the model-key handling, event design, API
+      plumbing, and maintenance that a do-it-yourself reviewer creates.
+      GitHub documents the current context, instruction, automatic-review, and effort
+      controls in its
+      <a href="https://docs.github.com/en/copilot/concepts/agents/code-review">
+        Copilot code review concepts
+      </a>.
+    </p>
+    <p>
+      The tradeoff is control. Copilot remains advisory, uses GitHub's supported model
+      and file-coverage contract, and does not become a repository-specific policy
+      engine merely because it reads an instruction file. Choose it when useful comments
+      are the goal. Add a separate required check if the repository needs deterministic
+      enforcement.
+    </p>
+
+    <h3>Use a GitHub App when fork coverage and central operation matter</h3>
+    <p>
+      A GitHub App can keep the model credential outside a pull request runner and use a
+      narrowly scoped installation token to read changes and publish results. That
+      architecture is often cleaner for organizations reviewing untrusted forks or
+      operating one service across many repositories. In exchange, the service becomes
+      another security, privacy, availability, and billing dependency.
+    </p>
+
+    <h3>Use an Action or CLI when the repository must own the contract</h3>
+    <p>
+      Choose a CI-owned reviewer when you need provider choice, explicit
+      versioning, machine-readable output, and branch protection tied to a stable check.
+      This pattern carries more security responsibility. A workflow that recovers a
+      model secret by running untrusted code with
+      <code>pull_request_target</code> turns review automation into a credential boundary
+      failure.
+    </p>
+    <p>
+      If you are still comparing products, start with the
+      <a href="/blog/best-ai-code-review-tools">AI code review tool decision guide</a>.
+      The rest of this article assumes you chose a repository-owned Action or CLI and
+      need to make it defensible.
+    </p>
+  </section>
+
+  <section id="coverage">
+    <h2>What AI code review on GitHub can actually catch</h2>
+    <p>
+      AI review is most useful where a diff contains enough local evidence to test a
+      concrete claim. That includes missing error handling, inconsistent API use,
+      authorization checks that disappear on one path, unsafe input reaching a sensitive
+      operation, and tests that omit a changed failure mode. Repository context can also
+      help connect a changed caller to an existing contract elsewhere in the codebase.
+    </p>
+    <p>
+      It is less reliable when correctness depends on unstated product intent, production
+      data, undocumented infrastructure, or a large cross-repository interaction the
+      reviewer cannot inspect. A confident comment can still be wrong because the model
+      missed a guard, misunderstood a framework contract, or reviewed only part of a
+      large change. File coverage differs by product too: GitHub documents that Copilot
+      code review excludes dependency-management files, logs, and SVGs.
+    </p>
+    <p>
+      Keep deterministic tools in their lane. Compilers, type checkers, tests, linters,
+      dependency scanners, SAST, and policy checks provide repeatable answers to narrower
+      questions. An LLM can explain how several signals connect, inspect logic that has
+      no ready-made rule, and propose a missing test. It should not replace a check that
+      already answers the question deterministically.
+    </p>
+    <p>
+      Noise is an operational failure even when individual comments look reasonable.
+      Set a small blocker budget, suppress style-only findings already covered by
+      tooling, and require the reviewer to state the causal failure rather than merely
+      naming a suspicious pattern. Track which findings maintainers accept, reject, or
+      repeatedly override. That ledger tells you whether the reviewer is learning the
+      repository's risk profile or simply moving human attention from code to bot
+      triage.
+    </p>
+  </section>
+
+  <section id="five-bindings">
+    <h2>The five bindings of a merge-safe AI review</h2>
+    <p>
+      Treat these as independent links. A strong prompt cannot compensate for a stale
+      SHA. Precise line comments cannot compensate for a pull request that can replace
+      the deterministic scoring binary. A green job cannot compensate for a policy that
+      silently turns uncertain prose into a blocker.
+    </p>
+
+    <h3 id="binding-1">1. Event binding: decide which pull requests may receive secrets</h3>
+    <p>
+      For a secret-backed Action, use <code>pull_request</code> and explicitly guard the
+      model-bearing job to same-repository branches. By default—and for public fork pull
+      requests—GitHub withholds Actions secrets and limits
+      <code>GITHUB_TOKEN</code> to read-only. Dependabot pull requests receive equivalent
+      restrictions. Private-repository administrators can opt into broader fork
+      permissions, which expands the trust boundary; ReviewGate intentionally does not
+      rely on that setting. GitHub's
+      <a href="https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets">
+        Actions secret guidance
+      </a>
+      and
+      <a href="https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository">
+        fork-workflow settings
+      </a>
+      document the boundary.
+    </p>
+    <p>
+      GitHub documents <code>pull_request_target</code> as a privileged default-branch
+      context suitable for operations such as labeling and commenting. Its
+      <a href="https://docs.github.com/en/actions/reference/security/secure-use">
+        secure-use guidance
+      </a>
+      warns against checking out and executing untrusted pull request code there. The
+      <a href="https://github.com/ossf/scorecard/blob/main/docs/checks.md#dangerous-workflow">
+        OpenSSF Scorecard dangerous-workflow check
+      </a>
+      independently flags the same pattern.
+    </p>
+
+    <h3 id="binding-2">2. Runtime binding: isolate deterministic scoring</h3>
+    <p>
+      The pull request should not be able to replace the binary that validates evidence,
+      derives the verdict, or publishes the result. A full-length commit SHA is the only
+      immutable way to pin a third-party Action; moving tags such as ReviewGate's early
+      <code>@v0</code> channel trade immutability for automatic compatible updates. Run
+      the scorer from a versioned release rather than compiling it from the checkout.
+    </p>
+    <p>
+      ReviewGate's composite Action downloads a versioned Linux release, verifies its
+      GitHub build provenance, and executes the binary from runner temporary storage.
+      This isolates the attested binary and deterministic scoring implementation; it does
+      not freeze every review input. The workflow, <code>.reviewgate.yml</code>, prompt
+      files, skills, and repository instructions remain governance inputs from the
+      checkout.
+    </p>
+    <p>
+      ReviewGate's default secret-bearing workflow therefore treats same-repository
+      contributors as trusted to modify those inputs. For adversarial same-repository
+      authors, use an external GitHub App or another base-controlled privileged design.
+      The
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/615c68fe4e78ec59e740a04e1effc0234cb3357a/action.yml#L94-L124">
+        Action runtime implementation
+      </a>
+      makes the narrower binary boundary auditable.
+    </p>
+
+    <h3 id="binding-3">3. Evidence binding: make blockers falsifiable</h3>
+    <p>
+      An actionable blocker needs more than a severity label and fluent explanation.
+      Require an exact path, old or new diff side, one-based line, matching excerpt, and
+      a causal path from the changed code to the user-visible failure. Ask what test
+      covers the claim and demand reproduction-grade evidence for the most severe
+      findings.
+    </p>
+    <p>
+      Evidence binding changes the review from “the model sounds concerned” to a claim a maintainer
+      can confirm or reject. ReviewGate checks evidence against the actual diff or
+      bounded repository content. Ungrounded candidates remain notes instead of
+      score-affecting findings. The policy is public in
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/615c68fe4e78ec59e740a04e1effc0234cb3357a/docs/finding-policy.md">
+        the finding-policy specification
+      </a>.
+    </p>
+
+    <h3 id="binding-4">4. Verdict binding: let code apply policy</h3>
+    <p>
+      The model should propose findings; deterministic code should decide which findings
+      block. Define accepted classifications, severity ceilings, confidence and evidence
+      requirements, verifier behavior, and the difference between review failure and
+      code failure.
+    </p>
+    <p>
+      ReviewGate allows only P0-P3 defects, security findings, and reliability risks with
+      confidence of at least <code>0.85</code> and a passed evidence gate to lower its
+      fixed 5/5 score. Suggestions, contract ambiguity, low-confidence claims, and failed
+      evidence stay advisory. If a review angle fails, the result is
+      <code>review_error</code> with no score; an unavailable reviewer does not mean the
+      code earned zero.
+    </p>
+    <p>
+      The repository includes a keyless fixture that demonstrates the lifecycle. The
+      input declares a passing score but also contains a P2 blocker. ReviewGate checks the
+      finding, applies the severity ceiling in deterministic code, and emits
+      <code>needs_changes</code> at 3/5 rather than trusting the supplied verdict. The
+      commands and expected output are documented in the
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/615c68fe4e78ec59e740a04e1effc0234cb3357a/README.md#L321-L341">
+        local score-contract proof
+      </a>.
+    </p>
+
+    <h3 id="binding-5">5. Freshness binding: verify the exact current head</h3>
+    <p>
+      Every published result should carry the repository, workflow, pull request number,
+      and reviewed SHA. Cancel or supersede older runs. Before publication, read the live
+      head again. A result for commit A must not remain authoritative after commit B is
+      pushed.
+    </p>
+    <p>
+      GitHub's
+      <a href="https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks">
+        required-check rules
+      </a>
+      require a successful result for the latest applicable commit. ReviewGate applies
+      the exact-head contract at artifact retrieval and publication, then exposes the exact SHA in
+      its stable
+      <a href="/docs/artifacts">agent result artifact</a>.
+    </p>
+    <p>
+      These SHAs have different purposes. On a <code>pull_request</code> workflow,
+      <code>GITHUB_SHA</code> normally identifies GitHub's synthetic merge ref, while
+      ReviewGate binds findings to <code>github.event.pull_request.head.sha</code>.
+      Branch protection may separately require the applicable test-merge commit to pass
+      when GitHub has created a status for it. GitHub documents both values in its
+      <a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request">
+        pull request event reference
+      </a>.
+    </p>
+  </section>
+
+  <section id="setup">
+    <h2>How to set up the workflow</h2>
+    <p>
+      The concrete workflow applies the five bindings in the opening checklist. The
+      maintained same-repository ReviewGate workflow includes the full event guards, permissions, rereview
+      path, checkout settings, and check publication; use
+      <a href="/docs/github-actions">the maintained GitHub Actions guide</a> rather than
+      copying a shortened blog fragment into production.
+    </p>
+
+    <h3>Keep workflow permissions explicit</h3>
+    <p>
+      Do not start with <code>write-all</code>. GitHub notes that an Action can access
+      <code>github.token</code> even when the workflow does not pass the token directly,
+      and
+      <a href="https://docs.github.com/en/actions/tutorials/authenticate-with-github_token">
+        recommends minimum permissions
+      </a>.
+      A reviewer usually needs read access to
+      repository content plus narrowly scoped write access for its chosen review,
+      comment, status, or check surface. Review the exact integration instead of copying
+      a generic permission block.
+    </p>
+
+    <h3>Treat pull request text as untrusted data</h3>
+    <p>
+      The diff, title, body, branch name, commit message, and repository instructions can
+      all contain attacker-controlled text. GitHub's
+      <a href="https://docs.github.com/en/actions/reference/security/secure-use">
+        secure-use reference
+      </a>
+      says to keep untrusted values out of direct shell interpolation.
+      In the model boundary, label them as untrusted review context rather than
+      instructions with authority over tools, secrets, or policy. A reviewer may analyze
+      a command contained in the diff; it must not execute that command merely because
+      the text asks it to.
+    </p>
+    <p>
+      ReviewGate enforces a narrower boundary: the model receives bounded review context
+      and returns structured candidate findings. It has no runner shell, GitHub token, or
+      publication tool. Rust code validates the evidence, derives the score, and performs
+      GitHub writes. If your reviewer gives the model tools, document and test a different
+      threat model instead of borrowing this assumption.
+    </p>
+
+    <h3>Publish one result and one check</h3>
+    <p>
+      Inline comments are useful for local discussion, but they are a poor state
+      database. Prefer one bot-owned summary that is updated across reruns, a structured
+      JSON artifact for automation, and a stable check name for branch protection. This
+      keeps human conversation separate from machine state and gives repair agents a
+      typed input instead of a Markdown-scraping problem.
+    </p>
+  </section>
+
+  <section id="failure-policy">
+    <h2>How AI code review on GitHub should fail</h2>
+    <p>
+      Most setup guides describe the happy path and leave the failure contract implicit.
+      Write it down before making the check required.
+    </p>
+    <ul>
+      <li>
+        <strong>Fork or Dependabot pull request:</strong> skip the secret-backed review
+        by policy, then rely on deterministic CI and human review or use a separately
+        designed GitHub App.
+      </li>
+      <li>
+        <strong>Provider timeout, budget exhaustion, or malformed output:</strong> report
+        review unavailable. Do not reinterpret absence of findings as a pass.
+      </li>
+      <li>
+        <strong>Stale head:</strong> discard the result and rerun on the live SHA.
+      </li>
+      <li>
+        <strong>Finding lacks evidence:</strong> retain it as advisory context or suppress
+        it; do not let it affect the required check.
+      </li>
+      <li>
+        <strong>Comment publication fails:</strong> preserve the finding in the
+        structured result and report the publication failure visibly.
+      </li>
+      <li>
+        <strong>Human rejects a finding:</strong> record a reason tied to the current
+        head and evidence, rather than deleting history or training reviewers to ignore
+        the check.
+      </li>
+    </ul>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Condition</th>
+          <th scope="col">Result</th>
+          <th scope="col">Operator action</th>
+          <th scope="col">Retry?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Fork or Dependabot PR</th>
+          <td>Secret-backed review skipped by default</td>
+          <td>Use deterministic CI and human review, or a separately designed App</td>
+          <td>Only after the trust boundary changes</td>
+        </tr>
+        <tr>
+          <th scope="row">Provider or output failure</th>
+          <td><code>review_error</code>, no score</td>
+          <td>Surface an unavailable check and inspect the typed error</td>
+          <td>Yes, on the same current head</td>
+        </tr>
+        <tr>
+          <th scope="row">Finding fails evidence</th>
+          <td>Advisory; score unaffected</td>
+          <td>Inspect or suppress without blocking the PR</td>
+          <td>Not required</td>
+        </tr>
+        <tr>
+          <th scope="row">Reviewed SHA is stale</th>
+          <td>Result rejected</td>
+          <td>Start a new run for the live head</td>
+          <td>Yes, on the new head</td>
+        </tr>
+        <tr>
+          <th scope="row">Publication fails</th>
+          <td>Review unavailable or workflow failure</td>
+          <td>Preserve the artifact and fix the GitHub permission or API failure</td>
+          <td>Yes, after the cause is fixed</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      ReviewGate expresses passed, needs-changes, and review-error as separate typed
+      outcomes. Its <a href="/docs/agent-workflows">agent workflow</a> consumes only
+      still-open blockers from a current-head result and stops at a fresh 5/5. It remains
+      review-only: it does not repair code, execute pull request code, or take over the
+      maintainer's merge decision.
+    </p>
+    <aside class="article-callout">
+      <strong>Three anti-patterns to reject in review</strong>
+      <p>
+        Do not execute PR code under <code>pull_request_target</code> to recover secrets.
+        Do not compile or replace deterministic scoring logic from the checkout it
+        evaluates. Do not treat a green workflow job, positive comment, or stale result
+        as approval for the current head.
+      </p>
+    </aside>
+  </section>
+
+  <section id="pilot">
+    <h2>Run a pilot that measures signal, not comment volume</h2>
+    <p>
+      Do not evaluate a reviewer on a handful of live pull requests where nobody knows
+      the ground truth. Build a small, versioned corpus from historical defects and
+      representative clean changes. Run each candidate against the same cases and repeat
+      enough times to expose drift.
+    </p>
+    <p>
+      A practical starting scorecard uses at least 30 cases, at least two repeated runs
+      per configuration, exact semantic finding identities, and one denominator that
+      includes timeouts and malformed outputs. Record each expected serious defect before
+      running the candidate. Count a missing or failed review as a recall miss rather
+      than removing the case, and count duplicate blockers as additional noise. These are
+      starting controls, not universal performance thresholds. ReviewGate's pinned
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/615c68fe4e78ec59e740a04e1effc0234cb3357a/docs/evaluation.md#L53-L137">
+        evaluation contract
+      </a>
+      uses those minimums and accounts for failures as misses.
+    </p>
+    <p>
+      Track precision of blocking findings, recall for serious known defects, false
+      blockers per pull request, duplicate findings, completion rate, rerun stability,
+      latency, model cost, and human override reasons. Keep style advice outside the
+      blocker metric. The business question is whether the reviewer improves merge
+      decisions without consuming more attention than it saves.
+    </p>
+    <p>
+      ReviewGate uses a networkless
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/615c68fe4e78ec59e740a04e1effc0234cb3357a/docs/evaluation.md">
+        replay evaluation
+      </a>
+      to compare policy changes before rollout. Its corpus is product-specific rather
+      than universal proof, but the method is reproducible: fixed cases, exact expected
+      finding identities, bounded thresholds, and failures counted rather than dropped.
+    </p>
+
+    <aside class="article-callout">
+      <strong>Ship criteria for the pilot</strong>
+      <p>
+        Require a false-blocker budget, a serious-defect recall floor, stable current-head
+        behavior, and a documented failure path. “Developers liked the summaries” is
+        useful feedback, but it is not enough to make the reviewer a required check.
+      </p>
+    </aside>
+
+    <p>
+      Finally, keep the provenance question in perspective. The same evidence threshold
+      should apply whether a patch was written by a person, an agent, or both. The
+      <a href="/blog/how-to-tell-if-code-is-ai-generated">
+        provenance-blind review framework
+      </a>
+      shows how to inspect the risky boundaries without pretending coding style proves
+      authorship.
+    </p>
+  </section>
+
+  <section id="require-check">
+    <h2>Before you make AI review a required GitHub check</h2>
+    <p>
+      A required check changes a reviewer from optional feedback into part of repository
+      availability. Confirm each statement below with a real pull request, not only a
+      workflow read-through.
+    </p>
+    <ul>
+      <li>The run records the exact PR head SHA and refuses to publish a stale result.</li>
+      <li>The pull request cannot replace the binary that validates evidence and derives the score.</li>
+      <li>Fork and Dependabot behavior is explicit, tested, and visible to contributors.</li>
+      <li>Every blocker includes repository evidence a maintainer can independently check.</li>
+      <li>Model or publication failure produces an unavailable result, never a false pass.</li>
+      <li>The stable check name is protected against an unintended actor publishing it.</li>
+      <li>Maintainers can record an evidence-backed override without erasing history.</li>
+      <li>Deterministic CI and required human approvals remain separate from AI review.</li>
+      <li>Provider retention, training, regional processing, and source-code egress match policy.</li>
+      <li>The team has an owner for action pins, model changes, budgets, and false-positive review.</li>
+    </ul>
+    <p>
+      Also verify product limits against your repository. ReviewGate is early v0 and is
+      intentionally narrower than a hosted review platform: it has no GitHub App,
+      organization dashboard, persistent source storage, automatic repair, or default
+      full-repository index. Its default secret-backed Action path skips fork and Dependabot reviews
+      because GitHub withholds the model secret. Current Action support targets
+      GitHub-hosted Linux X64 runners, and inline publication is best-effort even though
+      findings remain in the structured artifact.
+    </p>
+    <p>
+      Those constraints may be acceptable for a small same-repository team and wrong for
+      a large public project. If uninterrupted fork coverage, managed administration, or
+      cross-repository context is load-bearing, prefer a carefully scoped GitHub App or
+      native managed reviewer. The correct architecture is the one whose failure modes
+      your maintainers can explain and operate.
+    </p>
+  </section>
+
+  <section class="article-cta">
+    <p class="docs-kicker">MAKE THE REVIEW RESULT AUDITABLE</p>
+    <h2>Install a repository-owned review gate</h2>
+    <p>
+      ReviewGate is an early, open-source, GitHub Actions-first reviewer for teams that
+      want a bring-your-own OpenRouter key and model selection, evidence-gated findings,
+      a deterministic 5/5 contract, and exact-head JSON for human or agent repair loops.
+      ReviewGate itself is free; model charges are paid directly to the provider.
+    </p>
+    <div class="signal-actions">
+      <a
+        class="signal-primary"
+        href="/docs/github-actions"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >Set up GitHub Actions <span aria-hidden="true">↗</span></a>
+      <a
+        class="signal-secondary"
+        href="https://github.com/LVTD-LLC/reviewgate"
+        data-analytics-event="source_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >Audit the source</a>
+    </div>
+  </section>
+</ArticleLayout>
