@@ -191,6 +191,8 @@ The rereview job has a separate least-privilege boundary: `actions: write` to en
 | `review_workflow` | No | `reviewgate.yml` | Workflow file name selected by rereview mode. |
 | `config` | No | `.reviewgate.yml` | Path to ReviewGate config in the checked-out repository. |
 | `model` | No | Built-in balanced model | Exact OpenRouter model ID. Leave empty to use the default. |
+| `verify_blockers` | No | Empty | Set to `true` or `false` to override `.reviewgate.yml`. When enabled, ReviewGate makes one additional batched model call only if the first review produces blocker candidates. |
+| `verifier_model` | No | Primary review model | Trusted workflow-selected OpenRouter model ID for blocker verification. Setting a model does not enable verification by itself. |
 | `min_severity` | No | `P4` | Lowest severity published as inline PR comments. One of `P0`, `P1`, `P2`, `P3`, `P4`. |
 | `angle_timeout_seconds` | No | `180` | Maximum OpenRouter time for one review angle. |
 | `total_timeout_seconds` | No | `480` | Maximum combined OpenRouter time across all review angles. |
@@ -738,9 +740,16 @@ The current public schema lives at:
 schemas/reviewgate-review-output-v3.schema.json
 ```
 
-Version 3 adds structured finding grounding and deterministic policy fields.
+Version 3 includes structured finding grounding, deterministic policy fields,
+and optional independent blocker-verifier decisions.
 ReviewGate requires grounding before a high-confidence P0-P3 defect, security,
-or reliability risk can affect scoring. Version 2 added
+or reliability risk can affect scoring. When blocker verification is enabled,
+each candidate receives a `verified`, `rejected`, or `inconclusive` decision.
+Rejected candidates remain auditable in JSON but do not block or publish as PR
+comments. If a later verifier rejects an already verified open obligation,
+ReviewGate keeps the obligation open until convergence has approved resolution
+evidence and records the rejection under `verification.conflicting_decisions`.
+An inconclusive verifier makes the review a `review_error`. Version 2 added
 `review_error`, a nullable score, and typed `angle_errors`. The immutable
 `schemas/reviewgate-review-output.schema.json` and
 `schemas/reviewgate-review-output-v2.schema.json` remain available for older
@@ -834,11 +843,13 @@ jq -r '
 
 ReviewGate looks for `.reviewgate.yml` by default. You can pass a different path with the action `config` input or CLI `--config`.
 
-`.reviewgate.yml` supports `min_severity`, optional `review_angles`, and opt-in ephemeral semantic context.
+`.reviewgate.yml` supports `min_severity`, optional `review_angles`, opt-in
+ephemeral semantic context, and opt-in blocker verification.
 
 ```yaml
 min_severity: P2
 deep: true
+verify_blockers: true
 review_angles:
   - id: general
     name: General
@@ -853,7 +864,16 @@ review_angles:
 | --- | --- | --- | --- |
 | `min_severity` | `P0`, `P1`, `P2`, `P3`, `P4` | `P4` | Lowest severity published as inline PR comments and counted as inline-eligible in summaries. |
 | `deep` | `true`, `false` | `false` | Builds bounded semantic context once for the exact reviewed head using tree-sitter for changed Rust definitions, `rg` when available, and a built-in tracked-file search otherwise. Selected excerpts are shared by all review angles and discarded after the run. |
+| `verify_blockers` | `true`, `false` | `false` | If blocker candidates survive deterministic grounding, makes one additional batched model call to independently verify them. No verifier call is made when disabled or when there are no blocker candidates. |
 | `review_angles` | YAML list | Built-in `general` and `adversarial` angles | Replaces the default review angle list when present. |
+
+The verifier receives normalized claims, causal paths, tests, reproductions,
+proofs, checked evidence, and capped line windows around that evidence. It does
+not receive the first model's finding title, detail, or repair instruction,
+which limits anchoring while keeping the extra cost to one call per review.
+It defaults to the primary review model. Select a different model only through
+the trusted Action `verifier_model` input or direct CLI `--verifier-model`
+option; pull-request-controlled `.reviewgate.yml` cannot select the model.
 
 Each configured review angle requires `id` plus exactly one instruction source.
 
@@ -899,6 +919,8 @@ The composite action maps inputs into these environment variables while invoking
 | --- | --- |
 | `REVIEWGATE_CONFIG` | `inputs.config` |
 | `REVIEWGATE_MODEL` | `inputs.model` |
+| `REVIEWGATE_VERIFY_BLOCKERS` | `inputs.verify_blockers` |
+| `REVIEWGATE_VERIFIER_MODEL` | `inputs.verifier_model` |
 | `REVIEWGATE_MIN_SEVERITY` | `inputs.min_severity` |
 | `REVIEWGATE_ANGLE_TIMEOUT_SECONDS` | `inputs.angle_timeout_seconds` |
 | `REVIEWGATE_TOTAL_TIMEOUT_SECONDS` | `inputs.total_timeout_seconds` |
@@ -949,7 +971,7 @@ cargo install --git https://github.com/LVTD-LLC/reviewgate --locked reviewgate-c
 | `check --pr <number> [--workflow <selector>]` | Download, validate, and print the existing agent result from the configured ReviewGate workflow for the exact current PR head. |
 | `disposition --pr <number> --finding <fingerprint> --status <status> --evidence <text> [--workflow <selector>]` | Submit a structured, head-bound disposition without scraping or editing Markdown. |
 | `fixture-review --input <path>` | Validate fixture JSON, recompute score/status, and render JSON plus summary. |
-| `review-pr --repo <path>` | Collect PR context, run mock or live review, and write artifacts. |
+| `review-pr --repo <path> [--verify-blockers <true|false>] [--verifier-model <id>]` | Collect PR context, run mock or live review, optionally verify blocker candidates, and write artifacts. |
 | `render-summary --input <path>` | Render a summary from an existing artifact. Can carry hidden state from a previous summary. |
 | `recheck --repo <path> --workflow <selector>` | Safely rerun the newest completed ReviewGate run for the exact PR current head using `gh`. The selector may be an exact numeric workflow ID, workflow file name/path, or display name; non-numeric selectors must match exactly and unambiguously. |
 | `request-rereview --workflow <file>` | Validate an `issue_comment` event and safely request the exact PR current-head rerun. |
@@ -994,6 +1016,8 @@ cargo run --locked -p reviewgate-cli -- review-pr \
 # Run a live OpenRouter-backed review.
 OPENROUTER_API_KEY=sk-or-... cargo run --locked -p reviewgate-cli -- review-pr \
   --repo . \
+  --verify-blockers true \
+  --verifier-model anthropic/claude-sonnet-4 \
   --json-out .reviewgate/review.json \
   --summary-out .reviewgate/summary.md
 

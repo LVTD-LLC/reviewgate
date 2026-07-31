@@ -411,9 +411,16 @@ Do not resubmit the same assertion against a changed head without revalidation.
 
 ### Values appear ignored
 
-Supported repository fields are `min_severity` and `review_angles`. Removed keys are ignored with warnings.
+Supported repository fields are `min_severity`, `deep`, `verify_blockers`, and
+`review_angles`. Select `verifier_model` only through a trusted GitHub Action
+input or direct CLI option; repository configuration is pull-request-controlled.
+Removed keys are ignored with warnings.
 
 For GitHub Actions, remember that the Action passes its `min_severity` input, default `P4`, as a CLI override. Set the intended value in the workflow.
+
+The Action leaves `verify_blockers` empty by default so repository config is
+not masked. Set it to exactly `true` or `false` only when the workflow should
+override `.reviewgate.yml`.
 
 ### `review_angles must be a YAML list`
 
