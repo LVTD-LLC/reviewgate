@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use reviewgate_core::{
     AgentResultFinding, DEFAULT_TARGET_SCORE, Finding, FindingDisposition, FindingEvidence,
     SUMMARY_MARKER, SecretString, Severity, TrackedFinding, extract_summary_state,
-    semantic_fingerprint,
+    is_inline_comment_eligible, semantic_fingerprint,
 };
 
 pub const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
@@ -761,6 +761,41 @@ pub fn plan_review_thread_lifecycle(
     )
 }
 
+pub fn plan_rejected_verifier_thread_cleanup(
+    threads: &[ExistingReviewThread],
+    findings: &[Finding],
+) -> ReviewThreadLifecyclePlan {
+    let publishable_fingerprints = findings
+        .iter()
+        .filter(|finding| finding.is_publishable_after_verification())
+        .map(semantic_fingerprint)
+        .collect::<BTreeSet<_>>();
+    let rejected_only_fingerprints = findings
+        .iter()
+        .filter(|finding| finding.is_verifier_rejected())
+        .map(semantic_fingerprint)
+        .filter(|fingerprint| !publishable_fingerprints.contains(fingerprint))
+        .collect::<BTreeSet<_>>();
+    let actions = threads
+        .iter()
+        .filter(|thread| !thread.is_resolved)
+        .filter_map(|thread| {
+            let root = thread.comments.first()?;
+            if !is_github_actions_author(root.author_login.as_deref()) {
+                return None;
+            }
+            let identity = inline_comment_identity(&root.body)?;
+            rejected_only_fingerprints
+                .contains(&identity.semantic_fingerprint)
+                .then(|| ReviewThreadLifecycleAction::Resolve {
+                    thread_id: thread.id.clone(),
+                })
+        })
+        .collect();
+
+    ReviewThreadLifecyclePlan { actions }
+}
+
 pub fn plan_agent_review_thread_lifecycle(
     threads: &[ExistingReviewThread],
     findings: &[AgentResultFinding],
@@ -903,7 +938,7 @@ pub fn plan_inline_comment_drafts(
 
     for finding in findings {
         let fingerprint = semantic_fingerprint(finding);
-        if !finding.severity.is_at_or_above(min_severity)
+        if !is_inline_comment_eligible(finding, min_severity)
             || existing_ids.contains(&finding.id)
             || existing_fingerprints.contains(&fingerprint)
             || !planned_ids.insert(finding.id.as_str())
@@ -1389,6 +1424,34 @@ mod tests {
         );
         assert!(plan.drafts[0].body.contains("Causal path: request"));
         assert!(plan.drafts[0].body.contains("Evidence: `src/lib.rs:42`"));
+    }
+
+    #[test]
+    fn verifier_rejected_findings_never_become_inline_comment_drafts() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let mut finding = artifact.findings.remove(0);
+        finding.verification = Some(reviewgate_core::FindingVerification {
+            state: reviewgate_core::VerifierState::Rejected,
+            reason: "The checked test already covers this branch.".to_string(),
+            model: "verifier-model".to_string(),
+            evidence: finding
+                .grounding
+                .as_ref()
+                .expect("grounding")
+                .evidence
+                .clone(),
+            conflicting_decisions: vec![],
+        });
+        finding.calibrate_policy();
+        let changed_lines = ChangedLineSet::from_unified_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9,0 +10 @@\n+changed\n",
+        );
+
+        let plan = plan_inline_comment_drafts(&[finding], &[], Severity::P4, &changed_lines);
+
+        assert!(plan.drafts.is_empty());
     }
 
     #[test]
@@ -2158,6 +2221,107 @@ diff --git a/crates/reviewgate-core/src/lib.rs b/crates/reviewgate-core/src/lib.
                 body: review_thread_resolution_body(&tracked),
             }]
         );
+    }
+
+    #[test]
+    fn plans_cleanup_for_an_accidentally_published_verifier_rejected_thread() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let mut finding = artifact.findings.remove(0);
+        finding.verification = Some(reviewgate_core::FindingVerification {
+            state: reviewgate_core::VerifierState::Rejected,
+            reason: "The checked evidence disproves the candidate.".to_string(),
+            model: "verifier-model".to_string(),
+            evidence: finding
+                .grounding
+                .as_ref()
+                .expect("grounding")
+                .evidence
+                .clone(),
+            conflicting_decisions: vec![],
+        });
+        finding.calibrate_policy();
+        let reviewgate_thread = ExistingReviewThread {
+            id: "PRRT_rejected".to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ExistingReviewThreadComment {
+                author_login: Some("github-actions[bot]".to_string()),
+                body: render_inline_comment_body(&finding),
+            }],
+        };
+        let already_resolved = ExistingReviewThread {
+            id: "PRRT_resolved".to_string(),
+            is_resolved: true,
+            is_outdated: false,
+            comments: reviewgate_thread.comments.clone(),
+        };
+        let human_thread = ExistingReviewThread {
+            id: "PRRT_human".to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ExistingReviewThreadComment {
+                author_login: Some("maintainer".to_string()),
+                body: render_inline_comment_body(&finding),
+            }],
+        };
+
+        let plan = plan_rejected_verifier_thread_cleanup(
+            &[reviewgate_thread, already_resolved, human_thread],
+            std::slice::from_ref(&finding),
+        );
+
+        assert_eq!(
+            plan.actions,
+            vec![ReviewThreadLifecycleAction::Resolve {
+                thread_id: "PRRT_rejected".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejected_verifier_cleanup_preserves_a_conflicting_verified_obligation() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let mut rejected = artifact.findings.remove(0);
+        let evidence = rejected
+            .grounding
+            .as_ref()
+            .expect("grounding")
+            .evidence
+            .clone();
+        rejected.verification = Some(reviewgate_core::FindingVerification {
+            state: reviewgate_core::VerifierState::Rejected,
+            reason: "The current verifier disagrees.".to_string(),
+            model: "current-verifier".to_string(),
+            evidence: evidence.clone(),
+            conflicting_decisions: vec![],
+        });
+        rejected.calibrate_policy();
+        let mut preserved = rejected.clone();
+        preserved.verification = Some(reviewgate_core::FindingVerification {
+            state: reviewgate_core::VerifierState::Verified,
+            reason: "The prior verifier established the blocker.".to_string(),
+            model: "prior-verifier".to_string(),
+            evidence,
+            conflicting_decisions: vec![],
+        });
+        preserved.calibrate_policy();
+        let thread = ExistingReviewThread {
+            id: "PRRT_preserved".to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ExistingReviewThreadComment {
+                author_login: Some("github-actions[bot]".to_string()),
+                body: render_inline_comment_body(&preserved),
+            }],
+        };
+
+        let plan = plan_rejected_verifier_thread_cleanup(&[thread], &[preserved, rejected]);
+
+        assert!(plan.actions.is_empty());
     }
 
     #[test]

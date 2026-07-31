@@ -33,9 +33,9 @@ use reviewgate_github::{
     ExistingSummaryComment, InlineCommentDraft, RereviewTarget, ReviewThreadLifecycleAction,
     SummaryCommentAction, WorkflowRunCandidate, find_rereview_status_comment,
     inline_comment_identity, is_github_actions_author, plan_agent_review_thread_lifecycle,
-    plan_inline_comment_drafts, plan_review_thread_lifecycle, plan_summary_comment_publish,
-    rereview_status_marker, select_current_head_workflow_run, select_rereview_workflow_run,
-    stale_finding_comment_ids,
+    plan_inline_comment_drafts, plan_rejected_verifier_thread_cleanup,
+    plan_review_thread_lifecycle, plan_summary_comment_publish, rereview_status_marker,
+    select_current_head_workflow_run, select_rereview_workflow_run, stale_finding_comment_ids,
 };
 use sha2::{Digest, Sha256};
 
@@ -3699,7 +3699,9 @@ fn reconcile_review_threads(repo: PathBuf, input: PathBuf) -> CliResult<()> {
     let head_sha = fetch_rereview_target(&repo, &repository, pr_number)?.head_sha;
     let artifact = read_prepared_artifact(&input, &head_sha)?;
     let threads = fetch_review_threads(&repo, &repository, pr_number)?;
-    let plan = plan_review_thread_lifecycle(&threads, &artifact.tracked_findings);
+    let mut plan = plan_review_thread_lifecycle(&threads, &artifact.tracked_findings);
+    plan.actions
+        .extend(plan_rejected_verifier_thread_cleanup(&threads, &artifact.findings).actions);
     let action_count = plan.actions.len();
 
     apply_review_thread_lifecycle_actions(&repo, &repository, pr_number, &head_sha, plan.actions)?;
