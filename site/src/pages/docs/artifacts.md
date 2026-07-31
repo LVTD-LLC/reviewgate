@@ -4,7 +4,6 @@ title: "ReviewGate artifacts and outputs"
 description: "Parse ReviewGate review JSON, stable agent results, Action outputs, findings, angle errors, thread state, and disposition schemas."
 heading: "Consume ReviewGate artifacts and outputs"
 lede: "Use the stable exact-head agent result for automation, the full review artifact for diagnostics, and schemas instead of scraping the canonical Markdown summary."
-eyebrow: "REFERENCE / MACHINE-READABLE CONTRACTS"
 ---
 
 ## Choose the correct artifact

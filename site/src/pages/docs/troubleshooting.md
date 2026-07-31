@@ -4,7 +4,6 @@ title: "Troubleshoot ReviewGate"
 description: "Diagnose ReviewGate installation, CLI, config, GitHub permissions, artifacts, reruns, inline findings, and review errors."
 heading: "Troubleshoot ReviewGate"
 lede: "Start from the observable symptom, verify the current head and execution mode, then apply the smallest recovery that preserves ReviewGate's security boundaries."
-eyebrow: "OPERATE / TROUBLESHOOTING"
 ---
 
 ## Use this diagnostic order

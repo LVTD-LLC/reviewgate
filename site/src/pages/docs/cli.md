@@ -4,7 +4,6 @@ title: "Install and use the ReviewGate CLI"
 description: "Install the ReviewGate Rust CLI, run local and live reviews, inspect exact-head results, and use every public command safely."
 heading: "Install and use the ReviewGate CLI"
 lede: "Run deterministic fixtures, review a local checkout, retrieve exact-head GitHub results, and submit structured finding dispositions without scraping comments."
-eyebrow: "INSTALL / COMMAND-LINE INTERFACE"
 ---
 
 ## What the CLI is for

@@ -4,7 +4,6 @@ title: "ReviewGate security model"
 description: "Understand ReviewGate trust boundaries, fork-safe events, least-privilege tokens, secret handling, attested runtime, and agent safety."
 heading: "Operate ReviewGate within its security model"
 lede: "Keep untrusted pull request and model data outside privileged execution paths, grant only the permissions ReviewGate needs, and preserve exact-head identity."
-eyebrow: "CONCEPTS / SECURITY"
 ---
 
 ## Threat model

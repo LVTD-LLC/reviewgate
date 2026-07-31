@@ -4,7 +4,6 @@ title: "Install ReviewGate with GitHub Actions"
 description: "Add the ReviewGate workflow, least-privilege permissions, OpenRouter secret, reruns, and Action inputs to a repository."
 heading: "Install ReviewGate with GitHub Actions"
 lede: "Add one fork-safe workflow and one OpenRouter secret to publish a canonical score, inline findings, a check run, and a structured agent result."
-eyebrow: "INSTALL / GITHUB ACTIONS"
 ---
 
 ## What the installation creates

@@ -163,19 +163,11 @@ h2 {
   min-width: 0;
 }
 
-.signal-eyebrow,
 .signal-loop-heading > p,
 .signal-console,
 .utility-console,
 .signal-ticker {
   font-family: "IBM Plex Mono", monospace;
-}
-
-.signal-eyebrow {
-  color: var(--signal-green);
-  font-size: clamp(0.82rem, 1.1vw, 0.95rem);
-  letter-spacing: 0.08em;
-  margin-block-end: 24px;
 }
 
 .signal-copy h1,
