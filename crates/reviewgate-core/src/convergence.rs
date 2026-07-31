@@ -388,6 +388,11 @@ pub fn reconcile_findings_with_updates(
                 "unchanged-head review cannot record disposition updates".to_string(),
             ));
         }
+        for (fingerprint, tracked) in &mut previous_by_fingerprint {
+            if let Some(current) = current_by_fingerprint.get(fingerprint) {
+                tracked.finding.angle_id = current.angle_id.clone();
+            }
+        }
         let findings = previous_by_fingerprint
             .values()
             .filter(|tracked| tracked.disposition == FindingDisposition::StillOpen)
@@ -490,7 +495,8 @@ pub fn reconcile_findings_with_updates(
                         );
                         findings.push(previous.finding.clone());
                     }
-                    Some(_) => {
+                    Some(current) => {
+                        previous.finding.angle_id = current.angle_id;
                         notes.push(format!(
                             "Retained still-open finding {} because its relevant code did not change.",
                             previous.finding.id
@@ -664,6 +670,7 @@ mod tests {
             classification: FindingClassification::Defect,
             evidence_gate_result: EvidenceGateResult::Passed,
             blocking_reason: Some(BlockingReason::ValidatedDefect),
+            verification: None,
             grounding: Some(FindingGrounding {
                 semantic_key: semantic_key.to_string(),
                 resolution_disposition: None,

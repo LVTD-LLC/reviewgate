@@ -119,7 +119,8 @@
         "semantic_context": {
           "$ref": "#/$defs/semantic_context",
           "description": "Selection metrics and provenance for opt-in ephemeral semantic repository context. Source excerpts are sent to the reviewer but are not duplicated in the artifact."
-        }
+        },
+        "verifier_ms": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
     "review_stages": {
@@ -384,7 +385,7 @@
         "angle_name": { "type": "string", "minLength": 1 },
         "kind": {
           "type": "string",
-          "enum": ["timeout", "malformed_response", "empty_response", "provider_error", "transport_error"]
+          "enum": ["timeout", "malformed_response", "empty_response", "provider_error", "transport_error", "verification_inconclusive"]
         },
         "retryable": { "type": "boolean" },
         "message": {
@@ -448,6 +449,13 @@
           ],
           "description": "Deterministic reason the finding blocks, or null for advisory findings."
         },
+        "verification": {
+          "anyOf": [
+            { "$ref": "#/$defs/finding_verification" },
+            { "type": "null" }
+          ],
+          "description": "Optional independent blocker-verifier decision. Rejected findings remain auditable but do not block."
+        },
         "grounding": {
           "anyOf": [
             { "$ref": "#/$defs/finding_grounding" },
@@ -460,6 +468,83 @@
         "title": { "type": "string", "minLength": 1 },
         "detail": { "type": ["string", "null"] },
         "agent_instruction": { "type": "string", "minLength": 1 }
+      }
+    },
+    "finding_verification": {
+      "type": "object",
+      "required": ["state", "reason", "model", "evidence"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": ["verified", "rejected"]
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["verified", "rejected", "inconclusive"]
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "model": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding_evidence" }
+        },
+        "conflicting_decisions": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/finding_verification_decision" }
+        }
+      }
+    },
+    "finding_verification_decision": {
+      "type": "object",
+      "required": ["state", "reason", "model", "evidence"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": ["verified", "rejected"]
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["verified", "rejected", "inconclusive"]
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "model": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding_evidence" }
+        }
       }
     },
     "finding_grounding": {

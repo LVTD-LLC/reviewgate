@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentDisposition, BlockingReason, CostSummary, DEFAULT_TARGET_SCORE, Finding,
     FindingClassification, FindingDisposition, FindingDispositionRecord, FindingEvidence,
-    MAX_DISPOSITION_HISTORY, ReviewAngleError, ReviewArtifact, ReviewErrorKind, ReviewGateError,
-    ReviewScope, ReviewStatus, ReviewTimings, Severity, SummaryState, finding_code_fingerprint,
-    semantic_fingerprint,
+    FindingVerification, MAX_DISPOSITION_HISTORY, ReviewAngleError, ReviewArtifact,
+    ReviewErrorKind, ReviewGateError, ReviewScope, ReviewStatus, ReviewTimings, Severity,
+    SummaryState, finding_code_fingerprint, semantic_fingerprint,
 };
 
 pub const AGENT_RESULT_SCHEMA_VERSION: &str = "reviewgate-agent-result/v1";
@@ -81,6 +81,8 @@ pub struct AgentResultFinding {
     pub confidence: f64,
     pub classification: FindingClassification,
     pub blocking_reason: Option<BlockingReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<FindingVerification>,
     pub path: Option<String>,
     pub line: Option<u32>,
     pub claim: Option<String>,
@@ -248,6 +250,7 @@ impl AgentReviewResult {
             artifact
                 .findings
                 .iter()
+                .filter(|finding| !finding.is_verifier_rejected())
                 .map(|finding| {
                     project_finding(finding, FindingDisposition::StillOpen, &[], &threads)
                 })
@@ -364,6 +367,19 @@ impl AgentReviewResult {
         }
         let mut fingerprints = BTreeSet::new();
         for finding in &self.findings {
+            if let Some(verification) = &finding.verification {
+                verification.validate()?;
+                if matches!(
+                    verification.state,
+                    crate::VerifierState::Rejected | crate::VerifierState::Inconclusive
+                ) && finding.blocking_reason.is_some()
+                {
+                    return Err(ReviewGateError::InvalidReviewOutcome(
+                        "agent result verifier-rejected or inconclusive findings cannot block"
+                            .to_string(),
+                    ));
+                }
+            }
             if finding.id.trim().is_empty()
                 || finding.semantic_fingerprint.trim().is_empty()
                 || !fingerprints.insert(finding.semantic_fingerprint.as_str())
@@ -506,6 +522,7 @@ fn project_finding(
         blocking_reason: finding
             .blocking_reason
             .filter(|_| disposition == FindingDisposition::StillOpen),
+        verification: finding.verification.clone(),
         path: finding.file.clone(),
         line: finding.line,
         claim: grounding.map(|grounding| grounding.claim.clone()),
@@ -563,6 +580,20 @@ mod tests {
             serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
                 .expect("fixture parses");
         artifact.findings.truncate(1);
+        artifact.findings[0].verification = Some(crate::FindingVerification {
+            state: crate::VerifierState::Verified,
+            reason: "Independent evidence confirms the blocker.".to_string(),
+            model: "independent/verifier".to_string(),
+            evidence: vec![crate::FindingEvidence {
+                path: "app/webhooks/retry.py".to_string(),
+                side: crate::FindingEvidenceSide::New,
+                line: 42,
+                excerpt: "retry_exhausted = True".to_string(),
+                reason: "The verifier checked the changed terminal retry path.".to_string(),
+            }],
+            conflicting_decisions: vec![],
+        });
+        artifact.findings[0].calibrate_policy();
         artifact = artifact
             .with_computed_score()
             .expect("fixture score computes");
@@ -599,6 +630,13 @@ mod tests {
             )]),
         )
         .expect("result projects");
+        assert_eq!(
+            result.findings[0]
+                .verification
+                .as_ref()
+                .map(|verification| verification.state),
+            Some(crate::VerifierState::Verified)
+        );
 
         assert_eq!(result.schema_version, "reviewgate-agent-result/v1");
         assert_eq!(result.reviewed_sha, artifact.reviewed_sha);
@@ -630,6 +668,56 @@ mod tests {
                 .as_ref()
                 .map(|grounding| grounding.claim.as_str())
         );
+    }
+
+    #[test]
+    fn all_verifier_rejected_findings_leave_no_open_agent_obligation() {
+        let mut artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        artifact.findings.truncate(1);
+        artifact.findings[0].verification = Some(crate::FindingVerification {
+            state: crate::VerifierState::Rejected,
+            reason: "Independent evidence disproves the blocker.".to_string(),
+            model: "independent/verifier".to_string(),
+            evidence: vec![crate::FindingEvidence {
+                path: "app/webhooks/retry.py".to_string(),
+                side: crate::FindingEvidenceSide::New,
+                line: 42,
+                excerpt: "retry_exhausted = True".to_string(),
+                reason: "The verifier checked the changed terminal retry path.".to_string(),
+            }],
+            conflicting_decisions: vec![],
+        });
+        artifact.findings[0].calibrate_policy();
+        artifact = artifact.with_computed_score().expect("artifact scores");
+
+        let result =
+            AgentReviewResult::from_artifact(&artifact, ReviewScope::Local, BTreeMap::new())
+                .expect("agent result projects");
+
+        assert_eq!(result.status, crate::ReviewStatus::Passed);
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn downloaded_agent_result_validates_nested_verifier_metadata() {
+        let artifact: ReviewArtifact =
+            serde_json::from_str(include_str!("../../../fixtures/simple-review.json"))
+                .expect("fixture parses");
+        let artifact = artifact.with_computed_score().expect("fixture scores");
+        let mut result =
+            AgentReviewResult::from_artifact(&artifact, ReviewScope::Local, BTreeMap::new())
+                .expect("agent result projects");
+        result.findings[0].verification = Some(crate::FindingVerification {
+            state: crate::VerifierState::Verified,
+            reason: String::new(),
+            model: "independent/verifier".to_string(),
+            evidence: vec![],
+            conflicting_decisions: vec![],
+        });
+
+        assert!(result.validate().is_err());
     }
 
     #[test]
