@@ -9558,6 +9558,10 @@ review_angles:
             action.contains("if [ -n \"$REVIEWGATE_VERIFY_BLOCKERS\" ]; then"),
             "an empty action input must defer to .reviewgate.yml"
         );
+        assert!(
+            action.contains("normalized_verify_blockers=\"${REVIEWGATE_VERIFY_BLOCKERS,,}\""),
+            "Action validation should accept the same case-insensitive booleans as the CLI"
+        );
     }
 
     #[test]

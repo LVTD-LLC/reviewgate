@@ -83,9 +83,10 @@ runs:
           echo "::error title=Missing OPENROUTER_API_KEY::Pass the openrouter_api_key input and configure the OPENROUTER_API_KEY repository secret." >&2
           exit 1
         fi
+        normalized_verify_blockers="${REVIEWGATE_VERIFY_BLOCKERS,,}"
         if [ -n "$REVIEWGATE_VERIFY_BLOCKERS" ] \
-          && [ "$REVIEWGATE_VERIFY_BLOCKERS" != "true" ] \
-          && [ "$REVIEWGATE_VERIFY_BLOCKERS" != "false" ]; then
+          && [ "$normalized_verify_blockers" != "true" ] \
+          && [ "$normalized_verify_blockers" != "false" ]; then
           echo "::error title=Invalid blocker verifier setting::Use verify_blockers true or false, or leave it empty to use .reviewgate.yml." >&2
           exit 1
         fi
