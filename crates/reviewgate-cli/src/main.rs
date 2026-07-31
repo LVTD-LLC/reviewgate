@@ -6682,8 +6682,69 @@ fn ground_artifact_findings(
         }
     }
     artifact.findings = grounded_findings;
+    deduplicate_grounded_findings(artifact);
     recompute_artifact_outcome(artifact)?;
     Ok(disposition_updates)
+}
+
+fn deduplicate_grounded_findings(artifact: &mut ReviewArtifact) {
+    let mut index_by_fingerprint = BTreeMap::new();
+    let mut deduplicated: Vec<reviewgate_core::Finding> = Vec::new();
+    let mut duplicate_fingerprints = BTreeSet::new();
+    for finding in std::mem::take(&mut artifact.findings) {
+        let fingerprint = semantic_fingerprint(&finding);
+        if let Some(index) = index_by_fingerprint.get(&fingerprint).copied() {
+            duplicate_fingerprints.insert(fingerprint);
+            if duplicate_finding_is_preferred(&finding, &deduplicated[index]) {
+                deduplicated[index] = finding;
+            }
+        } else {
+            index_by_fingerprint.insert(fingerprint, deduplicated.len());
+            deduplicated.push(finding);
+        }
+    }
+    artifact.findings = deduplicated;
+    if !duplicate_fingerprints.is_empty() {
+        let duplicate_count = duplicate_fingerprints.len();
+        let mut displayed = duplicate_fingerprints
+            .into_iter()
+            .take(8)
+            .collect::<Vec<_>>();
+        if duplicate_count > displayed.len() {
+            displayed.push(format!(
+                "and {} more",
+                duplicate_count.saturating_sub(displayed.len())
+            ));
+        }
+        artifact.notes.push(format!(
+            "Collapsed {duplicate_count} duplicate semantic finding fingerprint(s): {}.",
+            displayed.join(", ")
+        ));
+    }
+}
+
+fn duplicate_finding_is_preferred(
+    candidate: &reviewgate_core::Finding,
+    current: &reviewgate_core::Finding,
+) -> bool {
+    let candidate_blocking = candidate.is_blocking(DEFAULT_TARGET_SCORE);
+    let current_blocking = current.is_blocking(DEFAULT_TARGET_SCORE);
+    if candidate_blocking != current_blocking {
+        return candidate_blocking;
+    }
+    if candidate.severity != current.severity {
+        return candidate.severity < current.severity;
+    }
+    if candidate.confidence != current.confidence {
+        return candidate.confidence > current.confidence;
+    }
+    let candidate_evidence = candidate.grounding.as_ref().map_or(0, |grounding| {
+        grounding.evidence.len() + grounding.related_tests.len()
+    });
+    let current_evidence = current.grounding.as_ref().map_or(0, |grounding| {
+        grounding.evidence.len() + grounding.related_tests.len()
+    });
+    candidate_evidence > current_evidence
 }
 
 fn resolution_replaces_prior_evidence(
@@ -13693,6 +13754,112 @@ diff --git a/src/lib.rs b/src/lib.rs
             "contents: write",
             "contents:write"
         ));
+    }
+
+    #[test]
+    fn grounding_deduplicates_the_same_semantic_finding_across_angles() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/evidence-grounding/regressions.json"
+        ))
+        .expect("grounding fixtures parse");
+        let case = &cases[1];
+        let dir = unique_test_dir("cross-angle-grounding-deduplication");
+        for (path, contents) in case["files"].as_object().expect("fixture files") {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("create parent");
+            fs::write(path, contents.as_str().expect("fixture contents")).expect("write fixture");
+        }
+
+        let mut general: reviewgate_core::Finding =
+            serde_json::from_value(case["finding"].clone()).expect("general finding");
+        general.id = "general:duplicate".to_string();
+        general.angle_id = Some("general".to_string());
+        general.confidence = 0.90;
+        let mut adversarial = general.clone();
+        adversarial.id = "adversarial:duplicate".to_string();
+        adversarial.angle_id = Some("adversarial".to_string());
+        adversarial.confidence = 0.97;
+        let context = ReviewContext {
+            reviewed_sha: "abc123".to_string(),
+            scope: ReviewScope::Local,
+            previous_state: None,
+            convergence_delta: reviewgate_core::ConvergenceDelta::first_review("abc123"),
+            pull_request: PullRequestContext::default(),
+            changed_files: case["files"]
+                .as_object()
+                .expect("fixture files")
+                .keys()
+                .cloned()
+                .collect(),
+            diff: case["diff"].as_str().expect("fixture diff").to_string(),
+            analyzed_line_count: 1,
+            data_integrity_review_needed: false,
+            context_files: vec![],
+            semantic_context: None,
+        };
+        let score = general.severity.score_ceiling();
+        let artifact = ReviewArtifact {
+            score: Some(score),
+            target_score: DEFAULT_TARGET_SCORE,
+            reviewed_sha: "abc123".to_string(),
+            status: status_for_score(score),
+            verdict: "Both angles found the same issue.".to_string(),
+            models: vec!["balanced".to_string()],
+            estimated_cost_usd: None,
+            cost_summary: None,
+            metrics: None,
+            review_stages: vec![],
+            angle_results: vec![
+                ReviewAngleResult {
+                    id: "general".to_string(),
+                    name: "General".to_string(),
+                    score,
+                    status: status_for_score(score),
+                    verdict: "General found the issue.".to_string(),
+                    model: "balanced".to_string(),
+                    finding_ids: vec![general.id.clone()],
+                },
+                ReviewAngleResult {
+                    id: "adversarial".to_string(),
+                    name: "Adversarial".to_string(),
+                    score,
+                    status: status_for_score(score),
+                    verdict: "Adversarial found the issue.".to_string(),
+                    model: "balanced".to_string(),
+                    finding_ids: vec![adversarial.id.clone()],
+                },
+            ],
+            angle_errors: vec![],
+            findings: vec![general, adversarial],
+            disposition_updates: vec![],
+            tracked_findings: vec![],
+            notes: vec![],
+        };
+
+        let (mut artifact, disposition_updates) =
+            finalize_review_artifact(&dir, &context, artifact, "balanced", Severity::P4, true)
+                .expect("duplicate semantic findings finalize");
+
+        assert!(disposition_updates.is_empty());
+        assert_eq!(artifact.findings.len(), 1);
+        assert_eq!(artifact.findings[0].id, "adversarial:duplicate");
+        assert_eq!(artifact.findings[0].confidence, 0.97);
+        assert_eq!(artifact.angle_results[0].score, 5);
+        assert!(artifact.angle_results[0].finding_ids.is_empty());
+        assert_eq!(artifact.angle_results[1].score, score);
+        assert_eq!(
+            artifact.angle_results[1].finding_ids,
+            vec!["adversarial:duplicate".to_string()]
+        );
+        assert!(artifact.notes.iter().any(|note| {
+            note.contains("Collapsed 1 duplicate semantic finding")
+                && note.contains("fixture.evidence.grounding")
+        }));
+        let tracked = apply_convergence_policy(&mut artifact, &context, &[])
+            .expect("deduplicated semantic finding converges");
+        assert_eq!(tracked.len(), 1);
+        assert_eq!(artifact.findings.len(), 1);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
