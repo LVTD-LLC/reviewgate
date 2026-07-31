@@ -4,7 +4,6 @@ title: "Use ReviewGate with coding agents"
 description: "Give coding agents an exact-head ReviewGate repair loop with safe JSON parsing, blocker selection, dispositions, verification, and stop conditions."
 heading: "Use ReviewGate with coding agents"
 lede: "Retrieve a validated current-head result, fix only evidence-backed open blockers, submit structured state, and stop only when the exact PR head reaches 5/5."
-eyebrow: "OPERATE / EXTERNAL AGENT LOOP"
 ---
 
 ## Agent contract

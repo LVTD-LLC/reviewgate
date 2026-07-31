@@ -4,7 +4,6 @@ title: "Configure ReviewGate"
 description: "Configure ReviewGate severity, semantic context, models, timeouts, custom review angles, prompt files, skill-backed reviews, and environment variables."
 heading: "Configure ReviewGate"
 lede: "Keep the fixed 5/5 gate while selecting which findings publish inline, which review angles run, and which model and time budgets the runtime uses."
-eyebrow: "REFERENCE / CONFIGURATION"
 ---
 
 ## Configuration surfaces

@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-31
 
+- Removed decorative eyebrow labels from the Astro site's homepage, documentation heroes, and article headers.
 - Added the “AI Code Review on GitHub: A Merge-Safe Workflow” field note with BlogPosting, HowTo, and breadcrumb schema; documented a five-binding review contract, registered contextual inbound links and SEO inventory, and expanded rendered SEO validation to every shipped blog route.
 - Isolated serialized fixed-resolution proof revalidation from the completed review's tracked finding state, so a fixed blocker can publish alongside unrelated open advisories without turning a valid review into a summary-publication error. Advanced the action runtime pin to `v0.9.4`.
 - Made reconciled finding IDs deterministically unique when reviewer drift repeats one model-generated ID for distinct semantic findings, keeping the canonical artifact and tracked convergence state synchronized instead of failing the rereview. Advanced the action runtime pin to `v0.9.3`.
