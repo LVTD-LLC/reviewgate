@@ -4,7 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-07-31
 
-- Prevented verifier-rejected candidates from becoming inline comments and added cleanup for any matching unresolved ReviewGate-owned thread created by an older runtime.
+- Prevented verifier-rejected candidates from becoming inline comments and added cleanup for any matching unresolved ReviewGate-owned thread created by an older runtime. Advanced the action runtime pin to `v0.9.2`.
 - Deduplicated independently grounded findings that share one semantic fingerprint before blocker verification and convergence, selecting one deterministic strongest representative and recording the collapsed fingerprint so two review angles cannot turn the same defect into an invalid artifact.
 - Added opt-in independent blocker verification through `.reviewgate.yml`, the GitHub Action, and CLI. ReviewGate makes no extra call when disabled or when no blockers survive grounding, batches all candidates into at most one additional call, caps the second prompt to evidence-centered context, keeps rejected candidates auditable without publishing or blocking, fails closed on inconclusive verification, and records verifier cost, latency, model, evidence, and compact summary counts. Repository config can enable verification but cannot select the verifier model; that spend and data-routing choice stays with the trusted workflow or direct CLI caller. Advanced the action runtime pin to the corrective `v0.9.1` release.
 
