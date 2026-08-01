@@ -17,6 +17,7 @@
 | `/blog/how-to-tell-if-code-is-ai-generated` | https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/ | How to review code when AI authorship is uncertain | E |
 | `/blog/best-ai-code-review-tools` | https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/ | Best AI code review tools for agent-written PRs | E |
 | `/blog/ai-code-review-github` | https://reviewgate.lvtd.dev/blog/ai-code-review-github/ | Merge-safe AI code review on GitHub | E |
+| `/blog/pr-review-prompts` | https://reviewgate.lvtd.dev/blog/pr-review-prompts/ | Evidence-bound PR review prompt library | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -105,3 +106,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “five bindings for AI code review”
 - “exact-head review check”
 - “repository-owned AI reviewer”
+
+### PR review prompt library
+
+- “PR review prompt library”
+- “evidence-bound PR review prompts”
+- “AI code review prompt templates”
+- “prompts for agent-written pull requests”
+- “specialized code review prompts”

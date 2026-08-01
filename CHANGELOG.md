@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-01
+
+- Added the “PR Review Prompts for Agent-Written Pull Requests” field note with eight copy-ready review angles, a ReviewGate-derived finding-admission contract, BlogPosting/ItemList/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-07-31
 
 - Removed decorative eyebrow labels from the Astro site's homepage, documentation heroes, and article headers.

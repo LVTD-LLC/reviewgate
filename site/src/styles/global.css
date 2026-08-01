@@ -729,6 +729,33 @@ h2 {
   padding: 2px 5px;
 }
 
+.article-body pre {
+  background: rgb(8 15 27 / 0.92);
+  border: 1px solid var(--signal-line);
+  color: var(--signal-ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  margin-block: 24px 36px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: clamp(18px, 3vw, 28px);
+  white-space: pre-wrap;
+}
+
+.article-body pre code {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  padding: 0;
+}
+
+.article-prompt + .article-prompt {
+  border-block-start: 1px solid var(--signal-line);
+  margin-block-start: 54px;
+  padding-block-start: 18px;
+}
+
 .article-callout,
 .article-cta {
   background: rgb(168 255 96 / 0.06);
