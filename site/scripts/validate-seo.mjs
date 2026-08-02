@@ -38,6 +38,14 @@ const expectedPages = [
     "blog/ai-code-review-github/index.html",
     "https://reviewgate.lvtd.dev/blog/ai-code-review-github/",
   ],
+  [
+    "blog/pr-review-prompts/index.html",
+    "https://reviewgate.lvtd.dev/blog/pr-review-prompts/",
+  ],
+  [
+    "blog/pull-request-review-comments/index.html",
+    "https://reviewgate.lvtd.dev/blog/pull-request-review-comments/",
+  ],
 ];
 
 const titles = new Set();
@@ -118,6 +126,22 @@ const githubReviewSchemaTypes = JSON.parse(githubReviewJsonLdSource).map(
   (entry) => entry["@type"],
 );
 assert.deepEqual(githubReviewSchemaTypes, ["BlogPosting", "HowTo", "BreadcrumbList"]);
+
+const reviewCommentsArticle = builtPages.get("/blog/pull-request-review-comments");
+assert(reviewCommentsArticle, "review comments article must be present in built pages");
+const reviewCommentsJsonLdSource = reviewCommentsArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(reviewCommentsJsonLdSource, "review comments article must contain JSON-LD");
+const reviewCommentsSchemaTypes = JSON.parse(reviewCommentsJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(reviewCommentsSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);

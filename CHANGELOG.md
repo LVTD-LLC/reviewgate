@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-02
+
+- Added the “Pull Request Review Comments: A Signal-First Guide” field note with a five-step comment contract, placement and disposition frameworks, source-backed examples, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-01
 
 - Added the “PR Review Prompts for Agent-Written Pull Requests” field note with eight copy-ready review angles, a ReviewGate-derived finding-admission contract, BlogPosting/ItemList/breadcrumb schema, contextual inbound links, and SEO inventory registration.
