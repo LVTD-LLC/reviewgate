@@ -557,6 +557,12 @@ review_angles:
       covers event, runtime, evidence, verdict, and current-head binding in detail.
     </p>
     <p>
+      Once a finding survives that gate, use the
+      <a href="/blog/pull-request-review-comments">signal-first review comment contract</a>
+      to choose its scope, declare whether it blocks merge, and preserve its disposition
+      across reruns.
+    </p>
+    <p>
       Keep the final decision human-owned. GitHub warns that Copilot can miss issues or
       make mistakes and recommends human validation. ReviewGate is also review-only: it
       does not execute pull request code, repair findings, or take over the merge.

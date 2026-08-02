@@ -1,0 +1,446 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Pull Request Review Comments: A Signal-First Guide";
+const description =
+  "Write pull request review comments that separate blockers from advice, cite exact evidence, and stay useful through the next commit.";
+const canonical = "https://reviewgate.lvtd.dev/blog/pull-request-review-comments/";
+const publishedAt = "2026-08-02";
+
+const commentSteps = [
+  {
+    name: "Classify the intent",
+    text: "Say whether the comment is a blocker, issue, question, suggestion, nitpick, or praise before explaining it.",
+  },
+  {
+    name: "Choose the narrowest honest scope",
+    text: "Put a local defect on the changed line, a file-level concern at file scope, and a pull-request-wide decision in the review summary.",
+  },
+  {
+    name: "State the checked claim and evidence",
+    text: "Cite the exact code and the repository contract, test, caller, or documentation that makes the claim checkable.",
+  },
+  {
+    name: "Trace the impact and smallest resolution",
+    text: "Explain the triggering condition, causal path, observable consequence, and the smallest safe fix or verification step.",
+  },
+  {
+    name: "Track disposition on the current head",
+    text: "Record whether the finding is open, fixed, rejected, accepted as risk, or stale, and tie that decision to the reviewed commit.",
+  },
+];
+
+const faqs = [
+  {
+    question: "How do you write pull request comments?",
+    answer:
+      "Start with the comment's intent, anchor it at the narrowest accurate scope, cite the exact evidence, explain the impact, and state the smallest useful next action. Mark optional comments as optional so they cannot be mistaken for merge blockers.",
+  },
+  {
+    question: "How do you write good review comments?",
+    answer:
+      "A good review comment is specific, falsifiable, kind, and proportional. It discusses the code rather than the author, explains why the issue matters, and gives the author enough evidence to confirm or reject the claim without guessing.",
+  },
+  {
+    question: "How do you resolve comments on a pull request?",
+    answer:
+      "Resolve a thread only after the fix or explicit disposition is visible. If code changed, re-check the relevant behavior on the latest commit; if the team accepts the risk or rejects the finding, record that reason before resolving the conversation.",
+  },
+  {
+    question: "How do you do a good pull request review?",
+    answer:
+      "Review the stated intent, inspect the diff and nearby contracts, separate blocking defects from optional advice, batch related comments, summarize the merge decision, and repeat the review when a new commit invalidates earlier evidence.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to write a pull request review comment",
+    description: "A five-step contract for actionable pull request review comments.",
+    totalTime: "PT15M",
+    step: commentSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+      url: `${canonical}#comment-contract`,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="12 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Pull request review comments need a contract.</Fragment>
+  <Fragment slot="deck">
+    A signal-first method for separating blockers from advice, grounding every claim,
+    and keeping human and automated feedback useful after the next push.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#comment-contract">The five-step contract</a></li>
+    <li><a href="#placement">Choose the right surface</a></li>
+    <li><a href="#anatomy">Anatomy of a useful comment</a></li>
+    <li><a href="#automation">Automated review comments</a></li>
+    <li><a href="#lifecycle">Resolve without losing state</a></li>
+    <li><a href="#examples">Before-and-after examples</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>What makes a useful pull request review comment?</h2>
+    <p class="article-lead">
+      A useful pull request review comment identifies whether action is required,
+      anchors the concern at the narrowest accurate scope, cites evidence that another
+      reviewer can check, traces the consequence, and proposes the smallest safe next
+      step. It stays attached to a review decision and the exact commit that was reviewed.
+    </p>
+    <p>
+      That definition is stricter than “be constructive.” Polite wording matters, but a
+      friendly comment can still waste time when the author cannot tell whether it blocks
+      merge, which code proves the claim, or what would resolve it. The same ambiguity is
+      more expensive when a bot can publish dozens of comments in seconds.
+    </p>
+    <p>
+      GitHub exposes different surfaces for different jobs: general discussion on the
+      Conversation tab, line and file comments in Files changed, and a submitted review
+      with a <em>Comment</em>, <em>Approve</em>, or <em>Request changes</em> decision. Its
+      <a href="https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/commenting-on-a-pull-request">
+        commenting documentation
+      </a>
+      also lets reviewers batch line comments into one pending review. A good comment
+      contract uses those surfaces deliberately instead of treating every thought as an
+      equivalent inline alert.
+    </p>
+  </section>
+
+  <section id="comment-contract">
+    <h2>Use a five-step comment contract</h2>
+    <p>
+      Apply the full contract to blocking findings and automated feedback. A short human
+      question or nitpick can use a lighter version, but it should still declare its
+      intent. This preserves signal without turning review into form-filling.
+    </p>
+    <ol>
+      {commentSteps.map((step) => (
+        <li>
+          <strong>{step.name}.</strong> {step.text}
+        </li>
+      ))}
+    </ol>
+    <p>
+      The first step removes a common source of friction: authors should not have to infer
+      whether “Could we change this?” means a required correction or an optional idea.
+      Google's
+      <a href="https://google.github.io/eng-practices/review/reviewer/comments.html">
+        code review comment guidance
+      </a>
+      recommends explaining the reason for a comment and labeling severity, including
+      optional notes and nitpicks. The
+      <a href="https://conventionalcomments.org/">Conventional Comments specification</a>
+      formalizes a similar idea with labels such as <code>issue</code>,
+      <code>suggestion</code>, <code>question</code>, and <code>nitpick</code>.
+    </p>
+    <aside class="article-callout">
+      <strong>A compact grammar</strong>
+      <p>
+        <code>label [decorations]: subject</code>, followed by the evidence, impact, and
+        requested action. Example: <code>issue (blocking): preserve the authorization check</code>.
+      </p>
+    </aside>
+    <p>
+      Labels are not proof. A comment marked “blocking” still needs a checked claim. For
+      review automation, pair this grammar with an
+      <a href="/blog/pr-review-prompts">evidence-bound PR review prompt</a>
+      that requires the reviewer to abstain when the repository does not support the
+      finding.
+    </p>
+  </section>
+
+  <section id="placement">
+    <h2>Choose the narrowest honest review surface</h2>
+    <p>
+      Placement is part of meaning. An inline comment implies that a specific changed
+      line is relevant. A review summary implies that the observation affects the pull
+      request as a whole. When the evidence does not map to a changed line, forcing an
+      inline anchor creates false precision.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Finding scope</th>
+          <th>Best surface</th>
+          <th>What to include</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>One changed expression or statement</td>
+          <td>Inline comment</td>
+          <td>Exact trigger, local evidence, and focused fix</td>
+        </tr>
+        <tr>
+          <td>Several lines or one file</td>
+          <td>File comment or one representative anchor</td>
+          <td>Affected range, shared contract, and one consolidated action</td>
+        </tr>
+        <tr>
+          <td>Cross-file or pull-request-wide risk</td>
+          <td>Review summary or check output</td>
+          <td>Causal path, affected files, decision, and verification plan</td>
+        </tr>
+        <tr>
+          <td>Uncertain automated candidate</td>
+          <td>Advisory artifact, not a blocker</td>
+          <td>Missing evidence and the fact a human must verify</td>
+        </tr>
+        <tr>
+          <td>Optional preference</td>
+          <td>Labeled nitpick or suggestion</td>
+          <td>Why it may help and explicit non-blocking status</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Batch related observations rather than emitting one notification per thought.
+      GitHub's pending-review flow exists for this purpose: add comments while inspecting
+      the diff, then submit them together with the overall decision. Consolidation also
+      exposes duplicates before they reach the author.
+    </p>
+  </section>
+
+  <section id="anatomy">
+    <h2>Make the finding falsifiable</h2>
+    <p>
+      A review comment should give the author enough information to disprove it. Use this
+      order for a blocking defect:
+    </p>
+    <ol>
+      <li><strong>Decision:</strong> label the finding and say whether it blocks merge.</li>
+      <li><strong>Claim:</strong> describe one behavior the patch introduces or worsens.</li>
+      <li><strong>Evidence:</strong> quote the changed code and cite the governing contract.</li>
+      <li><strong>Causal path:</strong> connect a realistic input or state to the failure.</li>
+      <li><strong>Impact:</strong> name the observable user, system, or compatibility effect.</li>
+      <li><strong>Resolution:</strong> propose the smallest safe fix or a verification step.</li>
+    </ol>
+    <p>For example, imagine a pull request removes an authorization guard:</p>
+    <blockquote>
+      <p>
+        <strong>issue (blocking): preserve the project membership check.</strong> This
+        handler now loads the report by ID and returns it before calling
+        <code>requireProjectMember</code>. A signed-in user who can guess another report
+        ID can reach the response path without the project-level check used by the sibling
+        handlers. Keep the guard before the lookup, or add a test showing that a
+        non-member still receives 403.
+      </p>
+    </blockquote>
+    <p>
+      This is an illustrative comment, not a reported ReviewGate vulnerability. Its shape
+      is useful because each clause can be checked: the changed path, the sibling
+      contract, the triggering identity, the consequence, and the proposed regression
+      test.
+    </p>
+    <p>
+      Tone supports that technical work. A Microsoft Research study of
+      <a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/bosu2015useful.pdf">
+        1.5 million review comments
+      </a>
+      reported that extremely negative comments were less often judged useful than
+      neutral or somewhat negative ones. The study was published in 2015 and should not
+      be treated as a universal benchmark, but it supports a durable practice: discuss
+      the code and its consequences, not the developer's ability or motives.
+    </p>
+  </section>
+
+  <section id="automation">
+    <h2>Automated review comments need a stricter contract</h2>
+    <p>
+      Automation changes the cost structure. A human reviewer naturally has a limited
+      comment rate; a model does not. Before an automated finding becomes visible, test
+      that it is introduced by this pull request, material, supported by repository
+      evidence, non-duplicate, and mapped to an honest scope. Keep confidence separate
+      from severity: a severe hypothetical with weak evidence is still weak evidence.
+    </p>
+    <p>
+      ReviewGate implements that separation in public source. Its
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/schemas/reviewgate-review-output-v3.schema.json">
+        review output schema
+      </a>
+      records line, file, and pull-request scope. Changed-line findings are published
+      inline when GitHub accepts the anchor; file-level, pull-request-wide, unanchored, or
+      stale-line findings use a fallback anchor, while every finding remains available in
+      the structured JSON artifact. The canonical summary carries the review decision
+      instead of scattering state across standalone comments.
+    </p>
+    <p>
+      ReviewGate also derives a semantic finding identity from the finding's substance.
+      That lets reruns reconcile the same issue even when wording changes, while the
+      canonical summary and artifact remain the auditable record. This is a product
+      implementation, not a claim that one identity scheme is universal. You can inspect
+      the
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/crates/reviewgate-github/src/lib.rs">
+        GitHub publication implementation
+      </a>
+      and adapt the invariant: one issue should have one stable lifecycle.
+    </p>
+    <p>
+      The broader
+      <a href="/blog/ai-code-review-github">merge-safe AI review workflow</a>
+      adds trusted-event, runtime, verdict, and current-head bindings. Precise comments
+      are only one link in that chain; they cannot make stale or untrusted automation a
+      merge gate by themselves.
+    </p>
+  </section>
+
+  <section id="lifecycle">
+    <h2>Resolve comments without erasing the decision</h2>
+    <p>
+      A thread is discussion state, not proof that the latest code is safe. When the
+      author pushes a fix, re-check the triggering path on the new head before marking the
+      finding fixed. When the team rejects a finding or accepts the risk, record the
+      reason. When the relevant line disappears, mark the old anchor stale rather than
+      silently treating the issue as resolved.
+    </p>
+    <p>Use a small disposition vocabulary:</p>
+    <ul>
+      <li><strong>Open:</strong> evidence still applies and action is required.</li>
+      <li><strong>Fixed:</strong> the latest commit removes the causal path.</li>
+      <li><strong>Rejected:</strong> repository evidence disproves the claim.</li>
+      <li><strong>Accepted risk:</strong> the team understands the impact and chooses to merge.</li>
+      <li><strong>Stale:</strong> the anchor or reviewed commit is no longer current.</li>
+    </ul>
+    <p>
+      Preserve the reviewed commit SHA with the decision. A green review for commit A is
+      not evidence about commit B. If branch protection depends on review automation,
+      require a successful result for the current pull request head and fail unavailable
+      review closed rather than converting it into a pass.
+    </p>
+  </section>
+
+  <section id="examples">
+    <h2>Turn vague review comments into decisions</h2>
+    <h3>Vague: “This could break retries.”</h3>
+    <p>
+      Better: <strong>issue (blocking): keep the idempotency key stable across retries.</strong>
+      The retry branch generates a new key on each attempt, while the payment client
+      deduplicates by that key. A timeout after the first accepted request can therefore
+      create a second charge. Reuse the original operation key and add a timeout-then-retry
+      test that asserts one provider request.
+    </p>
+    <h3>Vague: “Can we clean this up?”</h3>
+    <p>
+      Better: <strong>nitpick (non-blocking): extract the repeated label.</strong> The same
+      user-facing string appears in three branches. A constant would make future copy
+      changes safer, but the current behavior is correct, so this should not hold the
+      merge.
+    </p>
+    <h3>Vague: “Missing tests.”</h3>
+    <p>
+      Better: <strong>question: which test exercises the new 429 path?</strong> The handler
+      now retries 429 responses, but the visible tests cover only 500 and timeout. If an
+      existing case covers the retry budget, please point to it; otherwise add one that
+      proves the final error and attempt count.
+    </p>
+    <p>
+      These examples are deliberately compact. Add more context only when it helps the
+      author verify the claim. Review comments are an interface for a decision, not a
+      place to display everything the reviewer considered.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Pull request review comment questions</h2>
+    {faqs.map((faq) => (
+      <section>
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+
+  <section class="article-cta">
+    <h2>Make automated comments auditable</h2>
+    <p>
+      ReviewGate is an open-source, GitHub Actions-first review gate with evidence-bound
+      findings, deterministic policy, a canonical summary, and current-head JSON for
+      human or agent repair loops. Start with the workflow, then inspect the source before
+      you make it required.
+    </p>
+    <div class="signal-actions">
+      <a
+        class="signal-primary"
+        href="/docs/github-actions"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >Install the review gate <span aria-hidden="true">↗</span></a>
+      <a
+        class="signal-secondary"
+        href="https://github.com/LVTD-LLC/reviewgate"
+        data-analytics-event="source_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >Inspect the source</a>
+    </div>
+  </section>
+</ArticleLayout>
