@@ -19,6 +19,7 @@
 | `/blog/ai-code-review-github` | https://reviewgate.lvtd.dev/blog/ai-code-review-github/ | Merge-safe AI code review on GitHub | E |
 | `/blog/pr-review-prompts` | https://reviewgate.lvtd.dev/blog/pr-review-prompts/ | Evidence-bound PR review prompt library | E |
 | `/blog/pull-request-review-comments` | https://reviewgate.lvtd.dev/blog/pull-request-review-comments/ | Signal-first pull request review comments | E |
+| `/blog/claude-code-review` | https://reviewgate.lvtd.dev/blog/claude-code-review/ | Four-role Claude Code review contract | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -123,3 +124,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “write actionable PR comments”
 - “line, file, and PR review scope”
 - “review finding disposition”
+
+### Claude Code review field note
+
+- “Claude Code review workflow”
+- “four-role Claude Code review contract”
+- “review Claude-authored pull requests”
+- “separate AI reviewer and merge gate”
+- “current-head Claude review”

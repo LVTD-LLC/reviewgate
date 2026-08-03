@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-03
+
+- Added “Claude Code Review: Keep Four Roles Separate,” a current guide to local and managed Claude review with a repository-derived four-role review contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-02
 
 - Added the “Pull Request Review Comments: A Signal-First Guide” field note with a five-step comment contract, placement and disposition frameworks, source-backed examples, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
