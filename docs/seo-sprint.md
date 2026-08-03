@@ -198,8 +198,9 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:reviewgate.lvt
 | 2026-07-31 | Pillar guide / how-to | AI Code Review on GitHub: A Merge-Safe Workflow | `ai code review github` (US volume 70, KD 13) | In PR |
 | 2026-08-01 | Resource / template library | PR Review Prompts for Agent-Written Pull Requests | `pr review prompt` (US volume 30, KD unavailable) | In PR |
 | 2026-08-02 | How-to / tutorial | Pull Request Review Comments: A Signal-First Guide | `pull request review comments` (US volume 10, KD unavailable) | In PR |
+| 2026-08-03 | Pillar guide / how-to | Claude Code Review: Keep Four Roles Separate | `claude code review` (US volume 2,900, KD 4) | In PR |
 
-The editorial series adds a provenance-blind evidence gate, a comparison framework, a five-binding GitHub workflow for trusted events, runtimes, evidence, verdicts, and current-head results, an eight-angle prompt library with explicit finding-admission rules, and a signal-first contract for placing and resolving review comments. Every post links to live product/docs surfaces and receives at least two contextual inbound links. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
+The editorial series adds a provenance-blind evidence gate, a comparison framework, a five-binding GitHub workflow for trusted events, runtimes, evidence, verdicts, and current-head results, an eight-angle prompt library with explicit finding-admission rules, a signal-first contract for placing and resolving review comments, and a four-role operating model for Claude-authored pull requests. Every post links to live product/docs surfaces and receives at least two contextual inbound links. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 
