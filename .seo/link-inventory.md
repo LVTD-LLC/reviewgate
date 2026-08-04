@@ -20,6 +20,7 @@
 | `/blog/pr-review-prompts` | https://reviewgate.lvtd.dev/blog/pr-review-prompts/ | Evidence-bound PR review prompt library | E |
 | `/blog/pull-request-review-comments` | https://reviewgate.lvtd.dev/blog/pull-request-review-comments/ | Signal-first pull request review comments | E |
 | `/blog/claude-code-review` | https://reviewgate.lvtd.dev/blog/claude-code-review/ | Four-role Claude Code review contract | E |
+| `/blog/codex-code-review` | https://reviewgate.lvtd.dev/blog/codex-code-review/ | Codex code review merge-gate workflow | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -132,3 +133,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “review Claude-authored pull requests”
 - “separate AI reviewer and merge gate”
 - “current-head Claude review”
+
+### Codex code review field note
+
+- “Codex code review workflow”
+- “turn Codex findings into a merge gate”
+- “Codex AGENTS.md review rules”
+- “current-head Codex review”
+- “Codex review output contract”

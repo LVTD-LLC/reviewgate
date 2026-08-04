@@ -199,8 +199,9 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:reviewgate.lvt
 | 2026-08-01 | Resource / template library | PR Review Prompts for Agent-Written Pull Requests | `pr review prompt` (US volume 30, KD unavailable) | In PR |
 | 2026-08-02 | How-to / tutorial | Pull Request Review Comments: A Signal-First Guide | `pull request review comments` (US volume 10, KD unavailable) | In PR |
 | 2026-08-03 | Pillar guide / how-to | Claude Code Review: Keep Four Roles Separate | `claude code review` (US volume 2,900, KD 4) | In PR |
+| 2026-08-04 | Pillar guide / how-to | Codex Code Review: Turn Findings Into a Merge Gate | `codex code review` (US volume 590, KD 5) | In PR |
 
-The editorial series adds a provenance-blind evidence gate, a comparison framework, a five-binding GitHub workflow for trusted events, runtimes, evidence, verdicts, and current-head results, an eight-angle prompt library with explicit finding-admission rules, a signal-first contract for placing and resolving review comments, and a four-role operating model for Claude-authored pull requests. Every post links to live product/docs surfaces and receives at least two contextual inbound links. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
+The editorial series adds a provenance-blind evidence gate, a comparison framework, a five-binding GitHub workflow for trusted events, runtimes, evidence, verdicts, and current-head results, an eight-angle prompt library with explicit finding-admission rules, a signal-first contract for placing and resolving review comments, a four-role operating model for Claude-authored pull requests, and a three-artifact contract that converts Codex review comments into admitted findings and an exact-head verdict. Every post links to live product/docs surfaces and receives at least two contextual inbound links. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 

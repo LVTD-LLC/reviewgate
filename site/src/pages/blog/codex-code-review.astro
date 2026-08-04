@@ -1,0 +1,682 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Codex Code Review: Turn Findings Into a Merge Gate";
+const description =
+  "Run Codex code review on GitHub, scope AGENTS.md rules, verify findings, and bind the verdict to the current pull-request head.";
+const canonical = "https://reviewgate.lvtd.dev/blog/codex-code-review/";
+const publishedAt = "2026-08-04";
+
+const workflowSteps = [
+  {
+    id: "define-subject",
+    name: "Define review scope",
+    text: "Describe the pull request intent, changed contracts, expected tests, and repository invariants before asking Codex to review the diff.",
+  },
+  {
+    id: "separate-review",
+    name: "Request a separate review",
+    text: "Run @codex review on the pull request or enable automatic reviews, using scoped AGENTS.md rules for judgment that deterministic CI cannot express.",
+  },
+  {
+    id: "verify-finding",
+    name: "Verify each consequential finding",
+    text: "Tie every potential blocker to a changed location, repository evidence, a causal failure path, and an observable contract or test.",
+  },
+  {
+    id: "apply-policy",
+    name: "Apply deterministic policy",
+    text: "Let repository-owned code decide finding admission, severity, score, and check conclusion instead of parsing the tone of a review comment.",
+  },
+  {
+    id: "bind-current-head",
+    name: "Bind the verdict to the current head",
+    text: "After every relevant push, require a fresh result for the exact revision GitHub is evaluating and retain unresolved obligations across reruns.",
+  },
+  {
+    id: "retain-merge-authority",
+    name: "Leave merge authority explicit",
+    text: "Combine the current review result with tests, branch protection, approvals, and maintainer judgment before merging.",
+  },
+];
+
+const faqs = [
+  {
+    question: "How do I request a Codex code review on GitHub?",
+    answer:
+      "Enable Code review for the repository in Codex settings, then comment @codex review on a pull request. Codex reacts and posts a standard GitHub review. You can also enable automatic reviews for new pull requests.",
+  },
+  {
+    question: "What does Codex check during code review?",
+    answer:
+      "Codex reviews the pull request diff, applies relevant repository guidance from AGENTS.md, and focuses its GitHub comments on serious P0 and P1 issues. Codex can run code or tests to validate behavior during review, but model-chosen checks do not replace required deterministic CI.",
+  },
+  {
+    question: "Can Codex code review block a pull request?",
+    answer:
+      "A Codex review is reviewer feedback, not a complete merge policy. Use branch protection and a repository-owned required check to turn verified findings into a deterministic current-head verdict.",
+  },
+  {
+    question: "Can Codex fix an issue it finds?",
+    answer:
+      "Yes. After a review, a pull request comment such as @codex fix the P1 issue starts a Codex cloud task that can prepare and push a fix when permissions allow. Review the new diff and rerun all required checks afterward.",
+  },
+  {
+    question: "What is the difference between /review and @codex review?",
+    answer:
+      "Local /review inspects a selected working-tree, branch, or supported commit diff and reports findings without changing files. @codex review requests a Codex cloud review on a GitHub pull request and publishes a standard GitHub review.",
+  },
+  {
+    question: "What does it mean when Codex leaves no comments?",
+    answer:
+      "A completed review with no comments means Codex did not publish a P0 or P1 finding. Confirm the review completed for the current head, then inspect required CI and human comments; silence is not proof that the pull request is safe.",
+  },
+  {
+    question: "How do I rerun Codex review after a new commit?",
+    answer:
+      "Request a fresh review for the updated pull request and require your repository gate to name the new head SHA. Do not reuse a clean finding set or merge verdict produced for an earlier commit.",
+  },
+  {
+    question: "Which plans and limits apply to Codex code review?",
+    answer:
+      "Codex availability and usage limits vary by ChatGPT plan and can change. Check OpenAI's current Codex plan documentation for your account rather than relying on a fixed quota copied into a review policy.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to turn Codex code review into a merge gate",
+    description: "A six-step workflow from Codex findings to a current-head repository verdict.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+      url: `${canonical}#${step.id}`,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="13 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Codex Code Review: Turn Findings Into a Merge Gate</Fragment>
+  <Fragment slot="deck">
+    Codex can find serious defects and apply repository-specific rules. The repository
+    still needs to decide which findings are proven, which revision they describe, and
+    whether the pull request may merge.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#how-it-works">How Codex review works</a></li>
+    <li><a href="#setup">Set up GitHub review</a></li>
+    <li><a href="#review-rules">Write review rules</a></li>
+    <li><a href="#three-artifacts">Separate three artifacts</a></li>
+    <li><a href="#merge-gate-workflow">Run the workflow</a></li>
+    <li><a href="#worked-example">Trace one finding</a></li>
+    <li><a href="#no-comments">Interpret no comments</a></li>
+    <li><a href="#failure-modes">Avoid failure modes</a></li>
+    <li><a href="#checklist">Pre-merge checklist</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should you use Codex code review?</h2>
+    <p class="article-lead">
+      Use Codex code review as a focused source of candidate findings, not as the whole
+      merge gate. Trigger a separate review, teach Codex durable repository invariants in
+      <code>AGENTS.md</code>, verify consequential findings against code and tests, and
+      require a repository-owned verdict for the exact pull request head before merge.
+    </p>
+    <p>
+      Codex's GitHub integration reviews the pull request diff, follows applicable
+      repository guidance, and posts a standard GitHub review. OpenAI's current
+      <a href="https://learn.chatgpt.com/docs/third-party/github">Codex GitHub documentation</a>
+      says the reviewer limits GitHub findings to P0 and P1 issues. That focus reduces
+      comment noise, but it does not answer every merge question. Tests, branch policy,
+      required approvals, and the maintainer's product judgment remain separate evidence.
+    </p>
+    <aside class="article-callout">
+      <strong>The useful boundary</strong>
+      <p>
+        Codex proposes a finding. Repository-matched evidence determines whether it is
+        eligible to affect policy; tests or human analysis may still be needed to establish
+        that the claim is true. GitHub and maintainers decide whether the current revision
+        may merge.
+      </p>
+    </aside>
+  </section>
+
+  <section id="how-it-works">
+    <h2>How does Codex code review work?</h2>
+    <p>
+      Codex supports review at two useful points. Local <code>/review</code> in Codex CLI,
+      the IDE extension, or the app inspects a selected diff and reports prioritized
+      findings without changing the working tree. GitHub code review runs through Codex
+      cloud, receives the pull request as its subject, and publishes findings where the
+      team already discusses the change.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Surface</th>
+          <th scope="col">Best use</th>
+          <th scope="col">Durable PR record</th>
+          <th scope="col">Merge authority</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Local <code>/review</code></th>
+          <td>Inspect uncommitted work or a branch, and where supported a commit, before push</td>
+          <td>No, unless you publish the result</td>
+          <td>None</td>
+        </tr>
+        <tr>
+          <th scope="row">GitHub <code>@codex review</code></th>
+          <td>Run a separate review on a pull request diff</td>
+          <td>Standard GitHub review and comments</td>
+          <td>Reviewer feedback</td>
+        </tr>
+        <tr>
+          <th scope="row">Automatic GitHub review</th>
+          <td>Apply the same review habit to every new pull request</td>
+          <td>Standard GitHub review and comments</td>
+          <td>Reviewer feedback</td>
+        </tr>
+        <tr>
+          <th scope="row">Repository-owned gate</th>
+          <td>Validate evidence, score the result, and enforce current-head policy</td>
+          <td>Dedicated check branch protection can require, plus a structured artifact</td>
+          <td>Defined by branch protection</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      These surfaces complement each other. A local pass shortens the author's feedback
+      loop. A GitHub pass creates separate, visible review evidence. A gate turns
+      admitted evidence into a stable decision contract. If you need the broader CI
+      architecture, start with the
+      <a href="/blog/ai-code-review-github">merge-safe AI code review workflow for GitHub</a>.
+    </p>
+    <p>
+      If you need machine-readable Codex output, run a separate CI job with
+      <code>codex exec</code> and a JSON Schema, following OpenAI's
+      <a href="https://github.com/openai/openai-cookbook/blob/main/examples/codex/build_code_review_with_codex_sdk.md">
+        structured code review example
+      </a>. Do not infer merge status by parsing <code>@codex review</code> prose,
+      reactions, or comment absence.
+    </p>
+  </section>
+
+  <section id="setup">
+    <h2>Set up Codex code review on GitHub</h2>
+    <p>
+      Start by setting up Codex cloud for the repository. Then open Codex code review
+      settings and enable the repository. On a pull request, add the exact
+      comment <code>@codex review</code>. Codex reacts with an eyes emoji while it works
+      and posts the review when it finishes.
+    </p>
+    <ol>
+      <li>Connect the repository to Codex cloud.</li>
+      <li>Open Codex settings and enable Code review for that repository.</li>
+      <li>Add two or three scoped review rules to the applicable <code>AGENTS.md</code>.</li>
+      <li>Open a representative pull request and comment <code>@codex review</code>.</li>
+      <li>Check whether the findings are consequential, evidenced, and correctly scoped.</li>
+      <li>Enable automatic reviews only after the representative test is quiet and useful.</li>
+    </ol>
+    <p>
+      Automatic review removes the manual trigger for new pull requests. It should not
+      remove the current-head requirement. A push changes the reviewed subject, so the
+      merge gate must confirm that its usable result describes the revision GitHub is
+      currently evaluating.
+    </p>
+    <p>
+      For one-off emphasis, put the focus in the request, such as
+      <code>@codex review for security regressions</code>. Keep durable invariants in the
+      repository. Pull request comments remain attached to that pull request and do not
+      govern future changes; repository rules remain versioned beside the code they govern.
+    </p>
+  </section>
+
+  <section id="review-rules">
+    <h2>Write Codex code review rules that reduce noise</h2>
+    <p>
+      Good review rules encode consequential judgment that a formatter, type checker, or
+      unit test cannot settle. Put repository-wide rules in the root
+      <code>AGENTS.md</code>. Put service-specific rules in the nearest nested file so a
+      database invariant does not compete for attention during an unrelated UI change.
+    </p>
+    <p>
+      OpenAI's July 2026
+      <a href="https://developers.openai.com/blog/custom-code-review-rules-for-codex">
+        custom code review rules report
+      </a>
+      describes an internal evaluation in which rule-guided variants recovered 98% of
+      required custom findings, compared with 58.3% for the baseline. Treat those as
+      vendor-reported results from that evaluation, not a prediction for your repository.
+      The transferable lesson is the test design: include a known violation, a safe
+      counterexample, and an unrelated change.
+    </p>
+    <p>Each rule should contain four parts:</p>
+    <ol>
+      <li><strong>Invariant:</strong> the behavior that must remain true.</li>
+      <li><strong>Consequence:</strong> the user, client, or security failure if it changes.</li>
+      <li><strong>Safe path:</strong> the compatible implementation or explicit exception.</li>
+      <li><strong>Scope:</strong> the files or subsystem to which the rule applies.</li>
+    </ol>
+    <pre><code>## Code Review Rules
+
+### Public event compatibility
+
+- Preserve existing `reviewgate-agent-result` fields for the current schema version.
+  Removing or renaming a field breaks external repair loops. Add a versioned field or
+  schema before changing the contract.</code></pre>
+    <p>
+      Do not copy CI into prose. “Run the formatter” is weaker than a formatter check.
+      “Do not rename this public field without a versioned migration” captures history
+      and consequence that the compiler may not know. Review the rules like code: test
+      them, narrow noisy wording, remove obsolete constraints, and keep exceptions
+      visible.
+    </p>
+  </section>
+
+  <section id="three-artifacts">
+    <h2>Separate comments, findings, and the merge verdict</h2>
+    <p>
+      The missing layer in most Codex code review guidance is an output contract. A
+      GitHub comment is presentation. A finding is a checked claim. A verdict is a
+      policy result for one revision. Treating those as three artifacts prevents a
+      persuasive sentence from silently becoming merge authority.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Artifact</th>
+          <th scope="col">Required fields</th>
+          <th scope="col">Owner</th>
+          <th scope="col">Failure to avoid</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Review comment</th>
+          <td>Location, explanation, suggested next check</td>
+          <td>Codex or another reviewer</td>
+          <td>Equating confidence or tone with proof</td>
+        </tr>
+        <tr>
+          <th scope="row">Admitted finding</th>
+          <td>Stable ID, severity, evidence, causal path, disposition</td>
+          <td>Repository evidence policy</td>
+          <td>Letting unsupported claims block</td>
+        </tr>
+        <tr>
+          <th scope="row">Merge verdict</th>
+          <td>Repository, PR, reviewed SHA, status, score, errors</td>
+          <td>Required check and branch policy</td>
+          <td>Reusing an old clean result after a push</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      ReviewGate makes that separation inspectable. Model output is parsed into structured
+      candidates; deterministic code admits a blocker only when the model-supplied
+      classification, severity, and confidence satisfy fixed predicates and repository
+      evidence passes grounding checks. Completed reviews derive a score from
+      <code>1-5</code>; inconclusive reviews return <code>review_error</code> with a null
+      score. The GitHub publisher maintains one canonical summary. See the
+      <a href="/docs/features">review lifecycle and scoring contract</a> for the complete
+      public behavior.
+    </p>
+    <p>
+      ReviewGate does not ingest <code>@codex review</code> comments or convert them
+      directly into a check. It runs a separate review through OpenRouter and emits its
+      own current-head result. The contract below is an adapter pattern for teams using
+      Codex, not a claim that the two products share review state.
+    </p>
+    <pre><code>{`{
+  "schema_version": "reviewgate-agent-result/v1",
+  "status": "passed",
+  "score": 5,
+  "reviewed_sha": "<current-pr-head>",
+  "findings": []
+}`}</code></pre>
+    <p>
+      Before merge, compare <code>reviewed_sha</code> with the current pull request head.
+      Treat <code>status == "passed" &amp;&amp; score == 5</code> as a usable clean gate result.
+      Open blockers satisfy
+      <code>.disposition == "still_open" &amp;&amp; .blocking_reason != null</code>. A
+      <code>review_error</code> result has a null score and must be retried or investigated.
+      The complete field contract is documented in
+      <a href="/docs/artifacts">ReviewGate's versioned artifacts guide</a>.
+    </p>
+    <p>
+      The resulting decision matrix is deliberately small. It distinguishes stale review
+      state from a real defect and makes the next action explicit instead of asking an
+      agent to infer policy from comment prose.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Current head?</th>
+          <th scope="col">ReviewGate status</th>
+          <th scope="col">Required CI</th>
+          <th scope="col">Human comments</th>
+          <th scope="col">Next action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>No</td>
+          <td>Any state</td>
+          <td>Any state</td>
+          <td>Any state</td>
+          <td>Rerun review for the current head</td>
+        </tr>
+        <tr>
+          <td>Yes</td>
+          <td><code>review_error</code>, score null</td>
+          <td>Any state</td>
+          <td>Any state</td>
+          <td>Retry or investigate the review</td>
+        </tr>
+        <tr>
+          <td>Yes</td>
+          <td><code>needs_changes</code>, score 1-4</td>
+          <td>Any state</td>
+          <td>Any state</td>
+          <td>Fix, reject with evidence, or escalate</td>
+        </tr>
+        <tr>
+          <td>Yes</td>
+          <td><code>passed</code>, score 5</td>
+          <td>Failing or pending</td>
+          <td>Any state</td>
+          <td>Fix or wait for deterministic evidence</td>
+        </tr>
+        <tr>
+          <td>Yes</td>
+          <td><code>passed</code>, score 5</td>
+          <td>Passing</td>
+          <td>Unresolved actionable comment</td>
+          <td>Resolve or escalate the comment</td>
+        </tr>
+        <tr>
+          <td>Yes</td>
+          <td><code>passed</code>, score 5</td>
+          <td>Passing</td>
+          <td>None</td>
+          <td>Apply approvals and maintainer merge judgment</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      The separation gives Codex a precise role: finding consequential defects and
+      checking local invariants. Deterministic software handles identity, validation,
+      repetition, and status. Maintainers retain intent and risk acceptance.
+    </p>
+    <p>
+      Already use <code>@codex review</code>? Add
+      <a
+        href="/docs/github-actions"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="blog_article_contract"
+      >ReviewGate as the current-head check</a> and make the merge contract inspectable.
+    </p>
+  </section>
+
+  <section id="merge-gate-workflow">
+    <h2>Turn Codex findings into a merge gate</h2>
+    <p>
+      Use the six-step workflow below when a Codex review must contribute to an enforceable
+      decision. Every step emits evidence that the next step can inspect.
+    </p>
+    <ol>
+      {workflowSteps.map((step) => (
+        <li>
+          <strong>{step.name}.</strong> {step.text}
+        </li>
+      ))}
+    </ol>
+
+    <h3 id="define-subject">1. Define the reviewed subject</h3>
+    <p>
+      Name the pull request goal, base branch, current head, affected contracts, and tests
+      that should settle deterministic behavior. A reviewer cannot infer an unstated
+      product requirement, and a clean review of the wrong diff is not useful evidence.
+    </p>
+
+    <h3 id="separate-review">2. Keep authorship and review contexts separate</h3>
+    <p>
+      Run the PR review separately from the authoring conversation. The model name alone
+      does not create independence. The useful separation is a fresh invocation with a
+      defined diff, review-only instructions, and no authority to rewrite its own policy.
+      The same principle applies when
+      <a href="/blog/claude-code-review">reviewing Claude-authored pull requests</a>.
+    </p>
+
+    <h3 id="verify-finding">3. Verify the causal claim</h3>
+    <p>
+      For every proposed blocker, ask: which changed line creates which observable failure,
+      under which input or contract, and what evidence confirms it? A file path is not
+      enough. A severity label is not enough. The claim should survive source inspection,
+      a focused test, or a reproducible counterexample.
+    </p>
+
+    <h3 id="apply-policy">4. Apply policy outside the reviewer</h3>
+    <p>
+      Decide admissible severity, confidence, evidence, and error behavior in code. A
+      missing reviewer result must become an explicit review error, not a silent pass.
+      Keep the review job's operational state separate from the verdict: a workflow can
+      complete while the review correctly reports that changes are needed.
+    </p>
+
+    <h3 id="bind-current-head">5. Preserve obligations across new commits</h3>
+    <p>
+      A repair commit should not erase a finding merely because the next model response
+      omits it. Carry the stable obligation forward until new evidence shows it is fixed,
+      rejected, or accepted by policy. ReviewGate's
+      <a href="/docs/agent-workflows">exact-head agent workflow</a> binds result retrieval
+      and disposition to repository, pull request, and reviewed SHA.
+    </p>
+
+    <h3 id="retain-merge-authority">6. Make the merge decision visible</h3>
+    <p>
+      Require the current verdict, deterministic CI, branch protection, and any human
+      approvals your risk model needs. A Codex review with no P0 or P1 comment means only
+      that this review did not publish one. It does not prove the tests ran, the product
+      intent is correct, or the latest revision is safe to merge.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>Trace one Codex finding from comment to verdict</h2>
+    <p>
+      Suppose a pull request renames a public JSON field used by external agents. The
+      code compiles and unit tests pass because the repository's own consumers were
+      updated at the same time. A scoped <code>AGENTS.md</code> rule tells Codex to protect
+      versioned artifact fields unless the change includes a compatible schema path.
+    </p>
+    <p>
+      Codex posts a P1 comment on the renamed field and explains that existing consumers
+      will stop finding it. That comment becomes useful evidence only after the gate
+      verifies the public schema, identifies the current field in the base revision, and
+      confirms that the pull request provides neither an alias nor a new schema version.
+    </p>
+    <p>The proof packet now has concrete parts:</p>
+    <ul>
+      <li><strong>Subject:</strong> the exact head SHA containing the rename.</li>
+      <li><strong>Contract:</strong> the committed public JSON schema and compatibility rule.</li>
+      <li><strong>Evidence:</strong> the changed field plus the missing migration path.</li>
+      <li><strong>Failure path:</strong> existing clients deserialize the old field and lose it.</li>
+      <li><strong>Disposition:</strong> open until compatibility is restored or a versioned break is accepted.</li>
+    </ul>
+    <p>
+      If the author comments <code>@codex fix the P1 issue</code>, Codex can prepare a
+      repair when repository permissions allow. The repair produces a new head. Rerun
+      deterministic tests and review the new diff; then let the gate close the same stable
+      obligation only when the compatible field or migration is present. The old verdict
+      cannot authorize the new commit.
+    </p>
+    <p>
+      ReviewGate makes unchanged-head rereviews idempotent, retains an open finding when a
+      later reviewer merely omits it, and requires higher confidence plus novelty evidence
+      for blockers introduced after the first review. Repair authority remains outside the
+      reviewer: the coding agent edits and tests; the gate re-evaluates evidence.
+    </p>
+  </section>
+
+  <section id="no-comments">
+    <h2>What does it mean when Codex leaves no comments?</h2>
+    <p>
+      No Codex comment means the completed review did not publish a P0 or P1 finding. It
+      does not establish that every relevant contract was inspected, that deterministic
+      tests passed, or that the result belongs to the latest commit. First confirm that
+      Codex reacted to the exact trigger and posted a completed review rather than timing
+      out or lacking repository access.
+    </p>
+    <p>
+      Then check the review subject. If the pull request changed after the review, request
+      another pass and require the repository gate to name the new head SHA. Finally,
+      inspect required CI and unresolved human comments. Silence becomes useful only when
+      it is one explicit input in a complete decision record; it should never be converted
+      into a synthetic “safe” finding or an automatic approval.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Avoid five common Codex code review failure modes</h2>
+    <ol>
+      <li>
+        <strong>Turning every convention into an AGENTS.md rule.</strong> Broad rules
+        compete for attention and create noise. Start with two or three consequential,
+        non-obvious invariants.
+      </li>
+      <li>
+        <strong>Giving the reviewer mechanical work.</strong> Formatting, lint, type
+        checks, and deterministic tests belong in CI. Reserve review attention for
+        judgment and causal reasoning.
+      </li>
+      <li>
+        <strong>Letting a comment become policy by string matching.</strong> Parse a
+        structured result or verify the claim independently. Prose wording changes; the
+        repository contract should not.
+      </li>
+      <li>
+        <strong>Trusting a result for the wrong revision.</strong> Any relevant push makes
+        an earlier verdict stale. Require an exact-head result before merge.
+      </li>
+      <li>
+        <strong>Making “no comment” mean “safe.”</strong> A timeout, permission error, or
+        unavailable reviewer is not a clean review. Represent operational failure as an
+        explicit error that cannot satisfy the gate.
+      </li>
+    </ol>
+  </section>
+
+  <section id="checklist">
+    <h2>Codex code review pre-merge checklist</h2>
+    <ul class="article-checklist">
+      <li>Codex reviewed the intended pull request diff in a separate review context.</li>
+      <li>Applicable <code>AGENTS.md</code> rules are scoped, durable, and tested.</li>
+      <li>Deterministic formatting, lint, test, and security checks ran outside Codex.</li>
+      <li>Every blocking finding identifies repository evidence and a causal failure path.</li>
+      <li>Unsupported, duplicate, and stale findings have explicit dispositions.</li>
+      <li>The verdict names the repository, pull request, and current reviewed SHA.</li>
+      <li>Reviewer failure becomes an error, never an implicit clean result.</li>
+      <li>Required checks and human approvals apply to the revision GitHub will merge.</li>
+      <li>A maintainer confirms that the change matches product intent and accepted risk.</li>
+    </ul>
+    <p>
+      ReviewGate packages this contract as an open-source GitHub Action. It has no
+      ReviewGate subscription, but live model calls are billed through your OpenRouter
+      key. It runs in your CI environment, publishes one living summary and a
+      machine-readable fix list, and gives coding agents an exact-head repair loop. You
+      can <a
+        href="/docs/github-actions"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >install the review gate from the workflow example</a> or
+      inspect the
+      <a
+        href="https://github.com/LVTD-LLC/reviewgate"
+        data-analytics-event="source_intent_clicked"
+        data-analytics-location="blog_article_footer"
+      >complete source and schemas</a>
+      before trusting it.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Codex code review</h2>
+    {faqs.map((faq) => (
+      <section>
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+</ArticleLayout>

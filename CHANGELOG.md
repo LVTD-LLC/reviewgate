@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-04
+
+- Added “Codex Code Review: Turn Findings Into a Merge Gate,” a current setup and operating guide with scoped AGENTS.md rules, a repository-derived three-artifact merge contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-03
 
 - Added “Claude Code Review: Keep Four Roles Separate,” a current guide to local and managed Claude review with a repository-derived four-role review contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
