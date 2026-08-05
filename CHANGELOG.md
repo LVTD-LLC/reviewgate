@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-05
+
+- Added “Cursor Code Review: Use Bugbot in a Current-Head Gate,” a current setup and operating guide with scoped BUGBOT.md rules, a repository-derived three-state merge contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-04
 
 - Added “Codex Code Review: Turn Findings Into a Merge Gate,” a current setup and operating guide with scoped AGENTS.md rules, a repository-derived three-artifact merge contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.

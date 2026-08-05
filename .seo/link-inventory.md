@@ -21,6 +21,7 @@
 | `/blog/pull-request-review-comments` | https://reviewgate.lvtd.dev/blog/pull-request-review-comments/ | Signal-first pull request review comments | E |
 | `/blog/claude-code-review` | https://reviewgate.lvtd.dev/blog/claude-code-review/ | Four-role Claude Code review contract | E |
 | `/blog/codex-code-review` | https://reviewgate.lvtd.dev/blog/codex-code-review/ | Codex code review merge-gate workflow | E |
+| `/blog/cursor-code-review` | https://reviewgate.lvtd.dev/blog/cursor-code-review/ | Cursor code review and Bugbot merge-gate workflow | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -141,3 +142,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “Codex AGENTS.md review rules”
 - “current-head Codex review”
 - “Codex review output contract”
+
+### Cursor code review field note
+
+- “Cursor code review workflow”
+- “turn Bugbot findings into a merge gate”
+- “scoped BUGBOT.md review rules”
+- “current-head Cursor review”
+- “Bugbot finding disposition contract”
