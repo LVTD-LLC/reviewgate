@@ -661,6 +661,56 @@ h2 {
   max-width: 64ch;
 }
 
+.sitemap-sections {
+  display: grid;
+  gap: clamp(52px, 7vw, 88px);
+}
+
+.sitemap-sections h2 {
+  font-size: clamp(1.75rem, 3vw, 2.7rem);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  margin: 0 0 22px;
+}
+
+.sitemap-sections ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sitemap-sections li {
+  border-block-end: 1px solid var(--signal-line);
+}
+
+.sitemap-sections li:first-child {
+  border-block-start: 1px solid var(--signal-line);
+}
+
+.sitemap-sections a {
+  align-items: baseline;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  padding-block: 20px;
+}
+
+.sitemap-sections a:hover span {
+  color: var(--signal-green);
+}
+
+.sitemap-sections span {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.sitemap-sections code {
+  color: var(--signal-muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  text-align: end;
+}
+
 .article-shell {
   margin-inline: auto;
   max-width: 1440px;
@@ -1381,6 +1431,16 @@ h2 {
 
   .simple-post-copy {
     grid-row: 2;
+  }
+
+  .sitemap-sections a {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .sitemap-sections code {
+    text-align: start;
   }
 
   .docs-page-hero h1 {

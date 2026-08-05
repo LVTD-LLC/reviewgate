@@ -1,0 +1,87 @@
+---
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const pageFiles = import.meta.glob(["./**/*.astro", "./**/*.md"]);
+
+const toRoute = (file: string) => {
+  const page = file.replace(/^\.\//, "").replace(/\.(astro|md)$/, "");
+  const route = page === "index" ? "" : page.replace(/\/index$/, "");
+  return `/${route}${route ? "/" : ""}`;
+};
+
+const toLabel = (route: string) => {
+  if (route === "/") return "Home";
+  if (route === "/blog/") return "Field notes";
+  if (route === "/docs/") return "Documentation";
+
+  return route
+    .split("/")
+    .filter(Boolean)
+    .at(-1)!
+    .split("-")
+    .map((word) => {
+      const labels: Record<string, string> = {
+        ai: "AI",
+        cli: "CLI",
+        github: "GitHub",
+        pr: "PR",
+      };
+      return labels[word] ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+    })
+    .join(" ");
+};
+
+// Vite excludes the importing module from its own glob to avoid a circular import.
+const routes = [...new Set([Astro.url.pathname, ...Object.keys(pageFiles).map(toRoute)])].sort((a, b) =>
+  a.localeCompare(b),
+);
+
+const sections = [
+  {
+    title: "Main",
+    routes: routes.filter((route) => !route.startsWith("/blog/") && !route.startsWith("/docs/")),
+  },
+  { title: "Documentation", routes: routes.filter((route) => route.startsWith("/docs/")) },
+  { title: "Field notes", routes: routes.filter((route) => route.startsWith("/blog/")) },
+].filter((section) => section.routes.length > 0);
+---
+
+<BaseLayout
+  title="Sitemap - ReviewGate"
+  description="Browse every page in the ReviewGate product site, documentation, and engineering field notes."
+>
+  <main class="concept signal-site utility-site">
+    <SiteHeader />
+
+    <section class="simple-blog sitemap-page" aria-labelledby="sitemap-heading">
+      <header class="simple-blog-header">
+        <h1 id="sitemap-heading">Sitemap</h1>
+        <p>Every public page on ReviewGate, generated from the site’s routes.</p>
+      </header>
+
+      <div class="sitemap-sections">
+        {sections.map((section) => (
+          <section aria-labelledby={`sitemap-${section.title.toLowerCase().replace(/\s+/g, "-")}`}>
+            <h2 id={`sitemap-${section.title.toLowerCase().replace(/\s+/g, "-")}`}>
+              {section.title}
+            </h2>
+            <ul role="list">
+              {section.routes.map((route) => (
+                <li>
+                  <a href={route}>
+                    <span>{toLabel(route)}</span>
+                    <code>{route}</code>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+    </section>
+
+    <SiteFooter />
+  </main>
+</BaseLayout>
