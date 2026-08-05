@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-08-05
 
+- Added an automatically generated, human-readable Astro sitemap page with grouped links to every public route, linked it from the site footer, and covered it in rendered SEO validation.
 - Added “Cursor Code Review: Use Bugbot in a Current-Head Gate,” a current setup and operating guide with scoped BUGBOT.md rules, a repository-derived three-state merge contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
 
 ## 2026-08-04

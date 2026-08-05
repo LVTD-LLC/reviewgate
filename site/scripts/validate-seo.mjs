@@ -26,6 +26,7 @@ const expectedPages = [
     "https://reviewgate.lvtd.dev/docs/troubleshooting/",
   ],
   ["blog/index.html", "https://reviewgate.lvtd.dev/blog/"],
+  ["sitemap/index.html", "https://reviewgate.lvtd.dev/sitemap/"],
   [
     "blog/how-to-tell-if-code-is-ai-generated/index.html",
     "https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/",
@@ -153,6 +154,13 @@ assert.match(sitemapIndex, /https:\/\/reviewgate\.lvtd\.dev\/sitemap-0\.xml/);
 const sitemap = await readFile(new URL("../dist/sitemap-0.xml", import.meta.url), "utf8");
 for (const [, canonical] of expectedPages) {
   assert(sitemap.includes(`<loc>${canonical}</loc>`), `sitemap must include ${canonical}`);
+}
+
+const sitemapPage = builtPages.get("/sitemap");
+assert(sitemapPage, "HTML sitemap must be present in built pages");
+for (const canonical of sitemap.matchAll(/<loc>(https:\/\/reviewgate\.lvtd\.dev\/[^<]*)<\/loc>/g)) {
+  const route = new URL(canonical[1]).pathname;
+  assert(sitemapPage.includes(`href="${route}"`), `HTML sitemap must link to ${route}`);
 }
 
 console.log("validate-seo: ok");
