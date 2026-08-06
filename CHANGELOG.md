@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-06
+
+- Added “AI Code Review Benchmark: What to Measure,” a reproducible evaluation guide with a repository-derived merge-gate scorecard, public benchmark sources, BlogPosting/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-05
 
 - Added an automatically generated, human-readable Astro sitemap page with grouped links to every public route, linked it from the site footer, and covered it in rendered SEO validation.

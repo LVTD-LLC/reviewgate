@@ -1,0 +1,641 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "AI Code Review Benchmark: What to Measure";
+const description =
+  "Build an AI code review benchmark that measures recall, false blockers, repeatability, cost, and merge-gate safety on real pull requests.";
+const canonical = "https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/";
+const publishedAt = "2026-08-06";
+
+const faqs = [
+  {
+    question: "What should an AI code review benchmark measure?",
+    answer:
+      "Measure serious-defect recall, blocking precision, false blockers per pull request, contradiction rate, completion rate, repeated-run stability, latency, and cost. Keep advisory style comments outside the blocker metrics so a useful suggestion cannot hide a missed defect or a noisy merge block.",
+  },
+  {
+    question: "How many pull requests do you need for a code review benchmark?",
+    answer:
+      "There is no universal minimum. ReviewGate uses 30 adjudicated cases as the minimum for its own regression harness, not as a general rule. Choose your sample from the uncertainty and slices you need to measure, report confidence limits and gaps, and treat a small corpus as an implementation gate rather than a market-wide ranking.",
+  },
+  {
+    question: "Should benchmark cases come from synthetic bugs or real pull requests?",
+    answer:
+      "Use real historical pull requests as the core because they preserve repository context and realistic failure paths. Synthetic mutations can add controlled coverage, but report them separately. Mixing both into one score can hide a reviewer that performs well on planted defects and poorly on real changes.",
+  },
+  {
+    question: "Can an LLM judge code review comments?",
+    answer:
+      "An LLM judge can match semantically equivalent findings, but its prompt and sampling introduce another source of variance. Freeze the judge model and prompt, retain judge outputs, validate a sample with humans, and use executable tests or exact adjudicated keys where the issue permits a deterministic oracle.",
+  },
+  {
+    question: "How do you benchmark a stochastic code reviewer?",
+    answer:
+      "Run every configuration on the same blinded cases more than once. Report completion and finding-set stability alongside precision and recall. Keep failures in the denominator, and compare candidates on identical inputs, model settings, context budgets, and severity policy.",
+  },
+  {
+    question: "Does ReviewGate publish an AI code review benchmark?",
+    answer:
+      "ReviewGate publishes a blinded replay harness and its schemas as an implementation regression gate. The committed corpus is product-specific and should not be read as an independent ranking of commercial tools. Its useful contribution is the reproducible measurement contract and failure accounting.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="16 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">AI Code Review Benchmark: What to Measure</Fragment>
+  <Fragment slot="deck">
+    A useful benchmark tells you whether a reviewer improves merge decisions on your
+    pull requests. It measures missed serious defects, false blockers, repeatability,
+    failures, latency, and cost instead of collapsing everything into one vendor score.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#benchmark-not-demo">Benchmark, not demo</a></li>
+    <li><a href="#evaluation-question">Define the decision</a></li>
+    <li><a href="#corpus">Build the corpus</a></li>
+    <li><a href="#ground-truth">Choose the oracle</a></li>
+    <li><a href="#scorecard">Use the full scorecard</a></li>
+    <li><a href="#repeatability">Measure repeated runs</a></li>
+    <li><a href="#reviewgate-example">ReviewGate example</a></li>
+    <li><a href="#pilot">Run a repository pilot</a></li>
+    <li><a href="#interpret-results">Interpret the result</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>What should an AI code review benchmark measure?</h2>
+    <p class="article-lead">
+      An AI code review benchmark should measure serious-defect recall, blocking
+      precision, false blockers per pull request, contradiction rate, completion rate,
+      repeated-run stability, latency, and cost on a blinded corpus of real changes.
+      Keep failed reviews in the denominator and bind every expected defect to evidence
+      that an independent maintainer can adjudicate.
+    </p>
+    <p>
+      That scorecard answers the operational question: can this reviewer become part of
+      a merge gate without missing important defects or exhausting maintainers with
+      noise? A leaderboard that reports only how many comments matched a reference does
+      not answer it. Neither does a product demo where every pull request was chosen
+      because the reviewer already caught something impressive.
+    </p>
+    <p>
+      If you are still choosing a product, use the
+      <a href="/blog/best-ai-code-review-tools">AI code review tool decision guide</a>
+      to narrow the field. Then benchmark the shortlist against your repositories before
+      you make any reviewer a required check.
+    </p>
+  </section>
+
+  <section id="benchmark-not-demo">
+    <h2>An AI code review benchmark is not a highlight reel</h2>
+    <p>
+      Code review outputs are unusually easy to present selectively. A reviewer can find
+      a real defect and still be unfit for a merge gate because it misses other serious
+      issues, reports too many unsupported blockers, fails on large changes, or produces
+      a different verdict on the next run. The impressive comment is evidence about one
+      case. It is not a reliability claim.
+    </p>
+    <p>
+      Current public benchmarks make different choices because they answer different
+      questions. The open-source
+      <a href="https://github.com/withmartian/code-review-benchmark">Code Review Bench</a>
+      maintains an offline set of 50 pull requests from five open-source projects with
+      human-verified golden comments, then uses an LLM judge to match tool findings to
+      those comments. Its online track samples fresh pull requests and uses later human
+      fixes as another signal. The project explicitly identifies training-data leakage
+      as a limitation of a fixed corpus.
+    </p>
+    <p>
+      The 2026
+      <a href="https://arxiv.org/abs/2603.23448">c-CRAB research benchmark</a>
+      uses a different oracle. It converts human review concerns into executable tests,
+      asks a coding agent to act on each reviewer's comments, and checks whether the
+      repaired code passes. The paper reports 184 pull requests and 234 validated review
+      comments in the final corpus. That design tests whether review feedback can lead to
+      a change that passes a human-review-derived executable test, rather than whether two
+      comments use similar wording.
+    </p>
+    <p>
+      Neither design is the one true benchmark. Golden-comment matching is easier to run
+      across many tools. Test-based evaluation gives a more direct oracle where the
+      concern is faithfully captured by executable behavior, though test fidelity remains
+      a limitation. Repository pilots can add policy questions that public leaderboards
+      cannot know: which severities may block, how failures are reported, and whether the
+      result describes the current pull request head.
+    </p>
+  </section>
+
+  <section id="evaluation-question">
+    <h2>Define the merge decision before choosing metrics</h2>
+    <p>
+      Start with the decision the benchmark must support. “Which model writes the best
+      comments?” is too vague. A maintainer needs a narrower contract such as: “Should
+      this candidate replace the current reviewer for blocking correctness, security,
+      and reliability defects on our backend pull requests?”
+    </p>
+    <p>
+      The contract fixes four variables before the first run:
+    </p>
+    <ol>
+      <li>
+        <strong>Scope.</strong> Name the repositories, languages, change sizes, and risk
+        classes the conclusion may cover.
+      </li>
+      <li>
+        <strong>Blocking policy.</strong> Decide which finding classes and severities may
+        affect merge readiness. Keep style and optional maintainability advice outside
+        the blocker denominator.
+      </li>
+      <li>
+        <strong>Comparison.</strong> Freeze exactly one baseline and one candidate for a
+        replacement test. Change one review policy or pipeline at a time.
+      </li>
+      <li>
+        <strong>Rollout thresholds.</strong> Set minimum recall and precision, a maximum
+        false-blocker budget, completion requirements, and resource limits before seeing
+        the candidate result.
+      </li>
+    </ol>
+    <p>
+      Precommitting the thresholds prevents a common failure: moving the goalposts after
+      an expensive candidate produces an attractive but mixed report. The result can
+      still teach you something when it fails. It cannot quietly redefine success.
+    </p>
+  </section>
+
+  <section id="corpus">
+    <h2>Build a blinded corpus that represents your pull requests</h2>
+    <p>
+      A benchmark corpus should preserve the information available at review time. For a
+      historical defect, capture the vulnerable diff, bounded surrounding files,
+      applicable repository instructions, and relevant tests as they existed before the
+      fix. Keep the later fix and adjudication outside the reviewer's context.
+    </p>
+    <p>
+      Blinding matters. If the expected finding, fix commit, issue title, or regression
+      test appears in the prompt, the benchmark measures answer recovery rather than
+      code review. Reviewers should receive the same pull request subject they would see
+      in production, not the answer key.
+    </p>
+    <p>
+      Include both expected defects and verified non-findings. A corpus with only broken
+      pull requests can measure recall, but it cannot tell you how often a reviewer
+      invents blockers. Clean or explicitly contradicted cases make false-positive and
+      contradiction metrics possible.
+    </p>
+    <p>Stratify the cases instead of reporting one opaque total:</p>
+    <ul>
+      <li>language and framework;</li>
+      <li>diff size and number of changed files;</li>
+      <li>local versus cross-file reasoning;</li>
+      <li>correctness, security, reliability, compatibility, and release risk;</li>
+      <li>tests present, tests missing, and tests that contradict the finding;</li>
+      <li>small routine changes versus high-risk migrations or authorization paths.</li>
+    </ul>
+    <p>
+      ReviewGate's manifest uses 30 adjudicated cases as its minimum for an internal
+      regression gate. That is a project convention, not a universal sample-size rule.
+      Choose your corpus size from the uncertainty and slices you need to measure, treat
+      a small corpus's conclusion as narrow, and publish the gaps. Add newly found
+      production defects only after independent adjudication, and freeze them before
+      using them to tune the candidate. Otherwise the test set becomes a training set.
+    </p>
+  </section>
+
+  <section id="ground-truth">
+    <h2>Choose an oracle that verifies the underlying issue</h2>
+    <p>
+      The benchmark needs an answer to “did the reviewer identify this defect?” Text
+      overlap is weak because two comments can describe the same causal failure with no
+      shared phrasing. Location overlap is also incomplete: the useful comment may point
+      to a caller while the human comment points to the callee.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Oracle</th>
+          <th scope="col">Best use</th>
+          <th scope="col">Main risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Executable regression test</th>
+          <td>Behavioral defects with a reproducible failure and fix</td>
+          <td>The test can encode only part of the review concern</td>
+        </tr>
+        <tr>
+          <th scope="row">Exact semantic key</th>
+          <td>Known issues whose identity can be normalized in advance</td>
+          <td>Poor key design can split or merge distinct defects</td>
+        </tr>
+        <tr>
+          <th scope="row">Human adjudication</th>
+          <td>Product intent, architecture, and ambiguous policy claims</td>
+          <td>Reviewers can disagree; record the rationale and agreement process</td>
+        </tr>
+        <tr>
+          <th scope="row">LLM-as-judge</th>
+          <td>Semantic matching at scale after prompt validation</td>
+          <td>The judge model and prompt add variance and possible bias</td>
+        </tr>
+        <tr>
+          <th scope="row">Post-review change</th>
+          <td>Fresh online evaluation of whether suggestions were followed by code changes</td>
+          <td>A fix is a useful proxy, not proof that the original comment was correct</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Use the strongest oracle each case supports. Store the expected causal claim,
+      severity, evidence, and adjudication separately from prose. If an LLM judge is
+      needed, freeze its model, prompt, temperature, and matching criteria; retain its
+      decision for audit; and measure agreement on a human-reviewed sample.
+    </p>
+    <p>
+      Adjudicate contradictions too. A repository test, platform contract, or later code
+      path may prove that a plausible finding is not a defect. Counting those cases
+      separately is more useful than putting every unmatched comment into one generic
+      “false positive” bucket.
+    </p>
+  </section>
+
+  <section id="scorecard">
+    <h2>Use a scorecard that reflects maintainer cost</h2>
+    <p>
+      Precision and recall are necessary, but a merge gate needs more. Report the raw
+      counts beside every rate so a small denominator cannot masquerade as certainty.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Metric</th>
+          <th scope="col">Definition</th>
+          <th scope="col">Why it matters</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Serious-defect recall</th>
+          <td>Detected expected serious defects / all expected serious defects</td>
+          <td>Measures what the reviewer missed</td>
+        </tr>
+        <tr>
+          <th scope="row">Blocking precision</th>
+          <td>True blocking findings / all observed blockers</td>
+          <td>Measures whether a merge block deserves maintainer attention</td>
+        </tr>
+        <tr>
+          <th scope="row">False blockers per case</th>
+          <td>Unexpected or contradicted blockers / corpus cases</td>
+          <td>Turns noise into a per-pull-request operating cost</td>
+        </tr>
+        <tr>
+          <th scope="row">Contradiction rate</th>
+          <td>Known non-findings reported as blocking / adjudicated non-findings</td>
+          <td>Exposes confident claims that conflict with repository evidence</td>
+        </tr>
+        <tr>
+          <th scope="row">Completion rate</th>
+          <td>Cases with every required run completed / all cases</td>
+          <td>Prevents crashes, timeouts, or malformed output from disappearing</td>
+        </tr>
+        <tr>
+          <th scope="row">Rereview stability</th>
+          <td>Cases with the same blocking semantic-key set across repetitions</td>
+          <td>Measures whether the gate changes its answer on unchanged code</td>
+        </tr>
+        <tr>
+          <th scope="row">Latency and cost</th>
+          <td>Mean and tail duration plus measured provider spend, with coverage</td>
+          <td>Determines whether the reviewer is practical on every pull request</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Keep advisory comments in a separate report. A reviewer can offer useful design
+      suggestions while remaining unsafe as a blocking gate. Combining both classes into
+      one “helpfulness” score hides the distinction.
+    </p>
+    <p>
+      Count duplicate blockers after the first match as noise. Repeating one valid issue
+      across several comments does not improve recall, and it increases the work required
+      to resolve the review. A stable semantic identity also lets you compare repeated
+      runs even when wording and line anchors move.
+    </p>
+    <h3>Report uncertainty, not just point estimates</h3>
+    <p>
+      Publish the numerator, denominator, and an interval estimate for every rate. A
+      Wilson interval is a practical choice for precision, recall, contradiction, and
+      completion proportions; a bootstrap interval can help with per-case counts or
+      latency when its assumptions and resampling method are stated. Do not turn a thin
+      slice into a confident conclusion because its displayed score has two decimals.
+    </p>
+    <p>
+      Show the number of cases and expected findings in each language, risk class, and
+      diff-size slice. When humans or an LLM judge match findings, report agreement on a
+      blinded sample and document how disagreements were resolved. These disclosures let
+      readers distinguish a stable signal from one case, one judge, or one lucky run.
+    </p>
+  </section>
+
+  <section id="repeatability">
+    <h2>Measure repeated runs and failed runs explicitly</h2>
+    <p>
+      Model-backed review is stochastic. Run every case at least twice under the same
+      configuration and compare normalized finding identities, blocking status, and
+      completion. More repetitions improve the estimate, but they also raise cost. State
+      the count so readers know what “stable” means in your report.
+    </p>
+    <p>
+      Use identical inputs for the baseline and candidate. If you are testing a
+      post-processing evidence gate, feed both pipelines the same recorded model response.
+      If you are comparing reviewer agents, hold the model, context budget, repository
+      snapshot, prompt, and tool permissions fixed where possible. Otherwise the report
+      cannot identify which change caused the result.
+    </p>
+    <p>
+      Failures belong in the denominator. A timeout, provider error, parse failure, or
+      incomplete review is a missed opportunity to catch every expected defect in that
+      case. Dropping failed rows rewards an unreliable reviewer with cleaner metrics.
+      Record the typed failure separately so reliability work has a concrete target.
+    </p>
+    <p>
+      Resource metrics need the same discipline. Provider-reported spend is stronger than
+      an estimate. When only part of the corpus has latency or cost observations, publish
+      the coverage rather than filling missing values with zero. Report p95 latency when
+      the sample is large enough; a mean can hide a tail that repeatedly stalls pull
+      requests.
+    </p>
+  </section>
+
+  <section id="reviewgate-example">
+    <h2>A reproducible example from ReviewGate's replay harness</h2>
+    <p>
+      ReviewGate includes a public replay harness for deciding whether one finding policy
+      can replace another. It does not publish review results to GitHub. The current
+      manifest requires a blinded corpus, at least 30 cases, two to ten repetitions, and
+      exactly one baseline plus one candidate. Reports use versioned JSON schemas and
+      include per-case outcomes, threshold decisions, and signed deltas.
+    </p>
+    <p>
+      On August 6, 2026, we ran the committed deterministic replay at source revision
+      <a href="https://github.com/LVTD-LLC/reviewgate/commit/911142b1afe065548b4b46996f368072c9a2a2e0">
+        <code>911142b</code>
+      </a>. It loaded 44 cases across seven language/format combinations and six risk
+      classes, with two repetitions. The corpus contains 41 locally maintained policy
+      regression fixtures and three defects with explicit provenance to public pull
+      request #53. The raw-model baseline and evidence-gated candidate consumed the same
+      recorded reviewer outputs. The generated report produced this comparison:
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Metric</th>
+          <th scope="col">Raw-model baseline</th>
+          <th scope="col">Evidence-gated candidate</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Blocking precision</th>
+          <td>65% (26/40)</td>
+          <td>100% (29/29)</td>
+        </tr>
+        <tr>
+          <th scope="row">Serious-defect recall</th>
+          <td>89.66% (26/29)</td>
+          <td>100% (29/29)</td>
+        </tr>
+        <tr>
+          <th scope="row">False blockers per case</th>
+          <td>0.3182 (14/44)</td>
+          <td>0 (0/44)</td>
+        </tr>
+        <tr>
+          <th scope="row">Contradiction rate</th>
+          <td>93.33% (14/15)</td>
+          <td>0% (0/15)</td>
+        </tr>
+        <tr>
+          <th scope="row">Completion / rereview stability</th>
+          <td>100% / 100%</td>
+          <td>100% / 100%</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      The candidate met every precommitted rollout threshold in this corpus. These are
+      deterministic fixture results from that pinned revision, not observed production
+      accuracy or an estimate of performance on an unseen repository. The point estimates
+      are also not certainty: a 95% Wilson interval for 29/29 has an 88.3% lower bound,
+      while 0/15 contradictions has a 20.4% upper bound.
+    </p>
+    <aside class="article-callout">
+      <strong>Do not read this as a product leaderboard</strong>
+      <p>
+        This is an internal implementation regression corpus built around ReviewGate's
+        evidence policy. It does not compare live commercial reviewers, represent every
+        repository, or establish general model quality. Its defensible claim is narrower:
+        the public harness makes a policy replacement reproducible and reports false
+        blockers, completion, and repeated-run stability separately.
+      </p>
+    </aside>
+    <p>Anyone can inspect the contract and run the deterministic replay:</p>
+    <pre><code>cargo run --locked -p reviewgate-cli -- eval-replays \
+  --manifest fixtures/evaluation/manifest-v1.json \
+  --json-out .reviewgate/benchmark.json \
+  --markdown-out .reviewgate/benchmark.md</code></pre>
+    <p>
+      The
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/911142b1afe065548b4b46996f368072c9a2a2e0/docs/evaluation.md">
+        evaluation guide
+      </a>,
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/911142b1afe065548b4b46996f368072c9a2a2e0/fixtures/evaluation/manifest-v1.json">
+        versioned manifest
+      </a>, and
+      <a href="https://github.com/LVTD-LLC/reviewgate/tree/911142b1afe065548b4b46996f368072c9a2a2e0/schemas">
+        report schemas
+      </a>
+      expose the cases, thresholds, metrics, and failure rules. Deterministic mode runs
+      without an OpenRouter key or network call. Live mode is explicit, budget-capped,
+      and non-publishing.
+    </p>
+    <p>
+      In report schema v1, blocker counts come from the canonical first repetition; later
+      repetitions affect completion and stability. The report includes mean latency but
+      not p95 latency or slice-level confidence intervals. Treat it as an implementation
+      gate that demonstrates the contract, not as a complete example of every analysis
+      recommended in this guide.
+    </p>
+    <p>
+      The reusable pattern is to treat reviewer changes like any other risky production
+      component. Freeze the inputs, compare one candidate against one baseline, preserve
+      every failure, emit a machine-readable report, and block rollout when a
+      precommitted threshold fails.
+    </p>
+  </section>
+
+  <section id="pilot">
+    <h2>Run a repository-specific pilot in seven steps</h2>
+    <ol>
+      <li>
+        <strong>Write the review contract.</strong> Name which defects may block, which
+        outputs are advisory, and which pull request head the verdict must describe.
+      </li>
+      <li>
+        <strong>Collect historical cases.</strong> Sample real defects, representative
+        clean changes, and the highest-cost review failures from your repositories.
+      </li>
+      <li>
+        <strong>Adjudicate before testing.</strong> Freeze each semantic finding key,
+        severity, evidence, expected outcome, and contradiction evidence with a second
+        maintainer where possible.
+      </li>
+      <li>
+        <strong>Blind the subject.</strong> Remove fix commits, answer-bearing tests,
+        issue spoilers, and expected findings from the review context.
+      </li>
+      <li>
+        <strong>Run baseline and candidate repeatedly.</strong> Keep model, context,
+        budget, and repository snapshot fixed; record typed failures and raw counts.
+      </li>
+      <li>
+        <strong>Apply thresholds without reinterpretation.</strong> A failed rollout can
+        still identify which risk class or context boundary needs work.
+      </li>
+      <li>
+        <strong>Shadow production before enforcement.</strong> Run the candidate as an
+        advisory check, capture maintainer dispositions, and confirm exact-head behavior
+        before branch protection depends on it.
+      </li>
+    </ol>
+    <p>
+      The
+      <a href="/blog/ai-code-review-github">merge-safe GitHub review workflow</a>
+      covers the event, runtime, evidence, verdict, and freshness bindings that the pilot
+      should verify. ReviewGate's
+      <a href="/docs/artifacts">versioned review artifacts</a>
+      provide a concrete machine-readable output contract, while the
+      <a href="/docs/agent-workflows">external agent workflow</a>
+      shows how a repair loop should consume only a fresh result for the exact head.
+    </p>
+    <p>
+      Keep the first rollout narrow. One language and one risk class with trustworthy
+      adjudication teaches more than a broad corpus assembled from noisy comments. Expand
+      only after maintainers agree that the benchmark's misses and false blockers match
+      what production review actually costs them.
+    </p>
+  </section>
+
+  <section id="interpret-results">
+    <h2>Interpret benchmark results as bounded evidence</h2>
+    <p>
+      A higher recall score can be worse for the team if it arrives with enough false
+      blockers to train maintainers to ignore the reviewer. Higher precision can also be
+      misleading when the reviewer emits almost nothing. Read recall, precision, false
+      blockers, completion, and stability together.
+    </p>
+    <p>
+      Compare slices before totals. A reviewer may handle local Python defects and miss
+      cross-file Rust or workflow failures. It may do well on small diffs and collapse on
+      repository-wide migrations. Those gaps tell you where deterministic tests, a
+      specialist review angle, or human approval should remain mandatory.
+    </p>
+    <p>
+      Public benchmarks are useful for generating a shortlist and challenging vendor
+      claims. Your repository pilot decides enforcement. Preserve the report, corpus
+      version, model and judge identifiers, prompts, context rules, and source revision so
+      a future run can explain a changed result.
+    </p>
+    <aside class="article-callout">
+      <strong>The rollout rule</strong>
+      <p>
+        Do not make AI review required because it won one aggregate score. Require an
+        acceptable miss rate, a bounded false-blocker cost, stable repeated runs, explicit
+        failure behavior, and a verdict tied to the current pull request head.
+      </p>
+    </aside>
+    <p>
+      ReviewGate is free and open source. You can
+      <a href="/docs/#install">install the GitHub Action</a>
+      to inspect its score-and-artifact contract, or read the
+      <a href="https://github.com/LVTD-LLC/reviewgate">source and evaluation harness</a>
+      before allowing it anywhere near a merge decision.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>AI code review benchmark questions</h2>
+    {faqs.map((faq) => (
+      <article>
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </article>
+    ))}
+  </section>
+</ArticleLayout>
