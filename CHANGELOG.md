@@ -4,6 +4,7 @@ Changes are grouped by calendar date, newest first.
 
 ## 2026-08-06
 
+- Replaced the human-readable `/sitemap/` page with a generated `/sitemap.xml` endpoint, updated `robots.txt`, and added build-time XML coverage for every public Astro page.
 - Added “AI Code Review Benchmark: What to Measure,” a reproducible evaluation guide with a repository-derived merge-gate scorecard, public benchmark sources, BlogPosting/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
 
 ## 2026-08-05

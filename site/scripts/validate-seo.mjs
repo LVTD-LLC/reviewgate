@@ -26,7 +26,6 @@ const expectedPages = [
     "https://reviewgate.lvtd.dev/docs/troubleshooting/",
   ],
   ["blog/index.html", "https://reviewgate.lvtd.dev/blog/"],
-  ["sitemap/index.html", "https://reviewgate.lvtd.dev/sitemap/"],
   [
     "blog/how-to-tell-if-code-is-ai-generated/index.html",
     "https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/",
@@ -38,6 +37,18 @@ const expectedPages = [
   [
     "blog/ai-code-review-github/index.html",
     "https://reviewgate.lvtd.dev/blog/ai-code-review-github/",
+  ],
+  [
+    "blog/claude-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/claude-code-review/",
+  ],
+  [
+    "blog/codex-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/codex-code-review/",
+  ],
+  [
+    "blog/cursor-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/cursor-code-review/",
   ],
   [
     "blog/pr-review-prompts/index.html",
@@ -161,21 +172,18 @@ assert.deepEqual(benchmarkSchemaTypes, ["BlogPosting", "FAQPage", "BreadcrumbLis
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);
-assert.match(robots, /Sitemap: https:\/\/reviewgate\.lvtd\.dev\/sitemap-index\.xml/);
+assert.match(robots, /Sitemap: https:\/\/reviewgate\.lvtd\.dev\/sitemap\.xml/);
 
-const sitemapIndex = await readFile(new URL("../dist/sitemap-index.xml", import.meta.url), "utf8");
-assert.match(sitemapIndex, /https:\/\/reviewgate\.lvtd\.dev\/sitemap-0\.xml/);
-
-const sitemap = await readFile(new URL("../dist/sitemap-0.xml", import.meta.url), "utf8");
+const sitemap = await readFile(new URL("../dist/sitemap.xml", import.meta.url), "utf8");
+assert.match(sitemap, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+assert.match(sitemap, /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
 for (const [, canonical] of expectedPages) {
   assert(sitemap.includes(`<loc>${canonical}</loc>`), `sitemap must include ${canonical}`);
 }
-
-const sitemapPage = builtPages.get("/sitemap");
-assert(sitemapPage, "HTML sitemap must be present in built pages");
-for (const canonical of sitemap.matchAll(/<loc>(https:\/\/reviewgate\.lvtd\.dev\/[^<]*)<\/loc>/g)) {
-  const route = new URL(canonical[1]).pathname;
-  assert(sitemapPage.includes(`href="${route}"`), `HTML sitemap must link to ${route}`);
-}
+assert.equal(
+  [...sitemap.matchAll(/<url><loc>/g)].length,
+  expectedPages.length,
+  "sitemap must contain exactly the public HTML pages",
+);
 
 console.log("validate-seo: ok");
