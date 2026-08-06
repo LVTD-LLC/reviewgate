@@ -610,6 +610,12 @@ const jsonLd = [
   <section id="pilot">
     <h2>Run a pilot that measures signal, not comment volume</h2>
     <p>
+      Use the
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark methodology</a>
+      to define the corpus, ground truth, metrics, repeated runs, and rollout thresholds
+      before collecting a candidate result.
+    </p>
+    <p>
       Do not evaluate a reviewer on a handful of live pull requests where nobody knows
       the ground truth. Build a small, versioned corpus from historical defects and
       representative clean changes. Run each candidate against the same cases and repeat

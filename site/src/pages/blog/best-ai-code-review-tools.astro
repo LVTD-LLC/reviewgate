@@ -217,6 +217,12 @@ const criteria = [
       This is the core contract for modern agent loops.
       For GitHub-native teams, the review loop is not a single static decision—it is repeated until current-head evidence passes.
     </p>
+    <p>
+      Before turning a shortlist into branch policy, run each candidate through the
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark scorecard</a>.
+      It separates serious-defect recall, blocking precision, false blockers, repeated-run
+      stability, failures, latency, and cost instead of relying on a vendor's aggregate score.
+    </p>
     <aside class="article-callout">
       <strong>Non-negotiable for PR-loop workflows</strong>
       <p>If your reviewer cannot tell you exactly which findings still apply to the current head and which were resolved, the tool is only partially useful for autonomous loops.</p>

@@ -47,6 +47,10 @@ const expectedPages = [
     "blog/pull-request-review-comments/index.html",
     "https://reviewgate.lvtd.dev/blog/pull-request-review-comments/",
   ],
+  [
+    "blog/ai-code-review-benchmark/index.html",
+    "https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/",
+  ],
 ];
 
 const titles = new Set();
@@ -143,6 +147,17 @@ assert.deepEqual(reviewCommentsSchemaTypes, [
   "FAQPage",
   "BreadcrumbList",
 ]);
+
+const benchmarkArticle = builtPages.get("/blog/ai-code-review-benchmark");
+assert(benchmarkArticle, "benchmark article must be present in built pages");
+const benchmarkJsonLdSource = benchmarkArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(benchmarkJsonLdSource, "benchmark article must contain JSON-LD");
+const benchmarkSchemaTypes = JSON.parse(benchmarkJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(benchmarkSchemaTypes, ["BlogPosting", "FAQPage", "BreadcrumbList"]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);
