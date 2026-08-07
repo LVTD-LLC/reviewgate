@@ -1,0 +1,717 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Windsurf Code Review: Build a Current-Head Gate";
+const description =
+  "Use Windsurf code review without trusting a stale verdict. Bind local review, PR findings, autofixes, and the merge gate to the current head.";
+const canonical = "https://reviewgate.lvtd.dev/blog/windsurf-code-review/";
+const publishedAt = "2026-08-07";
+
+const workflowSteps = [
+  {
+    name: "Define the review contract",
+    text: "Record the intended behavior, affected interfaces, expected tests, repository instructions, and explicit non-goals before review starts.",
+  },
+  {
+    name: "Run Quick Review on the local diff",
+    text: "Use a separate review agent to inspect local changes before commit, then resolve consequential findings or record why they do not apply.",
+  },
+  {
+    name: "Open the pull request and request PR review",
+    text: "Push a commit, trigger Windsurf or Devin Review on the pull request, and identify the exact head commit covered by the feedback.",
+  },
+  {
+    name: "Admit findings with evidence",
+    text: "Turn review comments into tracked obligations only when they identify a concrete claim, code evidence, consequence, and required action.",
+  },
+  {
+    name: "Treat every autofix as a new review epoch",
+    text: "After an agent applies a fix to the pull request branch, rerun tests and review against the new head instead of reusing the prior verdict.",
+  },
+  {
+    name: "Publish a repository-owned gate",
+    text: "Run required CI and an exact-head review check whose result is machine-readable and controlled by repository policy.",
+  },
+  {
+    name: "Merge only the validated head",
+    text: "Confirm the required checks, open obligations, and reviewed SHA all refer to the pull request current head before a human merges.",
+  },
+];
+
+const faqs = [
+  {
+    question: "What is Windsurf code review?",
+    answer:
+      "Windsurf code review can refer to Quick Review on local changes or a deeper review of a GitHub pull request through Windsurf and Devin Review. The local pass helps before commit. The pull-request pass creates durable findings. Neither one, by itself, proves that the current pull request head satisfies repository merge policy.",
+  },
+  {
+    question: "Is Windsurf Quick Review free?",
+    answer:
+      "Windsurf's current Quick Review documentation says SWE-check is free for all tiers. Frontier review models use token-based pricing, and enterprise administrators can control which models are enabled. Check the current model and billing documentation before standardizing a team workflow because availability and pricing can change.",
+  },
+  {
+    question: "How does Windsurf review a GitHub pull request?",
+    answer:
+      "An organization administrator connects the Windsurf GitHub bot and selects repositories. Eligible pull requests can then be reviewed when they are marked ready or manually triggered. Windsurf publishes feedback as GitHub review comments, where the author can inspect, discuss, and address findings.",
+  },
+  {
+    question: "Can Windsurf PR Review block a merge?",
+    answer:
+      "The current Windsurf PR Reviews documentation describes GitHub review comments, not a complete repository-owned pass-or-fail contract. If you need a merge gate, require CI and a status check with explicit failure rules, then verify that those checks apply to the pull request current head.",
+  },
+  {
+    question: "Should you rerun review after a Devin Autofix?",
+    answer:
+      "Yes. An autofix changes the pull request branch, so the earlier review describes an older revision. Run focused tests, required CI, and the review gate again. Keep the old finding as history, but do not reuse its prior resolution as proof about the new head.",
+  },
+  {
+    question: "Can ReviewGate review a pull request written in Windsurf?",
+    answer:
+      "Yes. ReviewGate runs in GitHub Actions and evaluates the committed pull request rather than depending on the authoring editor. It can publish a score, one canonical summary, and structured exact-head output after Windsurf, Devin, a human, or another agent changes the branch.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to turn Windsurf code review into a current-head merge gate",
+    description:
+      "A seven-step workflow from local Windsurf review and pull-request findings to an exact-head repository verdict.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="15 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Windsurf Code Review: Build a Current-Head Gate</Fragment>
+  <Fragment slot="deck">
+    Windsurf gives you a fast local review and a deeper pull-request review. A safe
+    merge workflow keeps those signals separate, treats every autofix as a new code
+    state, and closes the gate only after repository checks validate the current head.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#review-surfaces">Windsurf review surfaces</a></li>
+    <li><a href="#review-epochs">The review-epoch contract</a></li>
+    <li><a href="#step-1">1. Define the contract</a></li>
+    <li><a href="#step-2">2. Run Quick Review</a></li>
+    <li><a href="#step-3">3. Review the pull request</a></li>
+    <li><a href="#step-4">4. Admit findings</a></li>
+    <li><a href="#step-5">5. Invalidate stale verdicts</a></li>
+    <li><a href="#step-6">6. Publish the gate</a></li>
+    <li><a href="#step-7">7. Verify the current head</a></li>
+    <li><a href="#worked-example">Worked state transition</a></li>
+    <li><a href="#failure-modes">Failure modes</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should Windsurf code review fit into a merge gate?</h2>
+    <p class="article-lead">
+      Use Windsurf Quick Review as a local preflight, use Windsurf or Devin Review to
+      produce pull-request findings, and use repository-owned CI to decide whether the
+      current head may merge. Every commit or autofix starts a new review epoch. A clean
+      result for an older revision is evidence, not approval for the latest code.
+    </p>
+    <p>
+      That separation matters because Windsurf now exposes two useful review loops.
+      Quick Review asks a separate agent to inspect local changes before commit. The
+      pull-request workflow publishes durable feedback on GitHub and can connect findings
+      to agent-generated fixes. Those loops shorten feedback time, but they answer
+      different questions from a required check.
+    </p>
+    <p>
+      A repository gate asks a narrower question: did the exact commit at the pull
+      request head pass the tests, review policy, and unresolved-finding rules that the
+      repository requires? The general
+      <a href="/blog/ai-code-review-github">merge-safe AI code review workflow</a>
+      explains that GitHub contract. This guide applies it to Windsurf's local review,
+      pull-request review, and autofix transitions.
+    </p>
+  </section>
+
+  <section id="review-surfaces">
+    <h2>Windsurf code review has two different surfaces</h2>
+    <p>
+      The phrase “Windsurf code review” can hide two separate products. Conflating them
+      creates stale evidence and unclear ownership. Name the surface in your process so
+      reviewers know what code was inspected and where the result lives.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Surface</th>
+            <th>Code state</th>
+            <th>Output</th>
+            <th>Best use</th>
+            <th>What it does not prove</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Quick Review</td>
+            <td>Local changes</td>
+            <td>Editor feedback from a separate review agent</td>
+            <td>Catch issues before commit</td>
+            <td>That the pushed pull-request head passed</td>
+          </tr>
+          <tr>
+            <td>Windsurf / Devin Review</td>
+            <td>GitHub pull request revision</td>
+            <td>Review comments, bugs, and explanations</td>
+            <td>Inspect the committed diff and discuss findings</td>
+            <td>That later commits or autofixes satisfy policy</td>
+          </tr>
+          <tr>
+            <td>Repository gate</td>
+            <td>Exact pull request head</td>
+            <td>Required check plus structured result</td>
+            <td>Apply merge policy</td>
+            <td>That no defect exists outside the tested scope</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Windsurf's current
+      <a href="https://docs.windsurf.com/windsurf/quick-review">Quick Review documentation</a>
+      describes an agentic review of local changes by a secondary agent. It currently
+      offers the lightweight SWE-check model without a usage charge across tiers and
+      token-priced frontier models for deeper passes. Treat those details as dated to
+      August 7, 2026; model names, quotas, and billing are product settings, not stable
+      repository contracts.
+    </p>
+    <p>
+      The current
+      <a href="https://docs.devin.ai/desktop/windsurf-reviews/windsurf-reviews">
+        Windsurf PR Reviews documentation
+      </a>
+      labels the feature beta for Teams and Enterprise customers using GitHub Cloud.
+      An organization administrator connects the GitHub bot, chooses repositories, and
+      configures review guidance. Eligible pull requests can be reviewed when marked
+      ready or manually triggered, with feedback published as GitHub review comments.
+    </p>
+    <p>
+      These are strong author and reviewer experiences. They are not interchangeable
+      with a repository verdict. GitHub's own
+      <a href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches">
+        protected-branch documentation
+      </a>
+      says required status checks must pass before a protected branch can merge. That
+      check layer is where a repository expresses pass, failure, and freshness policy.
+    </p>
+  </section>
+
+  <section id="review-epochs">
+    <h2>The review-epoch contract prevents stale Windsurf verdicts</h2>
+    <p>
+      A <strong>review epoch</strong> is the period in which one exact code state remains
+      unchanged. The epoch begins when a local diff or pull-request head is selected for
+      review. It ends as soon as a person or agent changes that code. Comments can remain
+      useful across epochs; a pass verdict cannot.
+    </p>
+    <p>
+      This is the information that most editor and pull-request guides omit. They explain
+      how to request a review and fix a comment, but not how the fix invalidates the state
+      the reviewer saw. Windsurf makes the transition especially important because Devin
+      Review can connect a finding to Autofix. The official
+      <a href="https://devin.ai/blog/devin-review-windsurf/">Devin Review launch post</a>
+      says that, when Autofix is enabled, Devin can generate a fix and apply it to the
+      pull-request branch. That is a new head and therefore a new epoch.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Epoch</th>
+            <th>Starts with</th>
+            <th>Valid evidence</th>
+            <th>Ends when</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Local authoring</td>
+            <td>Working-tree diff</td>
+            <td>Quick Review feedback and local tests</td>
+            <td>The change is edited, staged, or committed</td>
+          </tr>
+          <tr>
+            <td>Pull-request review</td>
+            <td>Named head SHA</td>
+            <td>PR findings tied to that revision</td>
+            <td>A person or agent pushes another commit</td>
+          </tr>
+          <tr>
+            <td>Autofix</td>
+            <td>Agent-produced branch update</td>
+            <td>The fix diff, rerun tests, and new review</td>
+            <td>The next branch mutation</td>
+          </tr>
+          <tr>
+            <td>Merge decision</td>
+            <td>Current pull-request head</td>
+            <td>Required CI, current review result, open obligations</td>
+            <td>The head changes or a human merges</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <aside class="article-callout">
+      <strong>The review-epoch rule</strong>
+      <p>
+        Reuse findings across code states when the evidence still applies. Never reuse a
+        pass verdict across code states. A new commit needs a new current-head result.
+      </p>
+    </aside>
+  </section>
+
+  <section id="step-1">
+    <h2>1. Define the review contract before asking Windsurf</h2>
+    <p>
+      A useful review starts with a falsifiable change contract. State what behavior is
+      supposed to change, which interfaces may move, which invariants must remain true,
+      what tests demonstrate success, and what is explicitly outside scope. “Review this
+      PR” leaves the model to invent the standard after reading the implementation.
+    </p>
+    <p>
+      Keep repository facts in versioned files. Windsurf's current rules documentation
+      says Devin Desktop discovers workspace rules and <code>AGENTS.md</code>, with a root
+      <code>AGENTS.md</code> applied broadly and nested files scoped by location. Use those
+      files for durable engineering constraints. Use the PR description for the change
+      contract. Use the Windsurf team setting for PR Guidelines to express concise review
+      priorities that apply to the connected repositories.
+    </p>
+    <p>
+      Do not copy the same large instruction block into every surface. Repository rules
+      should describe stable constraints. PR Guidelines should tell the reviewer what
+      evidence and severity standard to use. The pull-request body should explain this
+      change. Duplication makes drift hard to detect and can leave the author and reviewer
+      operating under different contracts.
+    </p>
+    <pre><code>{`Review contract
+
+Intent: Reject cross-tenant access before returning a project.
+Affected boundary: GET /projects/:id authorization.
+Must remain true: Owners and invited members retain access.
+Evidence: focused authorization tests plus the full API suite.
+Non-goals: no role-model or database-schema changes.`}</code></pre>
+    <p>
+      Done means another maintainer can tell what would falsify the change without reading
+      the implementation first.
+    </p>
+  </section>
+
+  <section id="step-2">
+    <h2>2. Run Windsurf Quick Review as a local preflight</h2>
+    <p>
+      Run Quick Review after the intended local change is complete but before you treat
+      it as review-ready. The separate-agent design is useful because the reviewer does
+      not share the exact conversational path that produced the patch. It can challenge
+      an assumption the authoring agent carried forward.
+    </p>
+    <p>
+      Keep the local result provisional. A working tree can contain unstaged files,
+      ignored generated output, or environment-specific state that will not exist in the
+      pull request. Conversely, the pushed commit can include changes that the selected
+      local diff did not cover. Record consequential findings, run focused tests, and
+      inspect the staged diff before commit.
+    </p>
+    <ol>
+      <li>Freeze the intended local diff long enough to review one state.</li>
+      <li>Run Quick Review with the model appropriate to the change risk and budget.</li>
+      <li>Require file, line, causal path, and consequence for any proposed blocker.</li>
+      <li>Fix, reject with evidence, or defer each consequential finding.</li>
+      <li>Run the focused tests and inspect <code>git diff --cached</code> before commit.</li>
+    </ol>
+    <p>
+      If a fix changes the diff materially, the original Quick Review pass no longer
+      covers the whole local state. Rerun it or document why the change is fully covered
+      by deterministic tests. The goal is not to maximize review calls. The goal is to
+      avoid describing unreviewed code as reviewed.
+    </p>
+  </section>
+
+  <section id="step-3">
+    <h2>3. Run Windsurf PR Review on a named head commit</h2>
+    <p>
+      Push the commit, open the pull request, and record its head SHA before requesting
+      review. Marking the pull request ready or using the current documented manual
+      trigger asks Windsurf to review a durable GitHub state. Keep the resulting comments
+      attached to that state even if later commits make their line anchors outdated.
+    </p>
+    <p>
+      The reviewer should receive enough context to evaluate the contract, but its output
+      remains untrusted. A confident comment can still misunderstand a platform contract,
+      miss an existing test, or cite a line that is not on the changed path. Use the
+      <a href="/blog/pull-request-review-comments">signal-first review comment contract</a>
+      to separate a concrete defect from a question, ambiguity, or optional suggestion.
+    </p>
+    <p>
+      Store the head SHA beside the review result. If the Windsurf surface does not expose
+      a machine-readable reviewed SHA for your workflow, capture the PR head immediately
+      before and after the review completes. If it changes during the run, request another
+      review rather than guessing which revision the comments describe.
+    </p>
+    <pre><code>{`review_epoch:
+  head_sha: "&lt;40-character PR head&gt;"
+  reviewer: "windsurf-pr-review"
+  requested_at: "&lt;timestamp&gt;"
+  completed_at: "&lt;timestamp&gt;"
+  state: "findings_recorded"`}</code></pre>
+  </section>
+
+  <section id="step-4">
+    <h2>4. Convert Windsurf findings into explicit obligations</h2>
+    <p>
+      A review comment becomes a merge obligation only after it clears an evidence gate.
+      The comment should name a checked claim, show the relevant code, explain the causal
+      path to a real consequence, and state what evidence would close it. Severity and
+      confidence alone are not evidence.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Disposition</th>
+            <th>Use when</th>
+            <th>Evidence to retain</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>still_open</code></td>
+            <td>The defect remains on the current head</td>
+            <td>Current code evidence and causal path</td>
+          </tr>
+          <tr>
+            <td><code>fixed</code></td>
+            <td>A later head removes the causal path</td>
+            <td>Fix diff and validating test</td>
+          </tr>
+          <tr>
+            <td><code>rejected_with_evidence</code></td>
+            <td>The claim contradicts code, tests, or a trusted contract</td>
+            <td>The contradicting source and its scope</td>
+          </tr>
+          <tr>
+            <td><code>intentional_contract</code></td>
+            <td>The behavior is deliberate and documented</td>
+            <td>The owning specification or decision</td>
+          </tr>
+          <tr>
+            <td><code>needs_human</code></td>
+            <td>The decision depends on product or architecture judgment</td>
+            <td>The tradeoff and named owner</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Keep the finding identity stable across reruns. Wording and line anchors may move,
+      but the underlying obligation should not disappear because the next model expresses
+      it differently. Structured dispositions also give repair agents a bounded work list
+      instead of forcing them to scrape the PR conversation.
+    </p>
+  </section>
+
+  <section id="step-5">
+    <h2>5. Invalidate the old verdict after Autofix or any push</h2>
+    <p>
+      When Devin Autofix, Windsurf, a human, or another agent pushes a commit, end the old
+      review epoch immediately. The prior comments remain useful history. Any “clean” or
+      “resolved” state must be recomputed against the new head.
+    </p>
+    <p>
+      This is where automated repair loops often become unsafe. The first reviewer finds
+      a real problem. The repair agent changes the branch. The conversation now looks
+      resolved, so the workflow carries the old approval forward without reviewing the
+      fix. The new code can introduce a regression, only partially address the causal
+      path, or invalidate another test assumption.
+    </p>
+    <ol>
+      <li>Capture the new head SHA after the fix lands.</li>
+      <li>Run the focused regression that demonstrates the finding is closed.</li>
+      <li>Run required repository checks on the new head.</li>
+      <li>Rerun the review or perform a bounded delta review with explicit carry-forward rules.</li>
+      <li>Close the finding only when evidence applies to the new head.</li>
+    </ol>
+    <p>
+      A delta review can be efficient when it carries unresolved findings forward and
+      inspects every changed replacement block. It becomes dangerous when “no new
+      comment” is interpreted as “all old obligations are fixed.” Silence is not a state
+      transition.
+    </p>
+  </section>
+
+  <section id="step-6">
+    <h2>6. Publish a repository-owned current-head gate</h2>
+    <p>
+      Keep the final pass-or-fail policy in the repository. A GitHub Actions workflow can
+      run tests, validate the exact pull-request context, publish a stable check name, and
+      emit a structured result that another agent can consume. Branch protection then
+      requires that check instead of inferring merge readiness from comment tone.
+    </p>
+    <p>
+      ReviewGate is one open-source implementation of that layer. It runs in the user's
+      CI environment with a bring-your-own OpenRouter key, publishes one canonical summary
+      with a visible 0-5 score, and emits structured JSON. It is review-only: it does not
+      apply fixes or make the human merge decision.
+    </p>
+    <pre><code>{`name: ReviewGate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+      statuses: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${"$"}{{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: LVTD-LLC/reviewgate@v0
+        with:
+          openrouter_api_key: ${"$"}{{ secrets.OPENROUTER_API_KEY }}
+          min_severity: P4`}</code></pre>
+    <p>
+      Copy the maintained workflow from the
+      <a href="/docs/github-actions">ReviewGate GitHub Actions guide</a> rather than
+      treating this excerpt as a permanent version pin. Then configure review angles and
+      severity through the
+      <a href="/docs/configuration">repository configuration reference</a>. Keep the fork
+      guard and least-privilege permissions; do not move secret-backed review of untrusted
+      code to <code>pull_request_target</code>.
+    </p>
+    <p>
+      The gate should distinguish code verdicts from reviewer failures. “Needs changes”
+      means grounded obligations remain. “Review error” means the reviewer was unavailable
+      or produced an invalid artifact. Treating an unavailable reviewer as a clean pass
+      turns an infrastructure failure into false confidence.
+    </p>
+  </section>
+
+  <section id="step-7">
+    <h2>7. Verify the pull request current head before merge</h2>
+    <p>
+      Read the pull request head SHA, the CI/check-run SHA, and the review artifact's
+      reviewed SHA as separate fields. They must converge on the same commit. A green
+      workflow from an earlier head and a newly pushed branch are not a green current
+      pull request.
+    </p>
+    <p>
+      GitHub supports strict required checks that also require the branch to be current
+      with the base branch. For busy repositories, a merge queue can test the proposed
+      change with the latest target branch and queued work. Choose the branch policy that
+      matches your integration risk, but preserve the same invariant: the code being
+      merged must be the code covered by the required results.
+    </p>
+    <ol>
+      <li>Read the live pull request head SHA.</li>
+      <li>Confirm every required check completed for that head.</li>
+      <li>Confirm the structured review result names that same head.</li>
+      <li>Confirm no admitted blocker remains <code>still_open</code> or <code>needs_human</code>.</li>
+      <li>Review human comments and conversation-resolution requirements.</li>
+      <li>Let the authorized human make the merge decision.</li>
+    </ol>
+    <p>
+      ReviewGate's
+      <a href="/docs/agent-workflows">agent workflow contract</a> exposes the reviewed SHA,
+      status, score, and canonical finding state so external agents can stop on a stale
+      or inconclusive result instead of parsing prose. The fixed passing target is 5/5,
+      but a fresh score is still one input to the maintainer's decision.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>A worked review-epoch transition</h2>
+    <p>
+      Consider a pull request that adds a tenant check to a project endpoint. This is an
+      illustrative state transition, not a claim about a real Windsurf review.
+    </p>
+    <ol>
+      <li>
+        The authoring agent changes the authorization function. Quick Review inspects the
+        local diff. Focused tests pass, and the author commits head <code>A</code>.
+      </li>
+      <li>
+        Windsurf PR Review inspects head <code>A</code> and reports that invited members are
+        rejected with owners. The maintainer admits the finding because it cites the
+        changed predicate, the membership contract, and a missing regression test.
+      </li>
+      <li>
+        Devin Autofix updates the predicate and adds a test, producing head <code>B</code>.
+        The finding from head <code>A</code> remains the reason for the change, but the old
+        review verdict is stale.
+      </li>
+      <li>
+        Required CI and the repository review gate run on head <code>B</code>. The focused
+        test proves the invited-member path, the full suite passes, and the structured
+        result names head <code>B</code> with no open blockers.
+      </li>
+      <li>
+        A maintainer checks the intended authorization contract and merges head
+        <code>B</code>. The history preserves the original finding and the evidence that
+        closed it.
+      </li>
+    </ol>
+    <p>
+      The useful property is not which agent found or fixed the issue. The workflow can
+      explain the state change from finding to evidence to current-head verdict. That
+      makes the process auditable when the editor, PR reviewer, and repair agent all come
+      from the same product family.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Common Windsurf code review failure modes</h2>
+    <h3>Treating local feedback as pull-request evidence</h3>
+    <p>
+      Quick Review sees a local state. The pull request contains commits. Compare the
+      staged and pushed diff, then run the durable review on GitHub. Do not attach a local
+      “clean” label to code that changed before push.
+    </p>
+    <h3>Letting comments become the state database</h3>
+    <p>
+      Review threads are good for discussion and poor for automation. Findings move,
+      comments become outdated, and resolution can mean agreement rather than a verified
+      fix. Keep one canonical machine state with stable finding identities and explicit
+      dispositions.
+    </p>
+    <h3>Carrying approval through an Autofix</h3>
+    <p>
+      Any branch update ends the old review epoch. Rerun the focused test, required CI,
+      and current-head review. The convenience of agent-generated repair increases the
+      need for freshness checks because mutation happens inside the review workflow.
+    </p>
+    <h3>Using one vague instruction set everywhere</h3>
+    <p>
+      Put stable repository constraints in versioned rules, change intent in the PR body,
+      and finding-admission policy in reviewer guidance. Each surface has a job. One large
+      prompt copied between them will drift and consume context without clarifying who
+      owns the contract.
+    </p>
+    <h3>Making “the bot ran” the required check</h3>
+    <p>
+      A completed review is not necessarily a passing review. Define which finding classes
+      can block, what reviewer failure means, how stale results are rejected, and which
+      exact status check branch protection requires. Measure the workflow with the
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark scorecard</a>
+      before making it mandatory across repositories.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Windsurf code review</h2>
+    {faqs.map((faq) => (
+      <section class="article-faq-item">
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+
+  <section>
+    <h2>Add an exact-head gate after Windsurf review</h2>
+    <p>
+      ReviewGate is free and open source. It runs inside GitHub Actions, uses your
+      OpenRouter key, publishes one score-centered summary, and gives humans or external
+      agents a structured current-head result. Windsurf can remain the authoring and
+      review workspace; ReviewGate supplies the repository-owned verdict boundary.
+    </p>
+    <div class="signal-actions">
+      <a
+        class="signal-button signal-button-primary"
+        href="/docs/#install"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="windsurf_code_review_article"
+      >Install ReviewGate</a>
+      <a
+        class="signal-button signal-button-secondary"
+        href="https://github.com/LVTD-LLC/reviewgate"
+        data-analytics-event="source_intent_clicked"
+        data-analytics-location="windsurf_code_review_article"
+      >Inspect the source</a>
+    </div>
+  </section>
+</ArticleLayout>

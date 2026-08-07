@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-07
+
+- Added “Windsurf Code Review: Build a Current-Head Gate,” a source-backed workflow that separates Quick Review, pull-request findings, Autofix mutations, and the repository verdict with an original review-epoch contract; included BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-06
 
 - Replaced the human-readable `/sitemap/` page with a generated `/sitemap.xml` endpoint, updated `robots.txt`, and added build-time XML coverage for every public Astro page.
