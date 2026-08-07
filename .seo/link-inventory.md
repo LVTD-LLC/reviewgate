@@ -23,6 +23,7 @@
 | `/blog/codex-code-review` | https://reviewgate.lvtd.dev/blog/codex-code-review/ | Codex code review merge-gate workflow | E |
 | `/blog/cursor-code-review` | https://reviewgate.lvtd.dev/blog/cursor-code-review/ | Cursor code review and Bugbot merge-gate workflow | E |
 | `/blog/ai-code-review-benchmark` | https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/ | AI code review benchmark and merge-gate scorecard | E |
+| `/blog/windsurf-code-review` | https://reviewgate.lvtd.dev/blog/windsurf-code-review/ | Windsurf code review and review-epoch merge-gate workflow | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -159,3 +160,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “evaluate AI code review tools”
 - “measure review recall and false blockers”
 - “reproducible reviewer evaluation”
+
+### Windsurf code review field note
+
+- “Windsurf code review workflow”
+- “Windsurf review epoch contract”
+- “Quick Review and Devin Review merge gate”
+- “current-head Windsurf review”
+- “rerun review after Autofix”

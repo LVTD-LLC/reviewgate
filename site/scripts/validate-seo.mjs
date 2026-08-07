@@ -62,6 +62,10 @@ const expectedPages = [
     "blog/ai-code-review-benchmark/index.html",
     "https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/",
   ],
+  [
+    "blog/windsurf-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/windsurf-code-review/",
+  ],
 ];
 
 const titles = new Set();
@@ -169,6 +173,22 @@ const benchmarkSchemaTypes = JSON.parse(benchmarkJsonLdSource).map(
   (entry) => entry["@type"],
 );
 assert.deepEqual(benchmarkSchemaTypes, ["BlogPosting", "FAQPage", "BreadcrumbList"]);
+
+const windsurfArticle = builtPages.get("/blog/windsurf-code-review");
+assert(windsurfArticle, "Windsurf review article must be present in built pages");
+const windsurfJsonLdSource = windsurfArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(windsurfJsonLdSource, "Windsurf review article must contain JSON-LD");
+const windsurfSchemaTypes = JSON.parse(windsurfJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(windsurfSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);
