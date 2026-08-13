@@ -2,6 +2,11 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-13
+
+- Added “Devin Code Review: Keep Review and Merge Separate,” a source-backed workflow with an original four-authority contract for read, report, mutation, and merge permissions; included BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+- Updated the site's transitive `nanoid` lockfile entry to 3.3.18 so the required production dependency audit passes without the zero-size custom-generator advisory.
+
 ## 2026-08-07
 
 - Added “Windsurf Code Review: Build a Current-Head Gate,” a source-backed workflow that separates Quick Review, pull-request findings, Autofix mutations, and the repository verdict with an original review-epoch contract; included BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.

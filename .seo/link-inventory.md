@@ -168,3 +168,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “Quick Review and Devin Review merge gate”
 - “current-head Windsurf review”
 - “rerun review after Autofix”
+
+### Devin code review field note
+
+- “Devin code review workflow”
+- “four-authority Devin review contract”
+- “separate Devin review and merge authority”
+- “current-head Devin review gate”
+- “rerun review after Devin Auto-Fix”
