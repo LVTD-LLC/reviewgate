@@ -66,6 +66,10 @@ const expectedPages = [
     "blog/windsurf-code-review/index.html",
     "https://reviewgate.lvtd.dev/blog/windsurf-code-review/",
   ],
+  [
+    "blog/devin-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/devin-code-review/",
+  ],
 ];
 
 const titles = new Set();
@@ -184,6 +188,22 @@ const windsurfSchemaTypes = JSON.parse(windsurfJsonLdSource).map(
   (entry) => entry["@type"],
 );
 assert.deepEqual(windsurfSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
+
+const devinArticle = builtPages.get("/blog/devin-code-review");
+assert(devinArticle, "Devin review article must be present in built pages");
+const devinJsonLdSource = devinArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(devinJsonLdSource, "Devin review article must contain JSON-LD");
+const devinSchemaTypes = JSON.parse(devinJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(devinSchemaTypes, [
   "BlogPosting",
   "HowTo",
   "FAQPage",

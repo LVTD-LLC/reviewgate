@@ -1,0 +1,723 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Devin Code Review: Keep Review and Merge Separate";
+const description =
+  "Use Devin code review for PR findings and fixes, then bind merge readiness to an independent repository check on the exact current head.";
+const canonical = "https://reviewgate.lvtd.dev/blog/devin-code-review/";
+const publishedAt = "2026-08-13";
+
+const workflowSteps = [
+  {
+    name: "Choose the connection mode",
+    text: "Decide whether you need read-only review through a public URL, local CLI, or PAT, or write features through the Devin GitHub App.",
+  },
+  {
+    name: "Write repository review rules",
+    text: "Put stable engineering constraints in scoped REVIEW.md or AGENTS.md files and keep the pull-request change contract in the PR description.",
+  },
+  {
+    name: "Review a named pull-request head",
+    text: "Trigger Devin Review manually or automatically, record the head SHA, and treat the result as evidence about that exact revision.",
+  },
+  {
+    name: "Admit findings by evidence",
+    text: "Promote bugs, security findings, or flags to merge obligations only when they identify code evidence, a causal path, and a concrete consequence.",
+  },
+  {
+    name: "Invalidate evidence after mutation",
+    text: "When Auto-Fix, Devin chat, a human, or another agent changes the branch, rerun focused tests and review on the new head.",
+  },
+  {
+    name: "Publish an independent repository gate",
+    text: "Run required CI and a machine-readable review check whose pass, needs-changes, and review-error states are controlled by repository policy.",
+  },
+  {
+    name: "Verify the exact head before merge",
+    text: "Confirm the PR head, required check SHAs, reviewed SHA, and open finding state all agree before an authorized human merges.",
+  },
+];
+
+const faqs = [
+  {
+    question: "What is Devin Review?",
+    answer:
+      "Devin Review is Cognition's pull-request review surface for organized diffs, codebase-aware explanations, bug and security findings, GitHub or GitLab review actions, and optional code changes. It is useful for understanding and discussing a PR. Repository branch rules still decide whether the current head may merge.",
+  },
+  {
+    question: "How do you request a Devin code review?",
+    answer:
+      "On a connected GitHub repository, comment /devin review on an open pull request. You can also open the PR in Devin Review, replace github.com with devinreview.com for a GitHub.com PR, enable auto-review, or run npx devin-review with the PR URL from a local clone.",
+  },
+  {
+    question: "Does Devin Review run after every push?",
+    answer:
+      "It can. Devin documents an Auto review mode that runs when a PR opens, when new commits arrive, and when a draft becomes ready. On PR creation skips later pushes, while Manual requires an explicit trigger. Check the repository and personal settings because the most permissive applicable mode can win.",
+  },
+  {
+    question: "Is Devin Review free?",
+    answer:
+      "Devin says public pull requests can be viewed without a Devin account. Review access, automation, and usage charges depend on the account and plan. Its current documentation describes enterprise ACU consumption and per-PR auto-review spend limits, so check the live plan terms before setting a team budget.",
+  },
+  {
+    question: "Can Devin Review block a pull request merge?",
+    answer:
+      "Devin Review can publish a GitHub status check when that setting is enabled, but merge enforcement belongs to GitHub branch protection or rulesets. Require the intended check, restrict its expected source where appropriate, and reject stale results after the pull-request head changes.",
+  },
+  {
+    question: "Should review run again after Devin Auto-Fix?",
+    answer:
+      "Yes. Auto-Fix applies code to the pull-request branch, so the previous review describes an older revision. Preserve the original finding, capture the new head SHA, run the focused regression and required CI, then produce a fresh review result for the new head.",
+  },
+  {
+    question: "Can ReviewGate review a pull request written or fixed by Devin?",
+    answer:
+      "Yes. ReviewGate runs in GitHub Actions against the committed pull-request diff. It does not depend on which agent authored or fixed the branch. It can publish a 0-5 score, one canonical summary, and structured exact-head findings for the repository's merge workflow.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to turn Devin code review into an exact-head merge gate",
+    description:
+      "A seven-step workflow that separates Devin review, findings, branch mutations, repository checks, and the final merge decision.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="15 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Devin Code Review: Keep Review and Merge Separate</Fragment>
+  <Fragment slot="deck">
+    Devin Review can inspect a pull request, publish findings, apply fixes, and expose
+    merge actions. A safe workflow gives each authority a boundary and accepts a merge
+    verdict only for the exact code that repository checks evaluated.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#surfaces">What Devin Review does</a></li>
+    <li><a href="#authority-contract">The four-authority contract</a></li>
+    <li><a href="#step-1">1. Choose the connection mode</a></li>
+    <li><a href="#step-2">2. Write review rules</a></li>
+    <li><a href="#step-3">3. Review a named head</a></li>
+    <li><a href="#step-4">4. Admit findings</a></li>
+    <li><a href="#step-5">5. Invalidate mutated evidence</a></li>
+    <li><a href="#step-6">6. Publish the repository gate</a></li>
+    <li><a href="#step-7">7. Verify before merge</a></li>
+    <li><a href="#worked-example">Worked authority transition</a></li>
+    <li><a href="#failure-modes">Failure modes</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should Devin code review fit into a merge gate?</h2>
+    <p class="article-lead">
+      Use Devin Review to understand the pull request and produce candidate findings.
+      Let it suggest or apply fixes only under explicit repository permissions. After
+      every branch mutation, run tests and an independent review gate on the new head.
+      Merge only when the required checks and reviewed SHA match that exact commit.
+    </p>
+    <p>
+      That answer is narrower than “turn on AI review.” As of August 13, 2026, the
+      official <a href="https://docs.devin.ai/work-with-devin/devin-review">Devin Review documentation</a>
+      describes organized diffs, bug and security analysis, codebase-aware chat, GitHub
+      review actions, Auto-Fix, auto-review, and merge controls. Those features cover
+      several jobs that a conventional review workflow assigns to different people and
+      systems.
+    </p>
+    <p>
+      The overlap is useful, but it changes the trust question. A reviewer that can also
+      write code, set commit statuses, and initiate a merge has more authority than a
+      comment-only bot. The workflow should not infer independence from the fact that
+      the same product presents those actions in separate panels.
+    </p>
+    <p>
+      The general <a href="/blog/ai-code-review-github">AI code review workflow for GitHub</a>
+      binds intent, execution, evidence, verdict, and merge state. This guide applies
+      that contract to Devin's specific connection modes and permissions.
+    </p>
+  </section>
+
+  <section id="surfaces">
+    <h2>What Devin Review does on a pull request</h2>
+    <p>
+      Devin Review is broader than an inline-comment generator. Its official docs list
+      smart diff organization, copy and move detection, Bug Catcher findings, security
+      scanning, codebase-aware chat, comments and reviews, code edits, and pull-request
+      workflow actions. It supports GitHub and GitLab, with some capability differences
+      between providers and connection types.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Surface</th>
+            <th>Primary output</th>
+            <th>Authority involved</th>
+            <th>What it does not prove</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Diff and chat</td>
+            <td>Organized changes and codebase-aware explanations</td>
+            <td>Read</td>
+            <td>That every important behavior was tested</td>
+          </tr>
+          <tr>
+            <td>Bug Catcher and security</td>
+            <td>Bugs, flags, security findings, and recommendations</td>
+            <td>Read and report</td>
+            <td>That each reported claim is a merge blocker</td>
+          </tr>
+          <tr>
+            <td>GitHub publication</td>
+            <td>Review comments and a commit-status check</td>
+            <td>Report</td>
+            <td>That repository policy accepts the result as sufficient</td>
+          </tr>
+          <tr>
+            <td>Chat edits and Auto-Fix</td>
+            <td>A new commit on the pull-request branch</td>
+            <td>Mutate</td>
+            <td>That the changed head still satisfies the earlier review</td>
+          </tr>
+          <tr>
+            <td>PR workflow actions</td>
+            <td>Merge, close, draft, ready, or auto-merge state</td>
+            <td>Merge</td>
+            <td>That the human intended to delegate the final decision</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Connection mode changes what is possible. Devin says public pull requests can be
+      viewed without a Devin account, and its local CLI can compute the PR diff in an
+      isolated worktree. The same documentation says the CLI sends the diff and file
+      contents to Devin servers for analysis and may run a bounded set of read-only
+      commands inside that worktree. Review that data boundary before using the CLI with
+      private or regulated code.
+    </p>
+    <p>
+      For GitHub write features, Devin distinguishes the GitHub App from a PAT-based
+      connection. PAT connections are read-only in Devin Review. Comments, submitted
+      reviews, branch edits, and workflow actions require the App. That is a meaningful
+      security boundary, not an installation detail.
+    </p>
+  </section>
+
+  <section id="authority-contract">
+    <h2>The four-authority contract for Devin code review</h2>
+    <p>
+      The safest way to configure Devin Review is to inventory four independent
+      authorities: <strong>read</strong>, <strong>report</strong>, <strong>mutate</strong>,
+      and <strong>merge</strong>. This framework is the information most Devin setup pages
+      omit. Product documentation explains each feature, while the authority contract
+      explains which evidence becomes invalid when one feature changes repository state.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Authority</th>
+            <th>Question to answer</th>
+            <th>Minimum evidence</th>
+            <th>Safe boundary</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Read</td>
+            <td>Which code and repository context may Devin inspect?</td>
+            <td>Repository scope, diff base, head SHA, instruction files</td>
+            <td>Grant only the repositories and context required</td>
+          </tr>
+          <tr>
+            <td>Report</td>
+            <td>Which findings and statuses may Devin publish?</td>
+            <td>Finding class, code reference, consequence, reviewed head</td>
+            <td>Do not turn all flags into blockers</td>
+          </tr>
+          <tr>
+            <td>Mutate</td>
+            <td>Who may apply a suggested fix to the branch?</td>
+            <td>New commit, fix diff, focused regression, new head SHA</td>
+            <td>Every mutation invalidates the old pass verdict</td>
+          </tr>
+          <tr>
+            <td>Merge</td>
+            <td>Which system enforces the final policy?</td>
+            <td>Required checks, current reviewed SHA, open obligations</td>
+            <td>Keep the final decision in protected repository rules</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <aside class="article-callout">
+      <strong>The authority rule</strong>
+      <p>
+        A system may hold more than one authority, but evidence must cross the boundaries
+        explicitly. A finding can justify a fix. It cannot also prove that its own fix is
+        correct or that the resulting commit is ready to merge.
+      </p>
+    </aside>
+    <p>
+      This is not an argument against Auto-Fix or an integrated merge button. It is an
+      argument for a visible state transition. The speed benefit survives when the
+      workflow records the new commit and reruns independent checks. The audit trail
+      disappears when “fixed” in the interface is treated as “validated” in the
+      repository.
+    </p>
+  </section>
+
+  <section id="step-1">
+    <h2>1. Choose the Devin connection mode by required authority</h2>
+    <p>
+      Start with the least authority that completes the job. A maintainer evaluating the
+      review experience on a public PR can use the URL shortcut. A developer with local
+      access to a private repository can use the CLI after accepting its documented data
+      path. A team that needs GitHub comments, checks, branch edits, or merge actions will
+      need the GitHub App connection.
+    </p>
+    <p>
+      The <a href="https://docs.devin.ai/integrations/gh">Devin GitHub integration guide</a>
+      lists organization-level read/write access to checks, commit statuses, contents,
+      pull requests, and workflows, among other scopes. It also recommends branch
+      protection before Devin can merge changes. Review these permissions as a single
+      capability set because Devin uses the integration's organization-level rights, not
+      the narrower rights of the individual starting a session.
+    </p>
+    <ol>
+      <li>List the repositories Devin needs; avoid an all-repository grant by default.</li>
+      <li>Decide whether the job is read, report, mutate, or merge.</li>
+      <li>Use a read-only path when comments and commits are not required.</li>
+      <li>Install the App only after repository rules can contain its write authority.</li>
+      <li>Record who may change the integration and Auto-Fix settings.</li>
+    </ol>
+    <p>
+      Done means the team can explain why every granted permission is needed and which
+      repository rule limits it. “Devin needs access” is not a permission model.
+    </p>
+  </section>
+
+  <section id="step-2">
+    <h2>2. Put stable review rules in the repository</h2>
+    <p>
+      Devin Review reads several instruction-file formats, including scoped
+      <code>REVIEW.md</code> and <code>AGENTS.md</code> files. Use them for durable facts:
+      authorization boundaries, compatibility promises, required tests, generated-file
+      policy, and the evidence threshold for a finding. Keep one pull request's intent
+      and non-goals in that PR description.
+    </p>
+    <p>
+      A dedicated <code>REVIEW.md</code> can focus the reviewer without overloading author
+      instructions. Scope a file near the subsystem it governs. The root file should hold
+      repository-wide rules; a file under <code>src/auth/</code> can add authentication
+      threats and test expectations for that path.
+    </p>
+    <pre><code>{`# Review rules
+
+## Finding admission
+- Cite the changed file and exact code path.
+- Explain the user-visible or operational consequence.
+- Treat a missing test as blocking only when a changed behavior is unprotected.
+
+## Authentication changes
+- Check tenant isolation and privilege escalation paths.
+- Require focused allow and deny tests for each changed policy branch.
+
+## Output
+- Separate defects from questions and optional improvements.
+- Do not describe a clean review as approval to merge.`}</code></pre>
+    <p>
+      The <a href="/blog/pr-review-prompts">evidence-bound PR review prompt library</a>
+      provides specialized correctness, security, testing, migration, and compatibility
+      angles. Reuse the admission rules, then adapt only the subsystem facts that are
+      true for your repository.
+    </p>
+  </section>
+
+  <section id="step-3">
+    <h2>3. Run Devin code review on a named head commit</h2>
+    <p>
+      Record the pull request head SHA before review starts. Devin offers several trigger
+      paths: the review webapp, a <code>/devin review</code> PR comment, the URL shortcut,
+      the CLI, and auto-review. The trigger is less important than knowing which commit
+      the completed result describes.
+    </p>
+    <p>
+      Devin documents three auto-review modes. Auto review runs when a non-draft PR opens,
+      when a new commit is pushed, and when a draft becomes ready. On PR creation omits
+      later pushes. Manual waits for an explicit request. If repository and personal
+      enrollment both apply, verify the effective behavior instead of assuming the
+      repository setting is the only trigger.
+    </p>
+    <pre><code>{`review_request:
+  provider: "devin-review"
+  repository: "owner/repo"
+  pull_request: 123
+  head_sha: "&lt;40-character current head&gt;"
+  trigger: "manual | on_pr_creation | auto"
+  requested_at: "&lt;timestamp&gt;"`}</code></pre>
+    <p>
+      If the head changes while review is running, keep the completed comments as
+      historical evidence and request another result. Do not guess that a review which
+      started on one commit silently expanded to cover later code.
+    </p>
+  </section>
+
+  <section id="step-4">
+    <h2>4. Convert Devin findings into tracked obligations</h2>
+    <p>
+      Devin separates Bugs, Flags, and Security findings. Its documentation describes
+      Bugs as actionable errors, Flags as investigate or informational annotations, and
+      Security findings as vulnerability or hardening reports. That taxonomy is useful,
+      but repository policy still decides what blocks.
+    </p>
+    <p>
+      Admit a finding only when it contains a checked claim, a code reference, a causal
+      path, a concrete consequence, and the evidence needed to close it. A severity label
+      or confident explanation cannot replace those fields. The
+      <a href="/blog/pull-request-review-comments">signal-first comment contract</a>
+      shows how to preserve the finding when line anchors move and how to distinguish
+      fixed, rejected-with-evidence, intentional, and human-judgment dispositions.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Devin output</th>
+            <th>Default treatment</th>
+            <th>Promote to blocker when</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Severe or non-severe bug</td>
+            <td>Investigate the claimed defect</td>
+            <td>The evidence establishes a real failing path</td>
+          </tr>
+          <tr>
+            <td>Security finding</td>
+            <td>Check threat model, reachability, and platform contract</td>
+            <td>The changed code creates an exploitable or policy-breaking path</td>
+          </tr>
+          <tr>
+            <td>Investigate flag</td>
+            <td>Question or follow-up</td>
+            <td>Further evidence turns the uncertainty into a defect</td>
+          </tr>
+          <tr>
+            <td>Informational flag</td>
+            <td>Context, not a merge obligation</td>
+            <td>Rarely; only after independent evidence changes its class</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Configure GitHub publication deliberately. Devin can post a status check plus
+      selected categories of bugs, security findings, and flags. Posting every
+      informational annotation creates noise. Posting only a green check hides the
+      reasoning. Choose the smallest public surface that still lets a maintainer audit
+      the gate.
+    </p>
+  </section>
+
+  <section id="step-5">
+    <h2>5. Invalidate old evidence after Auto-Fix or chat edits</h2>
+    <p>
+      Devin Review can propose and apply bug fixes, and chat can produce commits on the
+      PR branch. The moment that commit lands, the old review result becomes evidence
+      about the previous head. The finding remains relevant as the reason for the change;
+      the pass or resolution state must be recomputed.
+    </p>
+    <p>
+      GitHub's <a href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches">protected-branch documentation</a>
+      makes the same distinction for human approvals. Repositories can dismiss stale
+      approvals after new commits or require approval of the latest reviewable push.
+      That policy exists because a new diff is new evidence, regardless of who produced
+      it.
+    </p>
+    <ol>
+      <li>Capture the head SHA before the fix and the new head after it lands.</li>
+      <li>Inspect the fix diff instead of relying on the resolved-thread label.</li>
+      <li>Run the focused regression that demonstrates the causal path is closed.</li>
+      <li>Run required CI on the new head.</li>
+      <li>Rerun review or a bounded delta review with explicit carry-forward rules.</li>
+      <li>Close the obligation only with evidence from the new code state.</li>
+    </ol>
+    <p>
+      This is the most important boundary in a Devin workflow because the product can
+      move from finding to branch mutation without leaving the review surface. Fast repair
+      is valuable. Implicit re-approval is not.
+    </p>
+  </section>
+
+  <section id="step-6">
+    <h2>6. Publish an independent repository-owned gate</h2>
+    <p>
+      Keep the final verdict in CI under versioned repository policy. Required tests and
+      a review gate should run on the pull-request event, bind their output to the exact
+      head, and distinguish code findings from reviewer failure. Branch protection or a
+      ruleset should require the intended check from the intended source.
+    </p>
+    <p>
+      ReviewGate is one open-source implementation of that boundary. It runs inside the
+      user's GitHub Actions environment with a bring-your-own OpenRouter key, publishes a
+      visible 0-5 score in one canonical summary, and emits structured JSON for humans or
+      repair agents. It does not apply fixes or make the human merge decision.
+    </p>
+    <pre><code>{`name: ReviewGate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+      statuses: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${"$"}{{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: LVTD-LLC/reviewgate@v0
+        with:
+          openrouter_api_key: ${"$"}{{ secrets.OPENROUTER_API_KEY }}
+          min_severity: P4`}</code></pre>
+    <p>
+      Copy the maintained workflow from the
+      <a href="/docs/github-actions">GitHub Actions installation guide</a> and keep the
+      fork-safety guard. Then use the
+      <a href="/docs/configuration">ReviewGate configuration reference</a> for review
+      angles and severity. The independent gate can run after Devin-authored commits,
+      Devin Review findings, or Auto-Fix without needing to know which interface produced
+      the code.
+    </p>
+    <p>
+      A review error must fail closed. If the reviewer times out or produces an invalid
+      artifact, report an inconclusive review instead of converting unavailable evidence
+      into a clean code score. Measure the gate's recall, false-blocker rate,
+      repeatability, latency, and cost with the
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark scorecard</a>
+      before requiring it across many repositories.
+    </p>
+  </section>
+
+  <section id="step-7">
+    <h2>7. Verify the pull-request head before merge</h2>
+    <p>
+      Read the live PR head, each required check's commit, and the structured review
+      artifact's reviewed SHA as separate fields. They must converge. A resolved Devin
+      thread, a green status for an older commit, or an earlier human approval does not
+      establish the state of the current head.
+    </p>
+    <ol>
+      <li>Confirm the live pull-request head SHA.</li>
+      <li>Confirm required tests and review checks completed for that SHA.</li>
+      <li>Confirm the review result is passed, not unavailable or merely completed.</li>
+      <li>Confirm no admitted blocker remains open or needs human judgment.</li>
+      <li>Confirm required human reviews and conversation-resolution rules are satisfied.</li>
+      <li>Let the authorized human decide whether to merge that head.</li>
+    </ol>
+    <p>
+      Devin's own GitHub integration guide recommends branch protection before allowing
+      merge actions. GitHub can require status checks, reviews, conversation resolution,
+      deployments, or a merge queue. Use the combination that matches the repository's
+      risk, then preserve one invariant: the code that merges is the code the evidence
+      describes.
+    </p>
+    <p>
+      The <a href="/docs/agent-workflows">ReviewGate agent workflow contract</a> exposes
+      status, score, reviewed SHA, and finding disposition without asking another agent
+      to scrape prose from the PR conversation.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>A worked Devin authority transition</h2>
+    <p>
+      Consider a pull request that changes an authorization predicate for project
+      membership. This is an illustrative workflow, not a claim about a real Devin run.
+    </p>
+    <ol>
+      <li>
+        Devin authors head <code>A</code>. The PR description states that owners and invited
+        members must retain access while unrelated users remain denied.
+      </li>
+      <li>
+        Devin Review reads head <code>A</code> and reports a bug: the new predicate rejects
+        invited members. A maintainer admits it because the comment cites the changed
+        branch, the membership contract, and the missing allow-path test.
+      </li>
+      <li>
+        Auto-Fix adds the membership branch and a regression test, creating head
+        <code>B</code>. The original finding remains attached to head <code>A</code>; its
+        resolved label is not a verdict on head <code>B</code>.
+      </li>
+      <li>
+        Required CI and ReviewGate run on head <code>B</code>. The focused test covers owners,
+        invited members, and unrelated users. The structured review result names head
+        <code>B</code> and has no open blockers.
+      </li>
+      <li>
+        A maintainer verifies the contract, required checks, and current head, then merges.
+        The history shows who read, reported, mutated, validated, and decided.
+      </li>
+    </ol>
+    <p>
+      The useful property is not that every stage used a different brand. The useful
+      property is that each authority emitted evidence the next boundary could verify.
+      The workflow remains auditable even when Devin authored, reviewed, and fixed the
+      same pull request.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Common Devin code review failure modes</h2>
+    <h3>Granting write authority before defining branch policy</h3>
+    <p>
+      The GitHub App can contribute code, publish statuses, and participate in pull
+      requests. Install it on selected repositories, require the right checks, and decide
+      who may enable Auto-Fix or auto-merge before treating it as a routine reviewer.
+    </p>
+    <h3>Making every Devin flag a blocker</h3>
+    <p>
+      Investigate and informational flags are not confirmed defects. Require a causal
+      path and consequence before they enter the gate. Otherwise comment volume becomes
+      a proxy for risk and maintainers learn to ignore the reviewer.
+    </p>
+    <h3>Reusing a clean result after Auto-Fix</h3>
+    <p>
+      A branch mutation creates a new head. Preserve the finding, inspect the fix, run
+      the regression, and produce a new exact-head result. Thread resolution is workflow
+      state, not proof of correctness.
+    </p>
+    <h3>Confusing a posted status with repository policy</h3>
+    <p>
+      A check becomes a gate only when branch protection or a ruleset requires it and the
+      workflow defines pass, failure, staleness, and reviewer-error behavior. “The review
+      ran” is not a merge criterion.
+    </p>
+    <h3>Ignoring the local CLI data boundary</h3>
+    <p>
+      Devin documents that its CLI computes the diff locally but sends the diff and file
+      contents to Devin servers. That may be acceptable for your repository. Make the
+      decision explicitly instead of assuming local invocation means local-only review.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Devin code review</h2>
+    {faqs.map((faq) => (
+      <section class="article-faq-item">
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+
+  <section>
+    <h2>Add an exact-head gate after Devin Review</h2>
+    <p>
+      ReviewGate is free and open source. It runs in GitHub Actions, uses your OpenRouter
+      key, publishes one score-centered summary, and emits structured current-head
+      findings. Devin Review can remain the pull-request review and repair workspace;
+      ReviewGate supplies the independent repository-verdict boundary.
+    </p>
+    <div class="signal-actions">
+      <a
+        class="signal-button signal-button-primary"
+        href="/docs/#install"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="devin_code_review_article"
+      >Install ReviewGate</a>
+      <a
+        class="signal-button signal-button-secondary"
+        href="https://github.com/LVTD-LLC/reviewgate"
+        data-analytics-event="source_intent_clicked"
+        data-analytics-location="devin_code_review_article"
+      >Inspect the source</a>
+    </div>
+  </section>
+</ArticleLayout>
