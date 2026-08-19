@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-19
+
+- Reworked the root README into a short, visual user guide centered on installation, AI-agent setup, custom review prompts, and common configuration; moved the comprehensive engineering reference into `AGENTS.md` and documented the new information boundary in `STRUCTURE.md`.
+
 ## 2026-07-31
 
 - Added the “AI Code Review on GitHub: A Merge-Safe Workflow” field note with BlogPosting, HowTo, and breadcrumb schema; documented a five-binding review contract, registered contextual inbound links and SEO inventory, and expanded rendered SEO validation to every shipped blog route.

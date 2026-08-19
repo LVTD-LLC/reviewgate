@@ -33,7 +33,8 @@ skills/reviewgate-loop/      Public agent loop skill
 - Put small committed sample inputs in `fixtures/`.
 - Put repository validation and maintenance scripts in `scripts/`.
 - Put public agent skill instructions under `skills/check-reviewgate/` and `skills/reviewgate-loop/`.
-- Put user-facing install and usage documentation in `README.md` or `action/README.md`.
+- Keep `README.md` focused on a short public overview, installation, and common configuration path.
+- Put comprehensive contributor and maintainer reference material in `AGENTS.md`, with task-focused public detail in `site/src/pages/docs/` and Action-specific detail in `action/README.md`.
 
 ## Naming Conventions
 

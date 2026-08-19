@@ -10712,9 +10712,9 @@ review_angles:
     }
 
     #[test]
-    fn readme_documents_the_least_privilege_single_workflow_rereview_install() {
-        let readme = include_str!("../../../README.md");
-        let rereview_job = readme
+    fn agents_documents_the_least_privilege_single_workflow_rereview_install() {
+        let agents = include_str!("../../../AGENTS.md");
+        let rereview_job = agents
             .split("  rereview:")
             .nth(1)
             .expect("rereview job example")
@@ -10722,17 +10722,17 @@ review_angles:
             .next()
             .expect("rereview job example end");
 
-        assert!(readme.contains("issue_comment:"));
-        assert!(readme.contains("github.event.comment.body == '@reviewgate review'"));
-        assert!(readme.contains("statuses: read"));
-        assert!(readme.contains("payload-digest commit status"));
+        assert!(agents.contains("issue_comment:"));
+        assert!(agents.contains("github.event.comment.body == '@reviewgate review'"));
+        assert!(agents.contains("statuses: read"));
+        assert!(agents.contains("payload-digest commit status"));
         assert!(rereview_job.contains("actions: write"));
         assert!(rereview_job.contains("pull-requests: write"));
-        assert!(readme.contains("group: reviewgate-rereview-${{ github.event.comment.id }}"));
-        assert!(readme.contains("cancel-in-progress: false"));
-        assert!(readme.contains("mode: rereview"));
-        assert!(readme.contains("review_workflow: reviewgate.yml"));
-        assert!(readme.contains("does not check out PR code"));
+        assert!(agents.contains("group: reviewgate-rereview-${{ github.event.comment.id }}"));
+        assert!(agents.contains("cancel-in-progress: false"));
+        assert!(agents.contains("mode: rereview"));
+        assert!(agents.contains("review_workflow: reviewgate.yml"));
+        assert!(agents.contains("does not check out PR code"));
     }
 
     #[test]
