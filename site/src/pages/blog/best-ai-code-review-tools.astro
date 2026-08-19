@@ -144,7 +144,6 @@ const criteria = [
 <ArticleLayout
   title={title}
   description={description}
-  eyebrow="FIELD NOTE / 002 / AI CODE REVIEW"
   publishedAt={publishedAt}
   readingTime="13 min read"
   jsonLd={jsonLd}
@@ -177,6 +176,12 @@ const criteria = [
       If you have already chosen a CI-owned reviewer, use the
       <a href="/blog/ai-code-review-github">merge-safe AI code review workflow for GitHub</a>
       to define its event boundary, evidence policy, and exact-head check before making it required.
+    </p>
+    <p>
+      If you are tuning what the reviewer should report, start from the
+      <a href="/blog/pr-review-prompts">evidence-bound PR review prompts</a>
+      for correctness, adversarial defects, security, tests, migrations, compatibility,
+      frontend states, and documentation drift.
     </p>
   </section>
 
@@ -211,6 +216,12 @@ const criteria = [
     <p>
       This is the core contract for modern agent loops.
       For GitHub-native teams, the review loop is not a single static decision—it is repeated until current-head evidence passes.
+    </p>
+    <p>
+      Before turning a shortlist into branch policy, run each candidate through the
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark scorecard</a>.
+      It separates serious-defect recall, blocking precision, false blockers, repeated-run
+      stability, failures, latency, and cost instead of relying on a vendor's aggregate score.
     </p>
     <aside class="article-callout">
       <strong>Non-negotiable for PR-loop workflows</strong>

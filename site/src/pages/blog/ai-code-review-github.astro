@@ -94,7 +94,6 @@ const jsonLd = [
 <ArticleLayout
   title={title}
   description={description}
-  eyebrow="FIELD NOTE / 003 / GITHUB"
   publishedAt={publishedAt}
   readingTime="15 min read"
   jsonLd={jsonLd}
@@ -256,6 +255,44 @@ const jsonLd = [
       <a href="/blog/best-ai-code-review-tools">AI code review tool decision guide</a>.
       The rest of this article assumes you chose a repository-owned Action or CLI and
       need to make it defensible.
+    </p>
+    <p>
+      Once the integration is chosen, use the
+      <a href="/blog/pr-review-prompts">PR review prompt library</a>
+      to define the finding bar and add focused correctness, security, test, migration,
+      compatibility, frontend, or documentation passes without turning one prompt into
+      a catch-all checklist.
+    </p>
+    <p>
+      Teams using Claude can compare the local command, managed GitHub review, and a
+      repository-owned gate in the
+      <a href="/blog/claude-code-review">Claude Code review workflow</a>. It separates the
+      author, reviewer, evidence policy, and merge decision instead of treating one model
+      response as approval.
+    </p>
+    <p>
+      Teams using OpenAI Codex can follow the
+      <a href="/blog/codex-code-review">Codex code review merge-gate workflow</a> to set up
+      <code>@codex review</code>, scope repository rules, and turn advisory P0/P1 findings
+      into a current-head repository verdict.
+    </p>
+    <p>
+      Teams using Windsurf can apply the
+      <a href="/blog/windsurf-code-review">Windsurf code review epoch contract</a> to keep
+      Quick Review, pull-request findings, agent autofixes, and the final exact-head gate
+      bound to the code state each one actually inspected.
+    </p>
+    <p>
+      Teams using Devin Review can use the
+      <a href="/blog/devin-code-review">four-authority Devin code review contract</a> to
+      separate read, report, branch-mutation, and merge authority while retaining an
+      independent repository verdict for the current head.
+    </p>
+    <p>
+      Publication needs its own contract. The
+      <a href="/blog/pull-request-review-comments">guide to pull request review comments</a>
+      shows how to separate blockers from advice, map findings to line, file, or PR scope,
+      and carry a stable disposition onto the latest head.
     </p>
   </section>
 
@@ -584,6 +621,12 @@ const jsonLd = [
 
   <section id="pilot">
     <h2>Run a pilot that measures signal, not comment volume</h2>
+    <p>
+      Use the
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark methodology</a>
+      to define the corpus, ground truth, metrics, repeated runs, and rollout thresholds
+      before collecting a candidate result.
+    </p>
     <p>
       Do not evaluate a reviewer on a handful of live pull requests where nobody knows
       the ground truth. Build a small, versioned corpus from historical defects and

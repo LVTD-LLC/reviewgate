@@ -196,8 +196,16 @@ None: DataForSEO reports zero ranked keywords, and the `sc-domain:reviewgate.lvt
 | 2026-07-29 | How-to / tutorial | How to Tell If Code Is AI-Generated: What Actually Works | `how to tell if code is ai generated` (US volume 260, KD 11) | In PR |
 | 2026-07-30 | Listicle / roundup | Best AI Code Review Tools for Agent-Written Pull Requests | `best ai code review tools` (US volume 110, KD 10) | In PR |
 | 2026-07-31 | Pillar guide / how-to | AI Code Review on GitHub: A Merge-Safe Workflow | `ai code review github` (US volume 70, KD 13) | In PR |
+| 2026-08-01 | Resource / template library | PR Review Prompts for Agent-Written Pull Requests | `pr review prompt` (US volume 30, KD unavailable) | In PR |
+| 2026-08-02 | How-to / tutorial | Pull Request Review Comments: A Signal-First Guide | `pull request review comments` (US volume 10, KD unavailable) | In PR |
+| 2026-08-03 | Pillar guide / how-to | Claude Code Review: Keep Four Roles Separate | `claude code review` (US volume 2,900, KD 4) | In PR |
+| 2026-08-04 | Pillar guide / how-to | Codex Code Review: Turn Findings Into a Merge Gate | `codex code review` (US volume 590, KD 5) | In PR |
+| 2026-08-05 | Pillar guide / how-to | Cursor Code Review: Use Bugbot in a Current-Head Gate | `cursor code review` (US volume 320, KD 0) | In PR |
+| 2026-08-06 | Pillar guide / benchmark methodology | AI Code Review Benchmark: What to Measure | `ai code review benchmark` (US volume 20, KD unavailable) | In PR |
+| 2026-08-07 | Pillar guide / how-to | Windsurf Code Review: Build a Current-Head Gate | `windsurf code review` (US volume 30, KD 11) | In PR |
+| 2026-08-13 | Pillar guide / how-to | Devin Code Review: Keep Review and Merge Separate | `devin code review` (US volume 90, KD 14) | In PR |
 
-The editorial series adds a provenance-blind evidence gate, a comparison framework, and a five-binding GitHub workflow for trusted events, runtimes, evidence, verdicts, and current-head results. Every post links to live product/docs surfaces and receives at least two contextual inbound links. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
+The editorial series adds a provenance-blind evidence gate, a comparison framework, a five-binding GitHub workflow for trusted events, runtimes, evidence, verdicts, and current-head results, an eight-angle prompt library with explicit finding-admission rules, a signal-first contract for placing and resolving review comments, a four-role operating model for Claude-authored pull requests, a three-artifact contract that converts Codex review comments into admitted findings and an exact-head verdict, a three-state contract for Cursor's reviewed diff, Bugbot finding disposition, and current-head merge verdict, a reproducible benchmark scorecard for recall, false blockers, repeatability, failures, latency, cost, and rollout decisions, a Windsurf review-epoch contract that separates Quick Review, pull-request review, Autofix branch mutations, and the exact-head repository gate, and a four-authority Devin contract that separates read, report, mutation, and merge permissions. Every post links to live product/docs surfaces and receives at least two contextual inbound links. Structured opportunity and claim ledgers live in the private ReviewGate Rowset project under its `SEO` section; `.seo/config.json` stores only the locators.
 
 ### Phase 1 — Retarget the homepage for “AI code review tool”
 

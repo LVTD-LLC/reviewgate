@@ -6,7 +6,6 @@ import BaseLayout from "./BaseLayout.astro";
 interface Props {
   title: string;
   description: string;
-  eyebrow: string;
   publishedAt: string;
   readingTime: string;
   jsonLd: Record<string, unknown>[];
@@ -15,7 +14,6 @@ interface Props {
 const {
   title,
   description,
-  eyebrow,
   publishedAt,
   readingTime,
   jsonLd,
@@ -34,7 +32,6 @@ const {
 
     <article class="article-shell">
       <header class="article-header">
-        <p class="signal-eyebrow">{eyebrow}</p>
         <h1><slot name="title" /></h1>
         <p class="article-deck"><slot name="deck" /></p>
         <div class="article-meta">

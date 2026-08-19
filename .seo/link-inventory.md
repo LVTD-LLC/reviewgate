@@ -17,6 +17,13 @@
 | `/blog/how-to-tell-if-code-is-ai-generated` | https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/ | How to review code when AI authorship is uncertain | E |
 | `/blog/best-ai-code-review-tools` | https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/ | Best AI code review tools for agent-written PRs | E |
 | `/blog/ai-code-review-github` | https://reviewgate.lvtd.dev/blog/ai-code-review-github/ | Merge-safe AI code review on GitHub | E |
+| `/blog/pr-review-prompts` | https://reviewgate.lvtd.dev/blog/pr-review-prompts/ | Evidence-bound PR review prompt library | E |
+| `/blog/pull-request-review-comments` | https://reviewgate.lvtd.dev/blog/pull-request-review-comments/ | Signal-first pull request review comments | E |
+| `/blog/claude-code-review` | https://reviewgate.lvtd.dev/blog/claude-code-review/ | Four-role Claude Code review contract | E |
+| `/blog/codex-code-review` | https://reviewgate.lvtd.dev/blog/codex-code-review/ | Codex code review merge-gate workflow | E |
+| `/blog/cursor-code-review` | https://reviewgate.lvtd.dev/blog/cursor-code-review/ | Cursor code review and Bugbot merge-gate workflow | E |
+| `/blog/ai-code-review-benchmark` | https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/ | AI code review benchmark and merge-gate scorecard | E |
+| `/blog/windsurf-code-review` | https://reviewgate.lvtd.dev/blog/windsurf-code-review/ | Windsurf code review and review-epoch merge-gate workflow | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -105,3 +112,67 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “five bindings for AI code review”
 - “exact-head review check”
 - “repository-owned AI reviewer”
+
+### PR review prompt library
+
+- “PR review prompt library”
+- “evidence-bound PR review prompts”
+- “AI code review prompt templates”
+- “prompts for agent-written pull requests”
+- “specialized code review prompts”
+
+### Pull request review comments guide
+
+- “pull request review comment contract”
+- “signal-first review comments”
+- “write actionable PR comments”
+- “line, file, and PR review scope”
+- “review finding disposition”
+
+### Claude Code review field note
+
+- “Claude Code review workflow”
+- “four-role Claude Code review contract”
+- “review Claude-authored pull requests”
+- “separate AI reviewer and merge gate”
+- “current-head Claude review”
+
+### Codex code review field note
+
+- “Codex code review workflow”
+- “turn Codex findings into a merge gate”
+- “Codex AGENTS.md review rules”
+- “current-head Codex review”
+- “Codex review output contract”
+
+### Cursor code review field note
+
+- “Cursor code review workflow”
+- “turn Bugbot findings into a merge gate”
+- “scoped BUGBOT.md review rules”
+- “current-head Cursor review”
+- “Bugbot finding disposition contract”
+
+### AI code review benchmark field note
+
+- “AI code review benchmark”
+- “code review benchmark scorecard”
+- “evaluate AI code review tools”
+- “measure review recall and false blockers”
+- “reproducible reviewer evaluation”
+
+### Windsurf code review field note
+
+- “Windsurf code review workflow”
+- “Windsurf review epoch contract”
+- “Quick Review and Devin Review merge gate”
+- “current-head Windsurf review”
+- “rerun review after Autofix”
+
+### Devin code review field note
+
+- “Devin code review workflow”
+- “four-authority Devin review contract”
+- “separate Devin review and merge authority”
+- “current-head Devin review gate”
+- “rerun review after Devin Auto-Fix”

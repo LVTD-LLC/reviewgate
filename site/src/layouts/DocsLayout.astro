@@ -9,17 +9,10 @@ interface Props {
     description: string;
     heading: string;
     lede: string;
-    eyebrow?: string;
   };
 }
 
-const {
-  title,
-  description,
-  heading,
-  lede,
-  eyebrow = "DOCUMENTATION / REVIEWGATE V0",
-} = Astro.props.frontmatter;
+const { title, description, heading, lede } = Astro.props.frontmatter;
 
 const repositoryUrl = "https://github.com/LVTD-LLC/reviewgate";
 const currentPath = Astro.url.pathname.replace(/\/$/, "") || "/";
@@ -65,7 +58,6 @@ const isCurrent = (href: string) => currentPath === href;
     <SiteHeader current="docs" />
 
     <section class="docs-page-hero">
-      <p class="signal-eyebrow">{eyebrow}</p>
       <p class="docs-breadcrumbs"><a href="/docs">Docs</a><span aria-hidden="true">/</span>{heading}</p>
       <h1>{heading}</h1>
       <p class="docs-page-lede">{lede}</p>

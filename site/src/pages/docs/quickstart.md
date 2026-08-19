@@ -4,7 +4,6 @@ title: "ReviewGate quickstart"
 description: "Choose GitHub Actions or the CLI, run a first ReviewGate review, and verify the generated score and artifacts."
 heading: "Run your first ReviewGate review"
 lede: "Choose the execution mode that matches your environment, produce a review artifact, and verify that the result is fresh and machine-readable."
-eyebrow: "GET STARTED / FIRST VERIFIED RESULT"
 ---
 
 ## Decide where the review should run

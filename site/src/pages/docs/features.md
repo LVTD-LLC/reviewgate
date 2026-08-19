@@ -4,7 +4,6 @@ title: "ReviewGate features and scoring"
 description: "Understand ReviewGate review angles, evidence validation, 0-5 scoring, canonical summaries, inline threads, and exact-head rereviews."
 heading: "Understand ReviewGate features and scoring"
 lede: "Follow the review lifecycle from bounded pull request context through evidence-grounded findings, deterministic scoring, canonical GitHub output, and current-head convergence."
-eyebrow: "CONCEPTS / REVIEW LIFECYCLE"
 ---
 
 ## ReviewGate's product boundary

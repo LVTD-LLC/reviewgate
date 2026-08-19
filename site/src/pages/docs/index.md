@@ -4,7 +4,6 @@ title: "ReviewGate documentation"
 description: "Install, configure, and operate ReviewGate with task-focused documentation for maintainers and coding agents."
 heading: "ReviewGate documentation"
 lede: "Set up score-centered pull request reviews, consume machine-readable findings, and give coding agents a deterministic path to a fresh 5/5 result."
-eyebrow: "DOCUMENTATION / START HERE"
 ---
 
 ## Choose the path that matches your task

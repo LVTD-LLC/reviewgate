@@ -6,8 +6,44 @@ Changes are grouped by calendar date, newest first.
 
 - Reworked the root README into a short, visual user guide centered on installation, AI-agent setup, custom review prompts, and common configuration; moved the comprehensive engineering reference into `AGENTS.md` and documented the new information boundary in `STRUCTURE.md`.
 
+## 2026-08-13
+
+- Added “Devin Code Review: Keep Review and Merge Separate,” a source-backed workflow with an original four-authority contract for read, report, mutation, and merge permissions; included BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+- Updated the site's transitive `nanoid` lockfile entry to 3.3.18 so the required production dependency audit passes without the zero-size custom-generator advisory.
+
+## 2026-08-07
+
+- Added “Windsurf Code Review: Build a Current-Head Gate,” a source-backed workflow that separates Quick Review, pull-request findings, Autofix mutations, and the repository verdict with an original review-epoch contract; included BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
+## 2026-08-06
+
+- Replaced the human-readable `/sitemap/` page with a generated `/sitemap.xml` endpoint, updated `robots.txt`, and added build-time XML coverage for every public Astro page.
+- Added “AI Code Review Benchmark: What to Measure,” a reproducible evaluation guide with a repository-derived merge-gate scorecard, public benchmark sources, BlogPosting/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
+## 2026-08-05
+
+- Added an automatically generated, human-readable Astro sitemap page with grouped links to every public route, linked it from the site footer, and covered it in rendered SEO validation.
+- Added “Cursor Code Review: Use Bugbot in a Current-Head Gate,” a current setup and operating guide with scoped BUGBOT.md rules, a repository-derived three-state merge contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
+## 2026-08-04
+
+- Added “Codex Code Review: Turn Findings Into a Merge Gate,” a current setup and operating guide with scoped AGENTS.md rules, a repository-derived three-artifact merge contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
+## 2026-08-03
+
+- Added “Claude Code Review: Keep Four Roles Separate,” a current guide to local and managed Claude review with a repository-derived four-role review contract, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
+## 2026-08-02
+
+- Added the “Pull Request Review Comments: A Signal-First Guide” field note with a five-step comment contract, placement and disposition frameworks, source-backed examples, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
+## 2026-08-01
+
+- Added the “PR Review Prompts for Agent-Written Pull Requests” field note with eight copy-ready review angles, a ReviewGate-derived finding-admission contract, BlogPosting/ItemList/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-07-31
 
+- Removed decorative eyebrow labels from the Astro site's homepage, documentation heroes, and article headers.
 - Added the “AI Code Review on GitHub: A Merge-Safe Workflow” field note with BlogPosting, HowTo, and breadcrumb schema; documented a five-binding review contract, registered contextual inbound links and SEO inventory, and expanded rendered SEO validation to every shipped blog route.
 - Isolated serialized fixed-resolution proof revalidation from the completed review's tracked finding state, so a fixed blocker can publish alongside unrelated open advisories without turning a valid review into a summary-publication error. Advanced the action runtime pin to `v0.9.4`.
 - Made reconciled finding IDs deterministically unique when reviewer drift repeats one model-generated ID for distinct semantic findings, keeping the canonical artifact and tracked convergence state synchronized instead of failing the rereview. Advanced the action runtime pin to `v0.9.3`.

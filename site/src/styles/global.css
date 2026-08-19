@@ -163,19 +163,11 @@ h2 {
   min-width: 0;
 }
 
-.signal-eyebrow,
 .signal-loop-heading > p,
 .signal-console,
 .utility-console,
 .signal-ticker {
   font-family: "IBM Plex Mono", monospace;
-}
-
-.signal-eyebrow {
-  color: var(--signal-green);
-  font-size: clamp(0.82rem, 1.1vw, 0.95rem);
-  letter-spacing: 0.08em;
-  margin-block-end: 24px;
 }
 
 .signal-copy h1,
@@ -735,6 +727,33 @@ h2 {
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.86em;
   padding: 2px 5px;
+}
+
+.article-body pre {
+  background: rgb(8 15 27 / 0.92);
+  border: 1px solid var(--signal-line);
+  color: var(--signal-ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  margin-block: 24px 36px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: clamp(18px, 3vw, 28px);
+  white-space: pre-wrap;
+}
+
+.article-body pre code {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  padding: 0;
+}
+
+.article-prompt + .article-prompt {
+  border-block-start: 1px solid var(--signal-line);
+  margin-block-start: 54px;
+  padding-block-start: 18px;
 }
 
 .article-callout,

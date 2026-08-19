@@ -1,0 +1,675 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Cursor Code Review: Use Bugbot in a Current-Head Gate";
+const description =
+  "Set up Cursor Bugbot, write scoped review rules, verify findings, and bind the merge verdict to the current pull-request head.";
+const canonical = "https://reviewgate.lvtd.dev/blog/cursor-code-review/";
+const publishedAt = "2026-08-05";
+
+const workflowSteps = [
+  {
+    id: "define-contract",
+    name: "Define the pull request contract",
+    text: "Record the intended change, affected interfaces, expected tests, and explicit non-goals before asking Cursor or Bugbot to review the diff.",
+    doneWhen: "Done when the pull request states the change, interfaces, tests, and non-goals in reviewable terms.",
+  },
+  {
+    id: "run-local-review",
+    name: "Run a local preflight",
+    text: "Use Cursor's local /review command before push to catch obvious defects while the author still has the implementation context.",
+    doneWhen: "Done when the author has resolved or recorded every consequential local finding before push.",
+  },
+  {
+    id: "request-pr-review",
+    name: "Run Bugbot on the pull request",
+    text: "Enable automatic review for each update or trigger Bugbot manually, then inspect the Cursor Bugbot check conclusion and confirm which pull request revision its review evidence covers.",
+    doneWhen: "Done when the Cursor Bugbot result or explicit reused-diff record can be tied to the current head and its findings are available.",
+  },
+  {
+    id: "verify-findings",
+    name: "Verify consequential findings",
+    text: "Require each potential blocker to identify an exact changed location, a checked claim, a causal failure path, and the relevant test state.",
+    doneWhen: "Done when every potential blocker has repository evidence or is excluded with a recorded reason.",
+  },
+  {
+    id: "record-disposition",
+    name: "Record finding disposition",
+    text: "Mark every blocker as still open, fixed, rejected with evidence, intentional, or needing human judgment instead of treating an outdated comment as resolution.",
+    doneWhen: "Done when every known blocker has one explicit, evidence-backed current disposition.",
+  },
+  {
+    id: "bind-head",
+    name: "Bind policy to the current head",
+    text: "After every relevant push, require a fresh repository-owned result for the exact commit GitHub is evaluating and retain unresolved obligations across reruns.",
+    doneWhen: "Done when review evidence names the pull request head and every required check applies to the commit shown in GitHub's checks box.",
+  },
+  {
+    id: "retain-authority",
+    name: "Keep merge authority explicit",
+    text: "Combine the current review result with deterministic CI, branch protection, required approvals, and maintainer judgment before merging.",
+    doneWhen: "Done when repository policy records a pass or block outcome and the responsible maintainer makes the merge decision.",
+  },
+];
+
+const faqs = [
+  {
+    question: "What is Cursor code review?",
+    answer:
+      "Cursor code review can mean a local /review command before push or Bugbot reviewing a GitHub pull request. Local review shortens the author feedback loop. Bugbot posts durable pull-request findings and a GitHub check. Neither surface replaces tests, branch protection, or the maintainer's merge decision.",
+  },
+  {
+    question: "How do I trigger Cursor Bugbot on a pull request?",
+    answer:
+      "After connecting the Cursor GitHub app and enabling Bugbot for the repository, configure automatic review on pull-request updates or comment cursor review, bugbot run, or cursor run on a pull request. Confirm the check completes for the latest revision before relying on it.",
+  },
+  {
+    question: "Where should Cursor code review rules live?",
+    answer:
+      "Put repository-wide Bugbot guidance in a root .cursor/BUGBOT.md. Add nested .cursor/BUGBOT.md files near a service or package when an invariant applies only there. Cursor includes the root file and the applicable files found while traversing upward from each changed file.",
+  },
+  {
+    question: "Can Cursor Bugbot block a pull request?",
+    answer:
+      "Bugbot publishes a GitHub check named Cursor Bugbot that branch protection can require. Findings produce a neutral conclusion by default, and GitHub accepts neutral as satisfying a required check, so requiring the check normally proves it ran but does not block on findings. Where available, enable Cursor's fail-on-unresolved-issues behavior to make unresolved findings produce failure, or compose Bugbot evidence into a separate repository-controlled verdict.",
+  },
+  {
+    question: "Should Cursor review code written by Cursor?",
+    answer:
+      "Yes, as an additional pass, but separate authorship from review evidence and merge policy. A local preflight is useful for fast feedback; a pull-request review should run against the committed diff; deterministic tests and repository-owned policy should decide whether that evidence is sufficient to merge.",
+  },
+  {
+    question: "What does it mean when Bugbot finds no bugs?",
+    answer:
+      "A Cursor Bugbot success conclusion means the run found no issues and no earlier Bugbot comments remain unresolved. Confirm which revision or reused diff the result covers, then run required CI and examine human comments. No reported finding is a useful signal, not proof that the change is correct; neutral can indicate findings, cancellation by a newer commit, or an internal error.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to turn Cursor code review into a merge gate",
+    description: "A seven-step workflow from local Cursor review and Bugbot findings to a current-head repository verdict.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+    text: `${step.text} ${step.doneWhen}`,
+      url: `${canonical}#${step.id}`,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="14 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Cursor Code Review: Use Bugbot in a Current-Head Gate</Fragment>
+  <Fragment slot="deck">
+    Cursor can review a diff before push and Bugbot can review the pull request. The
+    repository still needs to track which revision was reviewed, which findings remain
+    open, and whether the current head may merge.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#review-surfaces">Choose the review surface</a></li>
+    <li><a href="#setup-bugbot">Set up Bugbot</a></li>
+    <li><a href="#bugbot-rules">Write scoped rules</a></li>
+    <li><a href="#three-states">Track three states</a></li>
+    <li><a href="#workflow">Run the workflow</a></li>
+    <li><a href="#worked-example">Trace one finding</a></li>
+    <li><a href="#current-head">Keep the result current</a></li>
+    <li><a href="#no-findings">Interpret no findings</a></li>
+    <li><a href="#failure-modes">Avoid failure modes</a></li>
+    <li><a href="#checklist">Pre-merge checklist</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <nav class="docs-breadcrumbs" aria-label="Breadcrumb">
+    <a href="/">Home</a>
+    <span aria-hidden="true">/</span>
+    <a href="/blog">Blog</a>
+    <span aria-hidden="true">/</span>
+    <span aria-current="page">Cursor code review</span>
+  </nav>
+
+  <section id="short-answer">
+    <h2>How should you use Cursor code review?</h2>
+    <p class="article-lead">
+      Use Cursor code review in two loops: run <code>/review</code> locally for fast
+      pre-push feedback, then run Bugbot on the committed pull-request diff. Verify every
+      consequential finding and require a repository-owned verdict for the exact head
+      commit. Cursor supplies review evidence; tests, branch policy, and maintainers retain
+      merge authority.
+    </p>
+    <p>
+      Verified against Cursor documentation on August 5, 2026. Cursor's current
+      <a href="https://cursor.com/docs/bugbot">Bugbot documentation</a>
+      describes a pull-request reviewer that analyzes diffs, posts explanations and fix
+      suggestions, runs on updates, and supports manual triggers such as
+      <code>cursor review</code> and <code>bugbot run</code>. Cursor's
+      <a href="https://cursor.com/blog/bugbot-updates-june-2026">June 2026 Bugbot update</a>
+      also introduced local <code>/review</code>, <code>/review-bugbot</code>, and
+      <code>/review-security</code> commands. Those surfaces answer different questions. Local review asks,
+      “What should the author inspect before push?” Bugbot asks, “What did the PR reviewer
+      find on this diff?” A merge gate asks, “May this exact revision merge under repository
+      policy?”
+    </p>
+    <p>
+      The local and hosted loops may share work. Cursor says that if local
+      <code>/review</code> sees a diff and a pull request later opens with the same diff,
+      Bugbot can recognize it, skip a duplicate review, and leave a comment recording the
+      reuse. Treat that comment as a provenance record: verify that the reused diff still
+      matches the pull-request head before admitting it to the gate.
+    </p>
+    <aside class="article-callout">
+      <strong>The boundary to keep</strong>
+      <p>
+        A completed review is evidence about one diff. It is not a durable statement that
+        every finding is resolved, and it is not permission to merge a later commit.
+      </p>
+    </aside>
+  </section>
+
+  <section id="review-surfaces">
+    <h2>Choose the right Cursor code review surface</h2>
+    <p>
+      Start with the decision you need to make. The local command is an authoring
+      preflight: it keeps feedback close to the working tree and lets you fix obvious
+      defects before reviewers see them. Bugbot is a pull-request reviewer: it creates a
+      shared GitHub record, can rerun on updates, and can attach findings to the diff. A
+      repository gate is policy: it combines review evidence with required tests,
+      approvals, and current-head checks.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Surface</th>
+          <th scope="col">Subject</th>
+          <th scope="col">Durable record</th>
+          <th scope="col">Best use</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Local <code>/review</code></th>
+          <td>Local changes or the selected diff</td>
+          <td>No, unless you publish it</td>
+          <td>Pre-push feedback while implementation context is fresh</td>
+        </tr>
+        <tr>
+          <th scope="row">Bugbot PR review</th>
+          <td>Committed pull-request diff</td>
+          <td>GitHub check and review comments</td>
+          <td>Separate review evidence shared with the team</td>
+        </tr>
+        <tr>
+          <th scope="row">Repository-owned gate</th>
+          <td>Exact head commit plus all required evidence</td>
+          <td>Required check, structured result, and branch policy</td>
+          <td>Deterministic merge eligibility</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Do not collapse the three into one green icon. Local review can pass while the
+      committed diff changes during cleanup. Bugbot can find no issue while a required
+      integration test fails. Tests can pass while a reviewer catches a compatibility
+      break the suite does not encode. The
+      <a href="/blog/ai-code-review-github">merge-safe AI review workflow for GitHub</a>
+      explains how to combine those signals without giving model prose policy authority.
+    </p>
+    <p>
+      This separation is useful even when one vendor supplies more than one surface.
+      Independence comes from the subject, permissions, and artifact contract, not from
+      choosing a different model name. An author-side tool should not be able to rewrite
+      the policy that judges its own change.
+    </p>
+  </section>
+
+  <section id="setup-bugbot">
+    <h2>Set up Cursor Bugbot for pull request review</h2>
+    <p>
+      Bugbot setup happens through Cursor's dashboard and GitHub app. Cursor's official
+      instructions require Cursor administrator access and GitHub organization
+      administrator access for the connection. Connect GitHub, select the repositories
+      Bugbot may review, and enable the reviewer on a representative repository before
+      rolling it out broadly.
+    </p>
+    <ol>
+      <li>Open the Bugbot area in the Cursor dashboard.</li>
+      <li>Connect or manage the Cursor GitHub app installation.</li>
+      <li>Grant access only to the repositories that need review.</li>
+      <li>Enable Bugbot on one repository with representative pull requests.</li>
+      <li>Choose automatic review on updates or an explicit manual-trigger policy.</li>
+      <li>Add a root <code>.cursor/BUGBOT.md</code> with two or three tested invariants.</li>
+      <li>Open a small pull request and inspect the <code>Cursor Bugbot</code> check, its conclusion, comments, and runtime.</li>
+    </ol>
+    <p>
+      Record the observable contract before rollout: the exact GitHub check name, the head
+      SHA it reviewed, whether it concluded <code>success</code>, <code>neutral</code>, or
+      <code>failure</code>, and whether a new push invalidates
+      the old result and schedules another run. Setup is complete only when a maintainer
+      can connect that check to the current pull-request revision without inferring state
+      from comment timestamps.
+    </p>
+    <p>
+      Treat the GitHub App boundary as part of setup. Before approving the installation,
+      review the repositories and permissions GitHub displays; after installation, use
+      GitHub's
+      <a href="https://docs.github.com/en/apps/using-github-apps/reviewing-and-modifying-installed-github-apps">
+        installed-app controls
+      </a>
+      to inspect or narrow repository access. Do not infer Cursor's data boundary from a
+      product label—confirm the live installation request and your organization's policy.
+    </p>
+    <p>
+      Start narrow. Automatic review on every update is useful when the signal is quiet
+      and the cost is understood. Manual review is safer while rules are noisy or while a
+      team is learning which changes need the extra pass. Cursor's
+      <a href="https://cursor.com/pricing">current pricing page</a>
+      describes Bugbot as usage-based, so review frequency and effort are operational
+      choices as well as quality choices. Check the live page instead of copying
+      a fixed per-run number into repository policy.
+    </p>
+    <p>
+      A successful installation proves only that the reviewer can run. Test whether it can
+      recognize your repository's actual failure modes. Prepare a small evaluation set:
+      one known violation, one safe counterexample, and one unrelated change. The first
+      checks recall, the second checks noise, and the third checks whether the rule is
+      scoped tightly enough.
+    </p>
+  </section>
+
+  <section id="bugbot-rules">
+    <h2>Write Bugbot rules that encode repository risk</h2>
+    <p>
+      Cursor uses <code>.cursor/BUGBOT.md</code> for project-specific review context. The
+      root file is always included. Additional files are selected by walking upward from a
+      changed file, which lets a service own its local constraints without forcing every
+      pull request to carry every rule.
+    </p>
+    <p>
+      A useful rule names an invariant, its consequence, the safe path, and its scope.
+      “Check security” is too broad. “Every webhook signature must be verified over the
+      untouched request body before JSON parsing; otherwise a valid signature can be
+      rejected or a modified body can be trusted” gives the reviewer a claim and a causal
+      failure path to inspect.
+    </p>
+    <pre><code># Bugbot review rules
+
+## Public artifact compatibility
+
+- Preserve existing fields in `reviewgate-agent-result/v1`.
+  Renaming or removing a field breaks external repair agents.
+  Add a versioned field or schema before changing the contract.
+
+## Current-head publication
+
+- Never publish a usable review result unless `reviewed_sha`
+  equals the pull request head being evaluated.</code></pre>
+    <p>
+      Keep deterministic checks out of prose. A formatter should enforce formatting. A
+      type checker should enforce types. Bugbot rules should capture history and product
+      judgment that those tools cannot infer: compatibility promises, authorization
+      boundaries, idempotency rules, destructive migration constraints, or required
+      failure behavior.
+    </p>
+    <p>
+      Review the rules as code. Add a rule with a representative violation, observe the
+      finding, and then run the safe counterexample. Narrow any instruction that reports
+      the counterexample. Remove obsolete rules when the architecture changes. A large
+      rule file that nobody tests is another source of confident noise.
+    </p>
+  </section>
+
+  <section id="three-states">
+    <h2>Track reviewed diff, finding disposition, and merge verdict</h2>
+    <p>
+      Most Cursor code review guides stop after setup and fixes. The missing contract is
+      state. A review system needs to distinguish three records that change at different
+      times: the diff a reviewer saw, the disposition of each consequential finding, and
+      the repository verdict for the current head.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">State</th>
+          <th scope="col">Minimum fields</th>
+          <th scope="col">Changes when</th>
+          <th scope="col">Failure it prevents</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Reviewed diff</th>
+          <td>Repository, PR, head SHA, trigger, completion state</td>
+          <td>A commit changes or review reruns</td>
+          <td>Reusing a clean result from an earlier revision</td>
+        </tr>
+        <tr>
+          <th scope="row">Finding disposition</th>
+          <td>Stable identity, evidence, severity, status, resolution proof</td>
+          <td>Evidence proves fixed, rejected, intentional, or still open</td>
+          <td>Treating moved or omitted comments as resolved</td>
+        </tr>
+        <tr>
+          <th scope="row">Merge verdict</th>
+          <td>Current SHA, admitted blockers, tests, approvals, policy outcome</td>
+          <td>Any required evidence changes</td>
+          <td>Letting persuasive review prose decide branch policy</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      This contract turns “run an AI reviewer and fix the comments” into something a
+      maintainer or repair agent can audit. Each state has an owner and invalidation rule.
+      The reviewed diff belongs to the reviewer invocation. Finding disposition belongs to
+      an evidence policy. The merge verdict belongs to the repository.
+    </p>
+    <p>
+      ReviewGate supplies evidence for the first two states in public source. Its stable
+      result records repository and pull-request scope, <code>reviewed_sha</code>,
+      structured findings, dispositions, typed review errors, and a score derived from
+      admitted blockers. Repository CI, approvals, and branch policy compose that evidence
+      into the third state: the merge verdict. See the
+      <a href="/docs/features">feature and scoring contract</a> for the exact ReviewGate
+      policy, or inspect the
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/schemas/reviewgate-agent-result-v1.schema.json">
+        agent-result schema
+      </a> directly.
+    </p>
+    <p><strong>Conceptual combined record (not a ReviewGate artifact):</strong></p>
+    <pre><code>{`review_evidence:
+  reviewed_sha: a1b2c3d
+  result_status: passed
+  finding:
+    id: public-schema-field-rename
+    disposition: fixed
+    evidence:
+      source: compatibility-test
+      result: passed
+repository_policy:
+  required_ci: passed
+  required_approvals: 1/1
+  outcome: merge_allowed`}</code></pre>
+    <p>
+      The first block is review evidence. The second is repository policy. Keeping them
+      separate makes it clear which system may change a finding and which system may
+      authorize a merge.
+    </p>
+  </section>
+
+  <section id="workflow">
+    <h2>Run a current-head Cursor code review workflow</h2>
+    <p>
+      The workflow below keeps the fast Cursor loop while adding an auditable merge
+      decision. Each step has a completion condition. If you cannot name what “done” looks
+      like, the step is advice rather than a gate.
+    </p>
+    <ol class="article-steps">
+      {workflowSteps.map((step) => (
+        <li id={step.id}>
+          <h3>{step.name}</h3>
+          <p>{step.text}</p>
+          <p><strong>{step.doneWhen}</strong></p>
+        </li>
+      ))}
+    </ol>
+    <h3>Require the check in GitHub without confusing its role</h3>
+    <ol>
+      <li>Let Bugbot complete once so GitHub records the exact <code>Cursor Bugbot</code> check identity.</li>
+      <li>Open the repository ruleset or protected-branch settings for the merge branch.</li>
+      <li>Add that exact Bugbot status under required status checks if its completion is mandatory.</li>
+      <li>Require deterministic CI and approvals separately; a Bugbot pass does not satisfy them.</li>
+      <li>Push a harmless commit and confirm the earlier check becomes insufficient until a new run completes.</li>
+    </ol>
+    <p>
+      Requiring Bugbot makes GitHub wait for the check, but it is not finding-sensitive by
+      default. Cursor documents <code>success</code> for no issues and no unresolved prior
+      comments; <code>neutral</code> for findings, cancellation by a newer commit, or an
+      internal error; and <code>failure</code> when findings exist and fail-on-unresolved
+      behavior is enabled. GitHub accepts <code>neutral</code> as satisfying a required
+      check. Where Cursor offers fail-on-unresolved issues, enable it if Bugbot findings
+      themselves must block. Otherwise, add ReviewGate or another repository-controlled
+      policy check that converts verified finding state into a failing verdict. GitHub's
+      <a href="https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks">
+        required-check guidance
+      </a>
+      explains how required checks attach to the revision GitHub evaluates.
+    </p>
+    <p>
+      ReviewGate can supply the repository-owned part without replacing Cursor. Install
+      the <a href="/docs#install">ReviewGate GitHub Action</a> as a separate review job,
+      keep Bugbot for its native Cursor workflow, and require only the checks your branch
+      policy explicitly trusts. External repair agents can consume the
+      <a href="/docs/agent-workflows">exact-head repair-loop contract</a> instead of
+      scraping review comments.
+    </p>
+    <p>
+      Do not make a model-generated score configurable by pull-request text. The reviewed
+      code is untrusted input. Thresholds, finding admission, required checks, and workflow
+      permissions should live in trusted repository or organization configuration. That
+      prevents a change under review from quietly weakening its own judge.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>Trace one Bugbot finding through the three states</h2>
+    <p>
+      Consider a pull request that changes a public JSON field from
+      <code>reviewed_sha</code> to <code>commit_sha</code>. The local Cursor pass notices
+      the rename. Bugbot applies the repository rule, attaches a finding to the changed
+      schema line, and explains that existing external agents still require the old field.
+    </p>
+    <p>
+      The review comment is presentation. To admit the finding as a blocker, verify the
+      checked claim: the public v1 schema requires <code>reviewed_sha</code>, the serializer
+      removed it, and a fixture or consumer test fails. Record that evidence with the
+      reviewed head. At this point the finding is <code>still_open</code> and the merge
+      verdict cannot pass.
+    </p>
+    <p>
+      The author restores the field and adds a compatibility test. That push creates a new
+      head, so the old review is stale even though the evidence suggests the issue is
+      fixed. Run deterministic CI and request a current-head review. The finding moves to
+      <code>fixed</code> only when the replacement code and test settle the same causal
+      claim. A fresh repository verdict can then pass if no other admitted blocker remains.
+    </p>
+    <p>
+      Now change the example: the public contract was intentionally versioned to v2 and
+      every consumer migrated. The correct disposition is not “fixed.” It is
+      <code>rejected_with_evidence</code> or an intentional-contract state, backed by the
+      new schema and migration record. Explicit disposition preserves why the comment did
+      not lead to a code change.
+    </p>
+  </section>
+
+  <section id="current-head">
+    <h2>Bind every Cursor code review result to the current head</h2>
+    <p>
+      GitHub evaluates required checks for the commit shown in the pull request checks
+      box. Its
+      <a href="https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks">
+        required-status-check guidance
+      </a>
+      explains that this can be the test merge commit when it has a status, otherwise the
+      head commit. Bind Bugbot review evidence separately to the pull-request head: a clean
+      review on commit A cannot prove commit B is clean.
+      Even a one-line test fix can alter production code, generated files, dependencies,
+      or review instructions.
+    </p>
+    <p>
+      Store the head SHA in the machine-readable result and compare it with the live pull
+      request immediately before the pass decision. Treat a mismatch as stale, not as a
+      low score and not as success. A provider timeout or malformed artifact is also not a
+      code-quality verdict; represent it as an unavailable review state and retain the
+      latest valid evidence separately.
+    </p>
+    <p>
+      Incremental review is useful for latency and cost, but it does not remove the state
+      problem. The reviewer must know the trusted prior revision and the delta it is adding
+      to the result. An unresolved finding from the prior revision must survive unless the
+      new delta contains evidence that settles the same claim. Reviewer silence on a later
+      run is not resolution evidence by itself.
+    </p>
+  </section>
+
+  <section id="no-findings">
+    <h2>Interpret a Bugbot run with no findings</h2>
+    <p>
+      Start with the check conclusion, not comment count. Cursor defines
+      <code>success</code> as no issues and no unresolved Bugbot comments from earlier
+      runs. A <code>neutral</code> conclusion can mean findings, cancellation by a newer
+      commit, or an internal error, so it is not a clean signal even though GitHub allows
+      neutral required checks to pass. Confirm which current-head diff or explicit reused
+      local review the result covers, then examine evidence sources Bugbot does not own.
+    </p>
+    <ul>
+      <li>Did required unit, integration, migration, and security checks pass?</li>
+      <li>Did the pull request change an interface that lacks a contract test?</li>
+      <li>Did a human reviewer raise an unresolved product or architecture concern?</li>
+      <li>Were the applicable <code>BUGBOT.md</code> rules present on the reviewed head?</li>
+      <li>Did the reviewer complete, or did the service fail without publishing findings?</li>
+    </ul>
+    <p>
+      Keep “no finding” distinct from “finding resolved.” The former describes one
+      invocation. The latter describes an evidence-backed transition for a known
+      obligation. Conflating them creates the familiar rereview bug where a model omits a
+      prior comment and automation silently marks the defect fixed.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Avoid common Cursor code review failure modes</h2>
+    <h3>Using the authoring pass as independent review</h3>
+    <p>
+      The local command is valuable, but it shares the author's working context and may
+      never produce a durable artifact. Use it to improve the change before push. Use a
+      separate pull-request invocation for evidence that other reviewers can inspect.
+    </p>
+    <h3>Writing broad rules without counterexamples</h3>
+    <p>
+      “Flag every possible breaking change” invites noise. Name the protected contract,
+      the actual break, and the compatible path. Test the rule against a safe change so
+      the reviewer learns where the boundary stops.
+    </p>
+    <h3>Parsing comment tone as merge policy</h3>
+    <p>
+      Reactions, prose summaries, and comment counts are presentation. They are difficult
+      to version and easy to misread. Require a check or structured artifact with an
+      explicit state for the current head.
+    </p>
+    <h3>Assuming a moved comment is fixed</h3>
+    <p>
+      GitHub may mark an inline comment outdated when its line changes. That says the
+      anchor moved; it does not prove the causal defect disappeared. Preserve stable
+      finding identity and require resolution evidence.
+    </p>
+    <h3>Letting a service failure become a clean review</h3>
+    <p>
+      A missing review, timeout, or provider error is inconclusive. Fail closed for merge
+      policy, report the operational error separately, and retry within a bounded policy.
+      Never convert unavailable review into “no bugs found.”
+    </p>
+  </section>
+
+  <section id="checklist">
+    <h2>Cursor code review pre-merge checklist</h2>
+    <ul class="article-checklist">
+      <li>The pull request contract names affected interfaces, tests, and non-goals.</li>
+      <li>Local Cursor review ran before push where it added useful feedback.</li>
+      <li>The <code>Cursor Bugbot</code> conclusion and covered diff are known for the current pull-request head.</li>
+      <li>Applicable root and nested <code>.cursor/BUGBOT.md</code> rules were present.</li>
+      <li>Every consequential finding has exact repository evidence and a causal path.</li>
+      <li>Every known blocker has an explicit current disposition.</li>
+      <li>Required deterministic CI passed for the commit shown in GitHub's checks box.</li>
+      <li>The repository-owned verdict names the reviewed SHA and usable review state.</li>
+      <li>Required human approvals and unresolved human comments are satisfied.</li>
+      <li>A maintainer still owns the final risk and merge decision.</li>
+    </ul>
+    <p>
+      If you want this contract as a check instead of a manual convention,
+      <a href="/docs#install">install ReviewGate</a> and configure the review angles that
+      encode your repository's real risks. ReviewGate remains review-only: it publishes
+      evidence and a score, while your tests, branch protection, and maintainers decide
+      what may merge.
+    </p>
+    <p>
+      If your team uses Windsurf instead, the
+      <a href="/blog/windsurf-code-review">Windsurf code review guide</a> applies the same
+      freshness boundary to Quick Review, Devin Review, and agent-generated Autofix
+      commits through an explicit review-epoch contract.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Cursor code review questions</h2>
+    {faqs.map((faq) => (
+      <section class="article-faq-item">
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+</ArticleLayout>

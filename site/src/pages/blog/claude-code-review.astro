@@ -1,0 +1,576 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Claude Code Review: Keep Four Roles Separate";
+const description =
+  "Use Claude Code Review locally or on GitHub, then separate findings, evidence policy, and the current-head merge decision.";
+const canonical = "https://reviewgate.lvtd.dev/blog/claude-code-review/";
+const publishedAt = "2026-08-03";
+
+const workflowSteps = [
+  {
+    name: "Define the intended change",
+    text: "Record the pull request goal, affected contracts, expected tests, and explicit non-goals before asking any reviewer to judge the diff.",
+  },
+  {
+    name: "Run local review before the pull request",
+    text: "Use the local /code-review command against the intended branch or ref range, validate its findings, and rerun deterministic tests after each accepted fix.",
+  },
+  {
+    name: "Run a separate pull request review",
+    text: "Use managed Code Review or another review-only invocation with permissions and context separate from the authoring session.",
+  },
+  {
+    name: "Admit only evidence-backed findings",
+    text: "Require each potential blocker to identify the checked claim, exact repository evidence, causal failure path, severity, and relevant test state.",
+  },
+  {
+    name: "Bind the result to the current revision",
+    text: "After every relevant push, require a fresh result for the commit GitHub is evaluating and preserve unresolved findings until evidence settles them.",
+  },
+  {
+    name: "Leave merge authority with the repository",
+    text: "Let deterministic CI, branch policy, required human approvals, and the maintainer's risk judgment decide whether the pull request may merge.",
+  },
+];
+
+const faqs = [
+  {
+    question: "What is Claude Code Review?",
+    answer:
+      "Claude Code review can mean the local /code-review command, Anthropic's managed GitHub Code Review service, or a custom workflow built with Claude Code GitHub Actions. They have different execution locations, configuration files, outputs, costs, and merge-policy behavior.",
+  },
+  {
+    question: "Does Claude Code Review block a pull request?",
+    answer:
+      "Anthropic's managed Claude Code Review does not approve or block pull requests. Its check concludes neutral. A repository that wants enforcement needs a separate required check that fails under explicit policy and is evaluated for the current commit.",
+  },
+  {
+    question: "How much does managed Claude Code Review cost?",
+    answer:
+      "Anthropic's documentation says managed Code Review is token-billed and averages $15 to $25 per review, with cost varying by pull request size, codebase complexity, and verification work. Local /code-review uses normal Claude Code plan or API usage instead.",
+  },
+  {
+    question: "Should Claude review code that Claude wrote?",
+    answer:
+      "It can, but use a separate invocation, context, permission set, and artifact. The important boundary is not the model name. It is whether the author can influence the review evidence or policy that judges its own change.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to review a Claude-written pull request",
+    description: "A six-step workflow that separates authorship, review, evidence policy, and merge authority.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+      url: `${canonical}#workflow`,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="14 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Claude Code Review: Keep Four Roles Separate</Fragment>
+  <Fragment slot="deck">
+    Claude can write the patch and find defects in it. A trustworthy pull request still
+    needs separate authority for review evidence, blocking policy, and the final merge.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#modes">Choose the review surface</a></li>
+    <li><a href="#four-roles">The four-role contract</a></li>
+    <li><a href="#workflow">Run the workflow</a></li>
+    <li><a href="#managed-review">Configure managed review</a></li>
+    <li><a href="#worked-example">Trace one finding</a></li>
+    <li><a href="#failure-modes">Common failure modes</a></li>
+    <li><a href="#checklist">Pre-merge checklist</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should Claude Code review a pull request?</h2>
+    <p class="article-lead">
+      Use local <code>/code-review</code> for pre-push feedback, managed Claude Code
+      Review for PR-native findings, and a separate repository-owned check for merge
+      policy. Keep four roles distinct: Claude as author, a review-only invocation as
+      reviewer, deterministic code as evidence policy, and GitHub plus maintainers as
+      the merge gate.
+    </p>
+    <p>
+      This distinction matters because “Claude Code Review” now names several different
+      surfaces. Anthropic's managed service runs specialized agents on its infrastructure,
+      posts inline findings and annotations, and verifies candidate issues. The local
+      command runs from a Claude Code session against a chosen diff. The programmable
+      GitHub Action runs Claude in your workflow and may have write-capable tools. They
+      are related products, not interchangeable security boundaries.
+    </p>
+    <p>
+      The managed service is deliberately advisory. Anthropic's current
+      <a href="https://code.claude.com/docs/en/code-review">Code Review documentation</a>
+      says its check run always concludes <code>neutral</code> and does not approve or
+      block a pull request. GitHub treats a neutral conclusion as successful for required
+      checks, so a repository needs a separate failing check if findings must affect merge
+      eligibility. That is a policy decision, not a prompt-writing trick.
+    </p>
+    <aside class="article-callout">
+      <strong>The operating rule</strong>
+      <p>
+        A finding can be useful without being a verdict. A verdict can be current without
+        authorizing a merge. Preserve those boundaries even when the same model family
+        participates in more than one role.
+      </p>
+    </aside>
+  </section>
+
+  <section id="modes">
+    <h2>Choose the right Claude Code review surface</h2>
+    <p>
+      Start with the job you need done. Local review is fastest for the author. Managed
+      review creates a durable pull request record. A custom Action gives you broader
+      orchestration, so you must define its permission surface explicitly. A repository
+      gate turns admitted findings into an enforceable status. Combining them is often
+      useful; confusing them is not.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Surface</th>
+          <th scope="col">Best job</th>
+          <th scope="col">Durable PR output</th>
+          <th scope="col">Merge behavior</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Local <code>/code-review</code></th>
+          <td>Inspect a branch or working diff before push</td>
+          <td>Only when you explicitly post comments</td>
+          <td>Advisory</td>
+        </tr>
+        <tr>
+          <th scope="row">Managed Code Review</th>
+          <td>Team-wide PR findings with verification and annotations</td>
+          <td>Inline comments, review body, check details, annotations</td>
+          <td>Always neutral</td>
+        </tr>
+        <tr>
+          <th scope="row">Claude Code GitHub Action</th>
+          <td>Custom repository automation on GitHub runners</td>
+          <td>Whatever the workflow publishes</td>
+          <td>Defined by your workflow</td>
+        </tr>
+        <tr>
+          <th scope="row">Repository review gate</th>
+          <td>Apply deterministic evidence and severity policy</td>
+          <td>Required check plus structured artifact</td>
+          <td>Can block under branch policy</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Local <code>/code-review</code> can target the current work, a file, a pull request
+      number, a branch, or a ref range. It follows <code>CLAUDE.md</code>, but Anthropic's
+      docs say it does not read <code>REVIEW.md</code>. Managed Code Review reads both:
+      hierarchical <code>CLAUDE.md</code> files provide shared project context, while a
+      root <code>REVIEW.md</code> controls review-only behavior at higher priority.
+    </p>
+    <p>
+      Do not collapse adjacent commands into the same job. <code>/review</code> is a fast
+      review pass, <code>/code-review ultra</code> escalates to a deeper cloud review, and
+      <code>/security-review</code> is scoped to security risks. Choose the command whose
+      target and cost match the decision you need to make.
+    </p>
+    <p>
+      The
+      <a href="https://code.claude.com/docs/en/github-actions">Claude Code GitHub Action</a>
+      is broader than managed Code Review. It can analyze issues, modify code, and create
+      pull requests when the workflow grants those tools and permissions. Treat it as an
+      automation runtime. If the task is review-only, narrow its prompt, tools, event,
+      token permissions, and publication path accordingly.
+    </p>
+    <p>
+      If your team uses OpenAI Codex instead, the
+      <a href="/blog/codex-code-review">Codex code review guide</a> maps local
+      <code>/review</code>, GitHub <code>@codex review</code>, scoped
+      <code>AGENTS.md</code> rules, and the same exact-head merge requirement.
+      For Cursor teams, the
+      <a href="/blog/cursor-code-review">Cursor code review guide</a> separates local
+      <code>/review</code>, Bugbot findings, finding disposition, and the repository verdict.
+    </p>
+  </section>
+
+  <section id="four-roles">
+    <h2>Use a four-role Claude Code review contract</h2>
+    <p>
+      The practical gap is an authority map. Four roles participate in a defensible
+      review. The same vendor or model may appear twice, but each role needs a distinct
+      invocation, context, permission set, and artifact.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Role</th>
+          <th scope="col">Owns</th>
+          <th scope="col">Artifact or handoff</th>
+          <th scope="col">Must not control</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Author</th>
+          <td>Patch, tests, stated intent, repair commits</td>
+          <td>Changed code and test evidence</td>
+          <td>Its own review verdict</td>
+        </tr>
+        <tr>
+          <th scope="row">Reviewer</th>
+          <td>Candidate findings tied to repository evidence</td>
+          <td>Structured candidate-finding JSON</td>
+          <td>Repository writes or final blocking policy</td>
+        </tr>
+        <tr>
+          <th scope="row">Evidence policy</th>
+          <td>Finding admission, severity rules, score, typed failure state</td>
+          <td>Admitted result bound to <code>reviewed_sha</code></td>
+          <td>Code authorship or merge authority</td>
+        </tr>
+        <tr>
+          <th scope="row">Merge gate</th>
+          <td>Required checks, approvals, current revision, accepted risk</td>
+          <td>GitHub merge eligibility</td>
+          <td>Inventing or silently rewriting findings</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Model diversity is not the boundary. Asking a second model to review the first
+      model's code may reduce correlated mistakes, but it does not stop the pull request
+      from changing the instructions or policy that judges it. Conversely, the same
+      model can provide a useful independent pass when it receives a clean context and
+      cannot mutate the code or its own admission rules.
+    </p>
+    <p>
+      ReviewGate implements this separation in public source. A reviewer proposes
+      structured findings; deterministic policy admits a blocker only when classification,
+      P0-P3 severity, confidence of at least <code>0.85</code>, and repository evidence
+      all pass. The
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/docs/finding-policy.md">
+        finding policy
+      </a>
+      then derives a fixed score and a separate GitHub check. Model prose cannot set the
+      check conclusion directly.
+    </p>
+    <p>
+      That design also keeps authoring and repair outside the reviewer. ReviewGate is
+      review-only. Its
+      <a href="/docs/agent-workflows">coding-agent workflow</a>
+      assigns edits, tests, commits, and pushes to the external agent, while the review
+      result stays a source of evidence. A maintainer remains responsible for intent and
+      acceptable risk.
+    </p>
+  </section>
+
+  <section id="workflow">
+    <h2>Run Claude Code review as a six-step workflow</h2>
+    <p>
+      The sequence below produces a durable chain from intent to merge. Each step has a
+      visible output, which makes failures easier to classify than a single conversational
+      instruction such as “review this and fix everything.”
+    </p>
+    <ol>
+      {workflowSteps.map((step) => (
+        <li>
+          <strong>{step.name}.</strong> {step.text}
+        </li>
+      ))}
+    </ol>
+
+    <h3>1. Write the intent before the review</h3>
+    <p>
+      A reviewer can inspect code, but it cannot recover an unstated product decision.
+      Put the user-visible goal, compatibility constraints, affected security boundary,
+      expected tests, and non-goals in the pull request. Keep that text as untrusted scope
+      context, not as permission to override repository policy.
+    </p>
+
+    <h3>2. Use local review as author feedback</h3>
+    <p>
+      Run deterministic tests first so the reviewer spends attention on logic that those
+      tools cannot settle. Then run local <code>/code-review</code> against the exact
+      branch or ref range you intend to publish. Validate every accepted finding against
+      source and tests. If you use <code>--fix</code>, inspect the resulting diff and use
+      Git to revert unwanted background changes; Anthropic notes that background review
+      edits fall outside the session's checkpoint rewind behavior.
+    </p>
+
+    <h3>3. Push into a separate review context</h3>
+    <p>
+      The pull request review should not inherit the author's conversation or treat the
+      author's final self-assessment as evidence. Managed Code Review provides this
+      separation by running on Anthropic infrastructure. A CI-owned reviewer can provide
+      it with a fresh process, a pinned runtime, read-only source access, and an explicit
+      output schema.
+    </p>
+
+    <h3>4. Convert findings into checked claims</h3>
+    <p>
+      Severity is not proof. For every candidate blocker, require the changed location,
+      the exact claim being checked, a causal path to observable failure, and the test or
+      contract that confirms it. Use the
+      <a href="/blog/pr-review-prompts">evidence-bound PR review prompt library</a>
+      for the reviewer side, then apply deterministic admission rules outside the model.
+    </p>
+
+    <h3>5. Re-evaluate the revision GitHub is merging</h3>
+    <p>
+      A fix creates a new revision. GitHub's
+      <a href="https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks">
+        required-check documentation
+      </a>
+      says checks from earlier commits do not satisfy the latest revision. Depending on
+      repository settings, GitHub may evaluate the pull request head or a synthetic test
+      merge commit. Read the merge box, require the displayed revision's checks, and do
+      not reuse a clean finding set from an older head.
+    </p>
+
+    <h3>6. Make the merge decision explicitly</h3>
+    <p>
+      A complete chain distinguishes four statements: Claude found no Important issue;
+      the evidence policy admitted no blocker; the required check passed for the current
+      revision; and a maintainer decided the change matches intent. Each is useful. None
+      implies all the others.
+    </p>
+  </section>
+
+  <section id="managed-review">
+    <h2>Configure managed Claude Code Review without stale advice</h2>
+    <p>
+      Anthropic
+      <a href="https://claude.com/blog/code-review">announced managed Code Review</a>
+      on March 9, 2026 and currently labels it a research preview for Team and Enterprise
+      organizations. It is unavailable to
+      organizations using Zero Data Retention. The service supports three trigger modes:
+      once when a pull request opens or becomes ready, after every push, or manual.
+      Current documentation, accessed August 3, 2026, records a July behavior change for
+      manual commands.
+    </p>
+    <ul>
+      <li><code>@claude review</code> runs one review without subscribing later pushes.</li>
+      <li><code>@claude review once</code> is the explicit one-shot alias.</li>
+      <li><code>@claude review always</code> runs now and subscribes subsequent pushes.</li>
+    </ul>
+    <p>
+      Older help pages and third-party posts may still say the bare command subscribes
+      the pull request. Follow the live product documentation for time-sensitive trigger
+      behavior. Use a top-level pull request comment, not an inline reply.
+    </p>
+    <p>
+      Managed review is best-effort. A failed or timed-out run stays neutral and does not
+      retry automatically; trigger it again with a top-level review command or a new push
+      when the pull request is subscribed.
+    </p>
+    <p>
+      Keep <code>REVIEW.md</code> narrow. Define what counts as Important, cap nit volume,
+      skip generated or vendored files, and demand source evidence for behavior claims.
+      Put shared architecture and coding conventions in scoped <code>CLAUDE.md</code>
+      files. Our
+      <a href="/blog/pr-review-prompts#platforms">Claude review prompt guidance</a>
+      covers the instruction boundary in depth; the merge policy still belongs outside
+      both files.
+    </p>
+    <p>
+      Plan cost and latency at the trigger layer. Anthropic currently reports an average
+      of about 20 minutes and $15-$25 for a managed review, with cost varying by pull
+      request size, codebase complexity, and verification work. Every-push mode multiplies
+      that spend. Those figures describe the managed service, not ordinary local
+      <code>/code-review</code> usage.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>Trace one Claude Code finding across all four roles</h2>
+    <p>
+      Suppose Claude authors a session-cache change. The new code starts a token refresh
+      and lets logout clear the session, but a late refresh response can write the old
+      token back. A local review flags the race. Here is what a defensible handoff looks
+      like.
+    </p>
+    <ol>
+      <li>
+        <strong>Author:</strong> the pull request states that logout must invalidate the
+        session immediately and includes a focused concurrency test. The authoring agent
+        does not declare its own patch safe.
+      </li>
+      <li>
+        <strong>Reviewer:</strong> a separate review cites the changed callback and the
+        logout path, states the interleaving, identifies stale-session restoration as the
+        impact, and points to the missing cancellation or generation check.
+      </li>
+      <li>
+        <strong>Evidence policy:</strong> deterministic code verifies that the cited lines
+        exist in the reviewed diff and that required causal-path and test-assessment
+        fields are present. It then applies classification, confidence, severity, and
+        evidence rules to derive <code>blocking_reason</code> rather than trusting the
+        reviewer's prose as policy.
+      </li>
+      <li>
+        <strong>Merge gate:</strong> an admitted blocker lowers the code-derived score and
+        status, both tied to <code>reviewed_sha</code>. CI remains a separate requirement,
+        and the pull request cannot merge until a new revision resolves the race and
+        receives a fresh required check.
+      </li>
+    </ol>
+    <p>
+      After the fix, reviewer silence is not resolution evidence. The new result should
+      either re-emit the finding with current evidence or record why the changed code
+      settles it. ReviewGate's
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/main/docs/rereview-convergence.md">
+        rereview convergence contract
+      </a>
+      keeps unresolved findings open across model wording drift and ties disposition to
+      the reviewed revision.
+    </p>
+    <p>
+      This is the concrete payoff of the four-role model. Claude can remain the fastest
+      author and a useful defect detector. Deterministic code decides whether a claim
+      meets repository policy. GitHub and the maintainer decide whether the exact change
+      may ship.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Avoid these Claude Code review failure modes</h2>
+    <h3>Treating neutral as clean</h3>
+    <p>
+      Managed reviews with findings, clean reviews, timeouts, and internal errors all
+      complete with a neutral conclusion. Read the check title and details. A neutral
+      conclusion tells GitHub not to block; it does not tell a maintainer that review
+      found no issue.
+    </p>
+    <h3>Letting the pull request define its own gate</h3>
+    <p>
+      Repository guidance can improve a review, but contributor-controlled text is still
+      input. A pull request should not be able to replace the executable policy or runtime
+      that converts findings into a required check. The broader
+      <a href="/blog/ai-code-review-github">merge-safe AI review workflow</a>
+      covers event and runtime boundaries for GitHub Actions.
+    </p>
+    <h3>Confusing a new push with a resolved finding</h3>
+    <p>
+      Changed line numbers, absent comments, or a fresh model response do not prove the
+      defect disappeared. Carry stable finding identity forward and record whether it is
+      fixed, rejected with evidence, intentional, disputed, or still open. The
+      <a href="/blog/pull-request-review-comments">review comment contract</a>
+      shows how to preserve that state without turning every advisory note into a blocker.
+    </p>
+    <h3>Buying review volume without a feedback loop</h3>
+    <p>
+      Automatic review after every push can multiply cost and comment load. Start with
+      representative pull requests, record accepted and rejected findings, tighten
+      <code>REVIEW.md</code>, and decide which classes deserve a required gate. Expand
+      only when the evidence shows maintainers receive more useful signal than triage work.
+    </p>
+  </section>
+
+  <section id="checklist">
+    <h2>Use this pre-merge checklist for Claude-written PRs</h2>
+    <ul class="article-checklist">
+      <li>The pull request states intent, contracts, tests, and non-goals.</li>
+      <li>Deterministic tests, types, linters, and security checks pass.</li>
+      <li>Local review examined the intended branch or ref range.</li>
+      <li>The PR reviewer ran in a separate context with bounded permissions.</li>
+      <li>Every blocker cites exact evidence and a causal failure path.</li>
+      <li>Advisory findings are visibly separate from required changes.</li>
+      <li>The review result belongs to the revision GitHub is evaluating.</li>
+      <li>Earlier open findings have an explicit current-revision disposition.</li>
+      <li>A reviewer failure is reported as unavailable, not converted into a pass.</li>
+      <li>A maintainer confirms intent and accepted risk before merge.</li>
+    </ul>
+    <p>
+      If your repository needs a machine-readable version of that contract, install
+      ReviewGate from the
+      <a href="/docs/github-actions">GitHub Actions guide</a>.
+      Run it in advisory mode on known pull requests first. Compare admitted blockers,
+      suppressed candidates, and rereview convergence against known outcomes. Once its
+      evidence and noise behavior match your repository, you can choose whether its
+      current-revision check belongs in branch protection alongside deterministic CI and
+      human approvals.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Claude Code review</h2>
+    {faqs.map((faq) => (
+      <section>
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+</ArticleLayout>

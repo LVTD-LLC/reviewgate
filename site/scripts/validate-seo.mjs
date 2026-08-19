@@ -38,6 +38,38 @@ const expectedPages = [
     "blog/ai-code-review-github/index.html",
     "https://reviewgate.lvtd.dev/blog/ai-code-review-github/",
   ],
+  [
+    "blog/claude-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/claude-code-review/",
+  ],
+  [
+    "blog/codex-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/codex-code-review/",
+  ],
+  [
+    "blog/cursor-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/cursor-code-review/",
+  ],
+  [
+    "blog/pr-review-prompts/index.html",
+    "https://reviewgate.lvtd.dev/blog/pr-review-prompts/",
+  ],
+  [
+    "blog/pull-request-review-comments/index.html",
+    "https://reviewgate.lvtd.dev/blog/pull-request-review-comments/",
+  ],
+  [
+    "blog/ai-code-review-benchmark/index.html",
+    "https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/",
+  ],
+  [
+    "blog/windsurf-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/windsurf-code-review/",
+  ],
+  [
+    "blog/devin-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/devin-code-review/",
+  ],
 ];
 
 const titles = new Set();
@@ -119,16 +151,79 @@ const githubReviewSchemaTypes = JSON.parse(githubReviewJsonLdSource).map(
 );
 assert.deepEqual(githubReviewSchemaTypes, ["BlogPosting", "HowTo", "BreadcrumbList"]);
 
+const reviewCommentsArticle = builtPages.get("/blog/pull-request-review-comments");
+assert(reviewCommentsArticle, "review comments article must be present in built pages");
+const reviewCommentsJsonLdSource = reviewCommentsArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(reviewCommentsJsonLdSource, "review comments article must contain JSON-LD");
+const reviewCommentsSchemaTypes = JSON.parse(reviewCommentsJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(reviewCommentsSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
+
+const benchmarkArticle = builtPages.get("/blog/ai-code-review-benchmark");
+assert(benchmarkArticle, "benchmark article must be present in built pages");
+const benchmarkJsonLdSource = benchmarkArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(benchmarkJsonLdSource, "benchmark article must contain JSON-LD");
+const benchmarkSchemaTypes = JSON.parse(benchmarkJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(benchmarkSchemaTypes, ["BlogPosting", "FAQPage", "BreadcrumbList"]);
+
+const windsurfArticle = builtPages.get("/blog/windsurf-code-review");
+assert(windsurfArticle, "Windsurf review article must be present in built pages");
+const windsurfJsonLdSource = windsurfArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(windsurfJsonLdSource, "Windsurf review article must contain JSON-LD");
+const windsurfSchemaTypes = JSON.parse(windsurfJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(windsurfSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
+
+const devinArticle = builtPages.get("/blog/devin-code-review");
+assert(devinArticle, "Devin review article must be present in built pages");
+const devinJsonLdSource = devinArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(devinJsonLdSource, "Devin review article must contain JSON-LD");
+const devinSchemaTypes = JSON.parse(devinJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(devinSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
+
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);
-assert.match(robots, /Sitemap: https:\/\/reviewgate\.lvtd\.dev\/sitemap-index\.xml/);
+assert.match(robots, /Sitemap: https:\/\/reviewgate\.lvtd\.dev\/sitemap\.xml/);
 
-const sitemapIndex = await readFile(new URL("../dist/sitemap-index.xml", import.meta.url), "utf8");
-assert.match(sitemapIndex, /https:\/\/reviewgate\.lvtd\.dev\/sitemap-0\.xml/);
-
-const sitemap = await readFile(new URL("../dist/sitemap-0.xml", import.meta.url), "utf8");
+const sitemap = await readFile(new URL("../dist/sitemap.xml", import.meta.url), "utf8");
+assert.match(sitemap, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+assert.match(sitemap, /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
 for (const [, canonical] of expectedPages) {
   assert(sitemap.includes(`<loc>${canonical}</loc>`), `sitemap must include ${canonical}`);
 }
+assert.equal(
+  [...sitemap.matchAll(/<url><loc>/g)].length,
+  expectedPages.length,
+  "sitemap must contain exactly the public HTML pages",
+);
 
 console.log("validate-seo: ok");
