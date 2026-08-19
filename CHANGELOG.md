@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-19
+
+- Reworked the root README into a short, visual user guide centered on installation, AI-agent setup, custom review prompts, and common configuration; moved the comprehensive engineering reference into `AGENTS.md` and documented the new information boundary in `STRUCTURE.md`.
+
 ## 2026-08-13
 
 - Added “Devin Code Review: Keep Review and Merge Separate,” a source-backed workflow with an original four-authority contract for read, report, mutation, and merge permissions; included BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
