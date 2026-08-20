@@ -70,6 +70,10 @@ const expectedPages = [
     "blog/devin-code-review/index.html",
     "https://reviewgate.lvtd.dev/blog/devin-code-review/",
   ],
+  [
+    "blog/amazon-mandating-ai-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/amazon-mandating-ai-code-review/",
+  ],
 ];
 
 const titles = new Set();
@@ -209,6 +213,17 @@ assert.deepEqual(devinSchemaTypes, [
   "FAQPage",
   "BreadcrumbList",
 ]);
+
+const amazonArticle = builtPages.get("/blog/amazon-mandating-ai-code-review");
+assert(amazonArticle, "Amazon AI code review article must be present in built pages");
+const amazonJsonLdSource = amazonArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(amazonJsonLdSource, "Amazon AI code review article must contain JSON-LD");
+const amazonSchemaTypes = JSON.parse(amazonJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(amazonSchemaTypes, ["BlogPosting", "FAQPage", "BreadcrumbList"]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);
