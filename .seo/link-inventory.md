@@ -24,6 +24,8 @@
 | `/blog/cursor-code-review` | https://reviewgate.lvtd.dev/blog/cursor-code-review/ | Cursor code review and Bugbot merge-gate workflow | E |
 | `/blog/ai-code-review-benchmark` | https://reviewgate.lvtd.dev/blog/ai-code-review-benchmark/ | AI code review benchmark and merge-gate scorecard | E |
 | `/blog/windsurf-code-review` | https://reviewgate.lvtd.dev/blog/windsurf-code-review/ | Windsurf code review and review-epoch merge-gate workflow | E |
+| `/blog/devin-code-review` | https://reviewgate.lvtd.dev/blog/devin-code-review/ | Devin code review and four-authority merge contract | E |
+| `/blog/amazon-mandating-ai-code-review` | https://reviewgate.lvtd.dev/blog/amazon-mandating-ai-code-review/ | Amazon AI code review mandate correction and TRACE risk routing | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -176,3 +178,11 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “separate Devin review and merge authority”
 - “current-head Devin review gate”
 - “rerun review after Devin Auto-Fix”
+
+### Amazon AI code review mandate field note
+
+- “Amazon AI code review mandate correction”
+- “TRACE risk routing for AI-assisted code”
+- “AI code review approval contract”
+- “blast-radius review matrix”
+- “exact-head AI code sign-off”

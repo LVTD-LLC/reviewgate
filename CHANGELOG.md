@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-20
+
+- Added “Amazon Mandating AI Code Review? What We Know,” a correction-first analysis that reconciles Amazon's public denial with current AWS, NIST, and DORA guidance; included TRACE risk routing, a five-field exact-head approval contract, BlogPosting/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-19
 
 - Reworked the root README into a short, visual user guide centered on installation, AI-agent setup, custom review prompts, and common configuration; moved the comprehensive engineering reference into `AGENTS.md` and documented the new information boundary in `STRUCTURE.md`.

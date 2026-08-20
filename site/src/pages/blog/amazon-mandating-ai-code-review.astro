@@ -1,0 +1,532 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Amazon Mandating AI Code Review? What We Know";
+const description =
+  "Amazon denied a reported AI code review mandate. Use TRACE to route pull requests by risk, evidence, reviewer independence, and exact head.";
+const canonical =
+  "https://reviewgate.lvtd.dev/blog/amazon-mandating-ai-code-review/";
+const publishedAt = "2026-08-20";
+
+const faqs = [
+  {
+    question: "Did Amazon mandate senior review for AI-generated code?",
+    answer:
+      "Amazon publicly denied reports that it introduced new approval requirements for engineers using AI tools. Amazon also said none of the incidents discussed in the disputed reporting involved AI-written code. The internal policy claim is therefore not verified by Amazon's public record.",
+  },
+  {
+    question: "Should every AI-assisted pull request require senior approval?",
+    answer:
+      "No blanket rule fits every change. Review depth should follow blast radius, security sensitivity, reversibility, and evidence quality. Low-risk changes may use normal peer review, while high-risk changes can require an independent reviewer, stronger tests, and a second approval.",
+  },
+  {
+    question: "Is human review enough for AI-generated code?",
+    answer:
+      "Human review is one fallible control. Pair it with deterministic tests, static and dependency analysis, security checks, a structured finding record, and a result bound to the exact pull-request head. A signature without evidence is weak assurance.",
+  },
+  {
+    question: "Should the same AI agent review the code it wrote?",
+    answer:
+      "A separate review context reduces shared assumptions, but it does not guarantee independence. For higher-risk changes, prefer an independent reviewer and, where practical, a different model, then let repository-owned policy and required checks produce the merge verdict.",
+  },
+  {
+    question: "How can ReviewGate support a risk-based review policy?",
+    answer:
+      "ReviewGate runs in GitHub Actions, deterministically validates potential blockers against repository evidence, publishes a deterministic 0-5 result with a fixed 5/5 passing target and one canonical summary, and emits structured JSON for the exact reviewed SHA. Repository rules and human maintainers retain merge authority.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="11 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Amazon Mandating AI Code Review? What We Know</Fragment>
+  <Fragment slot="deck">
+    Amazon denied reports that it added senior approval for AI-assisted code.
+    The correction points to a stronger policy question: which changes deserve
+    deeper review, what evidence should accompany them, and what exactly is being approved?
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#record">What the public record says</a></li>
+    <li><a href="#wrong-gate">Why AI authorship is insufficient</a></li>
+    <li><a href="#trace">Use TRACE risk routing</a></li>
+    <li><a href="#risk-matrix">Choose a review route</a></li>
+    <li><a href="#approval-contract">Record the approval contract</a></li>
+    <li><a href="#workflow">Put the policy into the PR workflow</a></li>
+    <li><a href="#failure-modes">Failure modes to avoid</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>Is Amazon mandating AI code review?</h2>
+    <p class="article-lead">
+      Amazon says no. On March 11, 2026, the company denied reports that it had
+      introduced new approval requirements for engineers using AI tools. Amazon
+      also said none of the incidents discussed involved AI-written code. Teams
+      should not copy an unverified mandate; they should review changes according
+      to risk, evidence, reviewer independence, and the exact commit being approved.
+    </p>
+    <p>
+      That distinction matters because the search results still tell two different
+      stories. Secondary coverage reported that senior engineers would approve
+      AI-assisted changes. Amazon's own
+      <a href="https://www.aboutamazon.com/news/company-news/amazon-outage-ai-financial-times-correction">
+        public correction
+      </a>
+      says the approval claim was false and that the incidents were limited to
+      Amazon retail infrastructure, not AWS.
+    </p>
+    <p>
+      The useful lesson is not that every AI-assisted diff needs a more senior
+      signature. It is that a repository needs an explicit answer to four questions:
+      how much damage the change can cause, what independent evidence exists, who
+      may accept the remaining risk, and whether the verdict applies to the current
+      pull-request head.
+    </p>
+    <aside class="article-callout">
+      <strong>The policy in one sentence</strong>
+      <p>
+        Escalate review by blast radius and uncertainty, require evidence before
+        approval, separate authorship from independent review, and invalidate the
+        verdict whenever the reviewed commit changes.
+      </p>
+    </aside>
+  </section>
+
+  <section id="record">
+    <h2>What does the public record say about Amazon and AI code review?</h2>
+    <p>
+      The <a href="https://www.ft.com/content/7cab4ec7-4712-4137-b602-119a44f771de">
+        Financial Times
+      </a> reported in March 2026 that junior and mid-level engineers would need
+      senior approval for AI-assisted changes. <a href="https://www.cnbc.com/2026/03/10/amazon-plans-deep-dive-internal-meeting-address-ai-related-outages.html">
+        CNBC separately reported
+      </a> on an employee note and a meeting about recent incidents. Those accounts
+      spread through news summaries, social posts, and forum discussions, which helps
+      explain current search interest in Amazon mandating AI code review.
+    </p>
+    <p>
+      Amazon then published a direct correction. The company said none of the
+      reviewed incidents involved AI-written code. It said one incident involved
+      an engineer following inaccurate advice that an AI tool inferred from an
+      outdated internal wiki. Amazon attributed the broader impact to user error and
+      to systems that allowed the error to have a wider effect. It also denied
+      introducing new approval requirements for engineers working with AI tools.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Claim in circulation</th>
+            <th>Evidence status</th>
+            <th>What can be stated safely</th>
+            <th>Engineering implication</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Amazon mandated senior sign-off for AI code</td>
+            <td>Reported, then denied</td>
+            <td>Amazon publicly denied introducing new AI-tool approval requirements</td>
+            <td>Do not copy a policy whose premise is disputed</td>
+          </tr>
+          <tr>
+            <td>AI-written code caused several outages</td>
+            <td>Denied by Amazon</td>
+            <td>Amazon said none of the discussed incidents involved AI-written code</td>
+            <td>Separate provenance claims from verified root cause</td>
+          </tr>
+          <tr>
+            <td>The problem was the model alone</td>
+            <td>Not supported by Amazon's account</td>
+            <td>Amazon described outdated knowledge, user action, and systems that allowed wider impact</td>
+            <td>Review the whole delivery system, not only generated lines</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The correction does not prove that every internal detail in the original
+      reporting was wrong. It does set the public evidence boundary: the mandate
+      remains disputed, and the available public sources do not independently establish
+      it as Amazon policy. The defensible move is to attribute each account and avoid
+      turning a disputed report into a universal engineering rule.
+    </p>
+    <p>
+      Two later sources clarify the boundary. In April, Amazon Stores director Steve
+      Tarcza told <a href="https://www.theregister.com/software/2026/04/29/amazon-tells-its-engineers-to-review-all-ai-output/5224124">
+        The Register
+      </a> that engineers must validate AI output before it ships and approve mutating
+      AI actions. That confirms human oversight, not a seniority-specific mandate. A
+      separate <a href="https://www.aboutamazon.com/news/aws/aws-service-outage-ai-bot-kiro">
+        AWS Cost Explorer correction
+      </a> concerned a December 2025 access-control incident and mandatory peer review
+      for production access. It was not one of the March retail incidents.
+    </p>
+    <p>
+      “AI code review” also names two different jobs: a person reviewing code created
+      with AI assistance, and an AI system reviewing a pull request. Amazon Q Developer,
+      for example, <a href="https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/code-reviews.html">
+        documents automated reviews
+      </a> across code quality, security, secrets, infrastructure, dependencies, and
+      deployment risk. Neither job removes the repository's need for a human-owned
+      acceptance policy.
+    </p>
+  </section>
+
+  <section id="wrong-gate">
+    <h2>Why is AI authorship insufficient as the sole review gate?</h2>
+    <p>
+      AI provenance is context, not a reliable measure of change risk. A one-line
+      dependency pin written by an agent may be routine. A human-written migration
+      that changes authorization or deletes production data may deserve multiple
+      reviewers. A policy that escalates the first change but treats the second as
+      normal is measuring the author instead of the hazard.
+    </p>
+    <p>
+      This is the same principle behind the
+      <a href="/blog/how-to-tell-if-code-is-ai-generated">provenance-blind review framework</a>.
+      Style, comments, and tool labels can guide attention, but acceptance should
+      follow the change contract and its evidence. When authorship is uncertain,
+      the repository still has the diff, affected boundaries, tests, checks, and
+      current head SHA.
+    </p>
+    <p>
+      Current primary guidance also supports a layered approach. The
+      <a href="https://docs.aws.amazon.com/wellarchitected/latest/generative-ai-lens/generative-ai-automated-code-review.html">
+        AWS Generative AI Lens
+      </a>
+      describes automated review followed by human review for final approval and
+      recommends human attention for complex scenarios. A July 2026
+      <a href="https://aws.amazon.com/blogs/security/balancing-speed-and-safety-a-control-framework-for-ai-coding-agents/">
+        AWS security control framework for AI coding agents
+      </a>
+      goes further: it scales review depth by risk and treats human review as one
+      fallible control among tests, scans, policy gates, and independent review.
+    </p>
+    <p>
+      NIST takes the same portfolio view without prescribing an AI-specific seniority
+      rule. The
+      <a href="https://csrc.nist.gov/pubs/sp/800/218/final">Secure Software Development Framework</a>
+      calls for organization-defined code review and analysis policies, documented
+      findings, triage, and secure-development practices. NIST's
+      <a href="https://csrc.nist.gov/pubs/ir/8397/final">minimum developer-verification guidance</a>
+      combines threat modeling, automated tests, static analysis, secrets checks,
+      structural and black-box tests, fuzzing, web scanning where applicable, and
+      dependency review.
+    </p>
+  </section>
+
+  <section id="trace">
+    <h2>How does TRACE route AI-assisted pull requests by risk?</h2>
+    <p>
+      TRACE stands for Trust boundary, Reversibility, Affected radius, Contract
+      criticality, and Evidence deficit. It is a pre-review routing framework for
+      deciding how much scrutiny a change deserves before any reviewer produces a
+      finding. Mark an axis low when the change leaves it effectively unchanged,
+      material when the axis changes but has bounded safeguards, and high when failure
+      could cross a sensitive boundary or resist containment. Route by the strongest
+      axis rather than averaging: one catastrophic trust-boundary change must not
+      disappear inside four easy fields.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Axis</th>
+            <th>Question</th>
+            <th>High-risk examples</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Trust boundary</td>
+            <td>Does authority or untrusted data cross a changed boundary?</td>
+            <td>Auth, secrets, CI permissions, command execution</td>
+          </tr>
+          <tr>
+            <td>Reversibility</td>
+            <td>Can the effect be rolled back quickly and completely?</td>
+            <td>Destructive migration, durable external write</td>
+          </tr>
+          <tr>
+            <td>Affected radius</td>
+            <td>How many users, services, or repositories can the change reach?</td>
+            <td>Shared library, platform service, control plane</td>
+          </tr>
+          <tr>
+            <td>Contract criticality</td>
+            <td>Does the diff alter a compatibility or business invariant?</td>
+            <td>Public API, schema, billing or security rule</td>
+          </tr>
+          <tr>
+            <td>Evidence deficit</td>
+            <td>What would still be unknown at merge time?</td>
+            <td>No failure-path test, rollback proof, or observability</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      TRACE classifies the change before review. Finding severity is different: it
+      describes the impact of a defect after one has been found and admitted. Reviewer
+      confidence is different again. Mixing those concepts lets a low-confidence severe
+      claim block a merge or lets a high-risk change receive routine review because no
+      defect has been reported yet.
+    </p>
+  </section>
+
+  <section id="risk-matrix">
+    <h2>Which review route should each change receive?</h2>
+    <p>
+      Convert the TRACE result into one of three control bundles. The matrix is small
+      enough to encode in repository policy while leaving room for domain-specific hard
+      overrides.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Route</th>
+            <th>Trigger</th>
+            <th>Required controls</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Routine</td>
+            <td>No high axis; narrow, reversible, evidenced change</td>
+            <td>Normal deterministic CI, standard review, ordinary peer policy</td>
+          </tr>
+          <tr>
+            <td>Elevated</td>
+            <td>One high axis or at least three material axes</td>
+            <td>Failure-path tests, named domain reviewer, risk-specific review angle, exact-head result</td>
+          </tr>
+          <tr>
+            <td>Critical</td>
+            <td>Auth or secrets, irreversible data change, high-radius contract change</td>
+            <td>Specialist approval, threat and rollback plan, independent verification, exact-head CI and review</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Reviewer expertise should match the system, not an abstract job level. A staff
+      engineer from an unrelated area may be less useful than the maintainer who owns
+      the authentication boundary. Seniority can be a proxy for authority, but the
+      policy should name the capability or ownership that the decision requires.
+    </p>
+    <p>
+      Keep changes small enough to evaluate. DORA's
+      <a href="https://dora.dev/capabilities/working-in-small-batches/">small-batch guidance</a>
+      recommends decomposing work into independently testable units. That becomes more
+      important when an agent can produce a large diff quickly. Faster generation does
+      not create more review capacity; it can move the constraint from writing to verification.
+    </p>
+    <p>
+      A March 2026
+      <a href="https://dora.dev/insights/balancing-ai-tensions/">DORA analysis</a>
+      of its 2025 research reported that 90% of surveyed technology professionals used
+      AI at work, more than 80% reported productivity gains, and 30% expressed little or
+      no trust in AI-generated code. Those findings support better verification systems,
+      not a blanket assumption that either the tool or a human signature is sufficient.
+    </p>
+  </section>
+
+  <section id="approval-contract">
+    <h2>What should an AI code review approval actually record?</h2>
+    <p>
+      A useful approval is a five-field record, not a thumbs-up. It makes the risk route
+      auditable and prevents a valid decision from silently outliving the evidence behind it.
+    </p>
+    <ol>
+      <li><strong>Subject.</strong> Record the repository, pull request, and exact head SHA.</li>
+      <li><strong>Risk route.</strong> Record the TRACE result and any hard override.</li>
+      <li><strong>Evidence set.</strong> List tests, scans, findings, failure exercises, and rollback proof.</li>
+      <li><strong>Decision-maker.</strong> Identify who may accept the remaining risk.</li>
+      <li><strong>Verdict and expiry.</strong> Record pass, needs changes, or unavailable, and invalidate it after any new commit.</li>
+    </ol>
+    <p>
+      This contract is stricter than “a senior looked at it” because it preserves the
+      basis for the decision. It is designed to avoid sending every change through the
+      same heavyweight queue. Routine work carries routine evidence; high-risk work
+      makes its stronger proof and decision authority explicit.
+    </p>
+    <aside class="article-callout">
+      <strong>Example approval record</strong>
+      <p>
+        PR #184 at <code>7f3a9c1</code>; critical authorization change; threat model,
+        permission regression suite, static analysis, and rollback exercise passed;
+        security owner approved; verdict expires on any new commit or failed required check.
+      </p>
+    </aside>
+    <p>
+      The example routes to critical because authorization changes the trust boundary
+      and a security invariant, even if the diff is small and reversible. That hard
+      override requires a security owner, failure-path evidence, and rollback proof;
+      an average TRACE score would conceal the reason for escalation.
+    </p>
+  </section>
+
+  <section id="workflow">
+    <h2>How do you put risk-based AI code review into a pull request workflow?</h2>
+    <p>
+      First, write TRACE routes and hard overrides into version-controlled repository
+      policy. Include boundaries that always trigger escalation: authentication,
+      authorization, secrets, financial operations, destructive data changes, deployment
+      permissions, and other high-blast-radius paths.
+    </p>
+    <p>
+      Second, run deterministic checks before asking a person or model to reason about the
+      change. Tests, linters, type checks, dependency analysis, and security scans check for
+      known failure patterns reproducibly. Human and AI review can then focus on contract errors,
+      missing cases, cross-boundary behavior, and risks the deterministic tools do not model.
+    </p>
+    <p>
+      Third, use an independent review context. If an AI agent wrote the patch, do not rely only
+      on the same session to validate it. A separate reviewer or model can still be wrong, but it
+      is less likely to inherit the exact assumptions that shaped the implementation. The
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark scorecard</a>
+      shows how to measure serious-defect recall, false blockers, repeatability, failure handling,
+      latency, and cost before making an automated reviewer required.
+    </p>
+    <p>
+      Finally, bind review output to the current head and publish a machine-readable verdict.
+      The <a href="/blog/ai-code-review-github">merge-safe AI code review workflow for GitHub</a>
+      explains the exact-head contract. ReviewGate deterministically validates potential blockers
+      against repository evidence and publishes a deterministic 0-5 result with a fixed 5/5
+      passing target, one canonical summary, and structured JSON for the reviewed SHA. The
+      <a href="/docs/features">review lifecycle documentation</a> describes how findings,
+      scoring, unavailable review, and rereviews behave. Independent blocker verification
+      is opt-in and is most useful when a critical route needs a second evidence check.
+    </p>
+    <p>
+      ReviewGate does not classify pull requests into TRACE routes or decide who may merge.
+      Repository rules, required checks, code owners, and human maintainers own those decisions.
+      ReviewGate contributes exact-head evidence and a deterministic finding contract inside
+      the control bundle the repository selects. Custom review angles can focus a run on a
+      route-specific concern, but they replace the default angle list; they do not classify
+      the pull request or choose the route.
+    </p>
+    <p>
+      Measure the system by TRACE route. Compare serious-defect recall, blocking precision,
+      false blockers, review completion, latency, and stale-head failures separately for
+      routine, elevated, and critical changes. An aggregate score can hide a reviewer that
+      performs well on routine work but misses failures at the boundaries that matter most.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>What review-policy failure modes should teams avoid?</h2>
+    <h3>Copying an unverified incident policy</h3>
+    <p>
+      A news story can expose a useful question without establishing a safe answer. Attribute
+      disputed claims, read the primary correction, and design controls from your own risk model.
+    </p>
+    <h3>Using seniority as the only control</h3>
+    <p>
+      Experience matters, but a title does not create test coverage, threat modeling, rollback
+      proof, or current-head binding. Match reviewers to the affected system and evidence set.
+    </p>
+    <h3>Making human review the only gate</h3>
+    <p>
+      People miss defects, especially in large diffs and repetitive queues. Put deterministic
+      checks first, measure AI review error rates, and reserve human attention for ambiguity and
+      risk acceptance.
+    </p>
+    <h3>Letting approval survive a branch update</h3>
+    <p>
+      A valid review of one SHA does not cover a later commit. Each required result must be fresh
+      for the revision it evaluates, and ReviewGate's <code>reviewed_sha</code> must match the
+      current pull-request head.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Amazon and AI code review mandates</h2>
+    {faqs.map((faq) => (
+      <div>
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </div>
+    ))}
+  </section>
+
+  <section class="article-cta" aria-labelledby="article-cta-heading">
+    <h2 id="article-cta-heading">Make the evidence visible</h2>
+    <p>
+      ReviewGate is a free, open-source GitHub Action for evidence-grounded review of
+      agent-written pull requests. It publishes a deterministic 0-5 result with a fixed
+      5/5 passing target, one canonical summary, and exact-head JSON while leaving the
+      merge decision with your repository.
+    </p>
+    <div class="article-cta-actions">
+      <a class="signal-primary" href="/docs/#install">Install ReviewGate</a>
+      <a class="signal-secondary" href="https://github.com/LVTD-LLC/reviewgate">Inspect the source</a>
+    </div>
+  </section>
+</ArticleLayout>
