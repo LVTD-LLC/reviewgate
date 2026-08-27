@@ -1,0 +1,707 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Augment Code Review: Add a Current-Head Gate";
+const description =
+  "Use Augment Code Review for findings and fixes, then require an independent repository verdict tied to the pull request's exact current head.";
+const canonical = "https://reviewgate.lvtd.dev/blog/augment-code-review/";
+const publishedAt = "2026-08-27";
+
+const workflowSteps = [
+  {
+    name: "Choose the trigger and review style",
+    text: "Set each repository to automatic or manual review, choose Thorough or Precise deliberately, and record those choices in the pull-request review contract.",
+  },
+  {
+    name: "Version the review guidelines",
+    text: "Keep objective, scoped rules in .augment/code_review_guidelines.yaml and review changes to that policy like code.",
+  },
+  {
+    name: "Capture the pull-request head",
+    text: "Record the exact Git commit SHA before requesting Augment Code Review so every finding has a named revision boundary.",
+  },
+  {
+    name: "Accept findings with a causal path",
+    text: "Track a comment as a merge obligation only when it identifies a concrete code location, causal path, consequence, and required correction.",
+  },
+  {
+    name: "Invalidate the old review after every fix",
+    text: "When Fix in Augment, another agent, or a human changes the branch, treat the previous review as historical and capture the new head SHA.",
+  },
+  {
+    name: "Request a follow-up review",
+    text: "Trigger a new Augment review on the changed head and reconcile each prior finding as open, fixed, rejected with evidence, or needing human judgment.",
+  },
+  {
+    name: "Require a repository-owned verdict",
+    text: "Require the independent review result to name the current pull-request head, and require GitHub checks to pass on their latest applicable head or test-merge commit.",
+  },
+];
+
+const faqs = [
+  {
+    question: "What is Augment Code Review?",
+    answer:
+      "Augment Code Review is a GitHub App-based review surface that analyzes pull requests and posts findings in GitHub. Teams can choose automatic or manual triggers, select Thorough or Precise review styles, add repository guidelines, and use Augment's agent workflow to prepare fixes.",
+  },
+  {
+    question: "How do you trigger Augment Code Review?",
+    answer:
+      "Set the repository trigger to Automatic to review a pull request when it becomes ready, or Manual Command to require a comment such as auggie review. Augment documents the same commands for additional review rounds after later commits.",
+  },
+  {
+    question: "Should Augment Code Review run again after a fix?",
+    answer:
+      "Yes. A pushed fix creates a new pull-request head, so the earlier findings describe an older revision. Run focused tests, request a follow-up review, reconcile the finding state, and require the final repository verdict to name the new head SHA.",
+  },
+  {
+    question: "Can Augment Code Review block a merge?",
+    answer:
+      "GitHub branch protection or rulesets enforce a merge block. Treat Augment's comments as review evidence, then require the checks and approvals your repository trusts. If exact-head machine output is required, add a repository-owned check that fails closed when the review is missing or stale.",
+  },
+  {
+    question: "What belongs in Augment review guidelines?",
+    answer:
+      "Use guidelines for objective, repository-specific risks: authorization boundaries, required audit logging, transaction invariants, compatibility rules, and tests that must accompany particular paths. Scope them with globs and avoid subjective style rules that create noise.",
+  },
+  {
+    question: "Does Augment Code Review support GitLab or Bitbucket?",
+    answer:
+      "Augment's native Code Review flow uses its GitHub App. Augment separately documents Enterprise CLI automation for GitLab, Bitbucket, and Azure DevOps. Treat that as a different integration surface and verify its trigger, permissions, and result contract before rollout.",
+  },
+  {
+    question: "How much does Augment Code Review cost?",
+    answer:
+      "Augment's pricing and included review features can change. As of August 27, 2026, its public pricing page lists Business at a flat $100 per month for up to 50 seats, with $100 of monthly usage included, and directs larger deployments to Enterprise. Check the current page before budgeting a pilot.",
+  },
+  {
+    question: "Can ReviewGate work alongside Augment Code Review?",
+    answer:
+      "Yes. Augment can provide hosted contextual review and fix assistance, while ReviewGate can run in GitHub Actions as an independent, repository-owned gate with a 0-5 score, one canonical summary, and structured findings bound to reviewed_sha.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to use Augment Code Review in a current-head merge gate",
+    description:
+      "A seven-step workflow for Augment review triggers, repository guidelines, finding evidence, branch fixes, follow-up review, and an exact-head merge verdict.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="14 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Augment Code Review: Add a Current-Head Gate</Fragment>
+  <Fragment slot="deck">
+    Augment Code Review can find issues, follow repository guidelines, and help prepare
+    fixes. A merge-safe workflow records the head observed during review, invalidates
+    old review comments after every push, and lets repository-owned checks decide
+    whether the new head may merge.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#what-it-does">What Augment Code Review does</a></li>
+    <li><a href="#trust-boundary">The missing trust boundary</a></li>
+    <li><a href="#review-receipt">The review receipt</a></li>
+    <li><a href="#step-1">1. Choose trigger and style</a></li>
+    <li><a href="#step-2">2. Version guidelines</a></li>
+    <li><a href="#step-3">3. Capture the head</a></li>
+    <li><a href="#step-4">4. Accept findings</a></li>
+    <li><a href="#step-5">5. Invalidate the old review</a></li>
+    <li><a href="#step-6">6. Request follow-up review</a></li>
+    <li><a href="#step-7">7. Require the repository verdict</a></li>
+    <li><a href="#worked-example">Worked example</a></li>
+    <li><a href="#decision">Augment, ReviewGate, or both?</a></li>
+    <li><a href="#failure-modes">Failure modes</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should Augment Code Review fit into a merge gate?</h2>
+    <p class="article-lead">
+      Use Augment Code Review to produce findings and guide fixes, but do not treat an
+      old review comment as approval for a changed branch. Record the reviewed commit,
+      rerun review and tests after every push, reconcile open findings, and merge only
+      when the review result names the current head and GitHub's required checks pass
+      for their latest applicable head or test-merge commit.
+    </p>
+    <p>
+      This distinction matters because Augment covers more than one review job. Its
+      current <a href="https://docs.augmentcode.com/codereview/overview">Code Review documentation</a>
+      describes automatic and manual review triggers, Thorough and Precise review
+      styles, GitHub comments, follow-up reviews, repository-specific guidelines, and a
+      path from a finding to a proposed fix. Those capabilities can reduce the work of
+      understanding and repairing a pull request.
+    </p>
+    <p>
+      They do not change Git's state model. A review happens against some revision of a
+      branch. A later fix produces another revision. GitHub can dismiss stale approvals
+      and require checks for the latest head, but only if the repository configures
+      those protections. The <a href="/blog/ai-code-review-github">merge-safe AI code review workflow</a>
+      explains that general boundary. This guide applies it to Augment's specific
+      triggers, guidelines, findings, and fix loop.
+    </p>
+    <aside class="article-callout">
+      <strong>The operating rule</strong>
+      <p>
+        Associate an Augment review with <code>requested_sha</code> only when the observed
+        head remains unchanged through completion; Augment does not attest that SHA in
+        a portable machine result. Any branch mutation makes the comments historical
+        until a fresh review and repository checks close the gap.
+      </p>
+    </aside>
+  </section>
+
+  <section id="what-it-does">
+    <h2>What does Augment Code Review do on a pull request?</h2>
+    <p>
+      Augment Code Review is installed as a GitHub App on selected repositories. An
+      administrator chooses a trigger per repository. Automatic review starts when a
+      pull request comes out of draft; Manual Command waits for a comment such as
+      <code>auggie review</code>; Disabled turns review off. The same manual command can
+      request another review after a later commit, according to Augment's
+      <a href="https://docs.augmentcode.com/codereview/setup-guide-otherplans">setup guide</a>.
+    </p>
+    <p>
+      Augment documents the GitHub App with repository contents read-only, pull requests
+      read/write, issues read-only, and organization members read-only permissions.
+      Confirm those scopes against the current
+      <a href="https://docs.augmentcode.com/setup-augment/install-github-app">
+        installation guide
+      </a> before granting repository access.
+    </p>
+    <p>
+      Teams also choose a review style. Augment describes Thorough as the broader
+      default and Precise as a lower-comment mode focused on critical issues. Treat that
+      setting as policy, not taste. A change from Thorough to Precise alters the
+      evidence-generating process, so record it when a result is used in a merge
+      decision.
+    </p>
+    <p>
+      Repository knowledge can be encoded in
+      <a href="https://docs.augmentcode.com/codereview/review-guidelines">review guidelines</a>.
+      The structured file at <code>.augment/code_review_guidelines.yaml</code> supports
+      identifiers, severity, path scopes, and repository-specific rules. The useful
+      targets are objective invariants: authorization checks, transactional behavior,
+      audit requirements, compatibility boundaries, or tests required for a risky path.
+      Subjective style advice consumes attention without making the merge decision
+      clearer.
+    </p>
+    <p>
+      Augment positions its Context Engine as the repository-context layer behind these
+      reviews. Treat that context as an input to a finding, not proof by itself: a
+      must-fix comment still needs an inspectable code path and consequence.
+    </p>
+    <p>
+      Augment also says it applies repository <code>AGENTS.md</code> and
+      <code>CLAUDE.md</code> instructions automatically. Keep shared engineering rules
+      there when other agents need them too; use the Augment-specific YAML when review
+      needs stable rule IDs, severities, and glob-scoped areas.
+    </p>
+    <p>
+      When Augment reports an issue, its
+      <a href="https://docs.augmentcode.com/codereview/fix-with-augment">Fix in Augment workflow</a>
+      can open an agent session in supported environments or copy the issue into another
+      tool. Augment's own guidance tells users to review the proposed change, test it,
+      push the update, and request follow-up review for significant changes. That is the
+      right sequence, but a repository still needs a durable record connecting each
+      review and check to the resulting commit.
+    </p>
+    <p>
+      Product naming needs one boundary too. Augment now presents a broader
+      <a href="https://www.augmentcode.com/solutions/code-review">Cosmos code-review fleet</a>
+      with specialized risk, correctness, and human-judgment agents. That orchestration
+      is not identical to every capability in the standalone GitHub App documentation.
+      This guide uses the documented GitHub App flow and does not assume Cosmos routing,
+      auto-approval, or shared-memory behavior is enabled in a repository.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Current fact</th>
+            <th>Documented surface</th>
+            <th>Workflow implication</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Native pull-request review</td>
+            <td>GitHub App with repository selection</td>
+            <td>Audit app permissions and repository access</td>
+          </tr>
+          <tr>
+            <td>Other Git providers</td>
+            <td>
+              <a href="https://docs.augmentcode.com/codereview/other-platforms">
+                Enterprise CLI automation for GitLab, Bitbucket, and Azure DevOps
+              </a>
+            </td>
+            <td>Define a separate trigger and result contract</td>
+          </tr>
+          <tr>
+            <td>Repository instructions</td>
+            <td>
+              <code>AGENTS.md</code>, <code>CLAUDE.md</code>, and structured review guidelines
+            </td>
+            <td>Version the policy with the reviewed code</td>
+          </tr>
+          <tr>
+            <td>Public price checked August 27, 2026</td>
+            <td>
+              <a href="https://www.augmentcode.com/pricing">
+                Business at a flat $100/month for up to 50 seats
+              </a>;
+              $100 monthly usage included; Enterprise by quote
+            </td>
+            <td>Recheck price and included features before the pilot</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="trust-boundary">
+    <h2>Where is the trust boundary in Augment code review?</h2>
+    <p>
+      The trust boundary sits between useful review evidence and merge authority.
+      Augment can explain risk, post a finding, and help construct a fix. GitHub branch
+      protection or rulesets decide which approvals and status checks must exist before
+      a protected branch accepts the pull request.
+    </p>
+    <p>
+      <a href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches">
+        GitHub documents
+      </a> that required checks must pass before merge. It can also dismiss stale
+      approvals when the diff changes, require approval of the latest reviewable push,
+      require conversation resolution, and restrict a required check to an expected
+      GitHub App. These controls are independent. A resolved conversation does
+      not prove tests passed; a green test does not prove a finding was dispositioned;
+      an approval on the previous diff does not cover the new head.
+    </p>
+    <p>
+      Augment's public documentation tells teams how to trigger and repeat reviews, but
+      it does not document a portable machine-result contract that every repository can
+      consume as an exact-head verdict. That is not a criticism of its findings. It is a
+      reason to keep the merge policy in the repository and to ask for one receipt that
+      joins the review evidence to GitHub's current state.
+    </p>
+  </section>
+
+  <section id="review-receipt">
+    <h2>Record an Augment review receipt for every decision</h2>
+    <p>
+      The information missing from most Augment Code Review pages is a reproducible
+      review receipt. This is a small record maintained by your workflow or review
+      process. It does not need Augment to expose a new API. It needs the repository to
+      stop accepting an ambiguous “reviewed” label.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>What to record</th>
+            <th>Why it matters</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>requested_sha</code></td>
+            <td>The pull-request head when review was requested</td>
+            <td>Names the code the request intended to cover</td>
+          </tr>
+          <tr>
+            <td><code>observed_head_at_completion</code></td>
+            <td>The head observed when the Augment review finished</td>
+            <td>A mismatch means the comments cannot be assigned to one unchanged head</td>
+          </tr>
+          <tr>
+            <td><code>trigger</code></td>
+            <td>Automatic or the exact manual command</td>
+            <td>Explains why this review exists and whether reruns are explicit</td>
+          </tr>
+          <tr>
+            <td><code>review_policy</code></td>
+            <td>Review style plus the guideline-file commit</td>
+            <td>Makes the evidence-generating policy reproducible</td>
+          </tr>
+          <tr>
+            <td><code>finding_state</code></td>
+            <td>Open, fixed, rejected with evidence, or needs human judgment</td>
+            <td>Prevents thread resolution from erasing the engineering decision</td>
+          </tr>
+          <tr>
+            <td><code>current_head_sha</code></td>
+            <td>The current pull-request head after accepted fixes</td>
+            <td>Shows when earlier review comments became stale</td>
+          </tr>
+          <tr>
+            <td><code>reviewed_sha</code></td>
+            <td>The commit explicitly reported by the independent review check</td>
+            <td>A missing or mismatched value cannot gate the current head</td>
+          </tr>
+          <tr>
+            <td><code>tested_sha</code></td>
+            <td>The head or GitHub test-merge commit used by integration CI</td>
+            <td>Separates review freshness from base-compatibility evidence</td>
+          </tr>
+          <tr>
+            <td><code>required_checks</code></td>
+            <td>Check names, conclusions, and each check's applicable commit</td>
+            <td>Connects review evidence to enforceable repository policy</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The receipt is a novel operating layer, not a claim about an Augment feature. Its
+      purpose is to make a multi-step hosted review auditable with primitives GitHub and
+      Git already provide. If Augment later exposes an exact reviewed SHA and structured
+      dispositions, copy those values into the receipt. Until then, fail closed when the
+      workflow cannot prove which revision a required verdict covers.
+    </p>
+    <pre><code>{`{
+  "requested_sha": "d4e5f6",
+  "observed_head_at_completion": "d4e5f6",
+  "review_policy": "thorough@guidelines-7c91",
+  "findings": { "payment-idempotency": "fixed" },
+  "current_head_sha": "d4e5f6",
+  "reviewed_sha": "d4e5f6",
+  "tested_sha": "github-test-merge-8a20",
+  "required_checks": { "reviewgate": "passed", "tests": "passed" }
+}`}</code></pre>
+    <p>
+      Here, <code>reviewed_sha</code> must equal <code>current_head_sha</code>. The test
+      suite can legitimately name GitHub's test-merge commit instead, provided it is the
+      commit GitHub currently requires for that integration check.
+    </p>
+  </section>
+
+  <section id="step-1">
+    <h2>1. Choose the Augment review trigger and style</h2>
+    <p>
+      Use Automatic when every ready pull request should receive an initial pass. Use
+      Manual Command when cost, repository risk, contributor access, or workflow timing
+      makes an explicit request preferable. For Enterprise plans, Augment also documents
+      <a href="https://docs.augmentcode.com/codereview/user-access">allowlist and deny-list controls</a>
+      for who may trigger review. Deny bot accounts that should not create review work,
+      and do not assume a repository trigger alone expresses your trust boundary.
+    </p>
+    <p>
+      Pick Thorough when the pilot needs broad defect discovery. Pick Precise when the
+      team has measured comment noise and wants a narrower signal. Do not switch styles
+      halfway through an evaluation and then compare the outputs as if the reviewer were
+      unchanged. The <a href="/blog/ai-code-review-benchmark">AI code review benchmark guide</a>
+      provides a scorecard for recall, false blockers, repeatability, failures, latency,
+      and cost.
+    </p>
+  </section>
+
+  <section id="step-2">
+    <h2>2. Version objective review guidelines</h2>
+    <p>
+      Add <code>.augment/code_review_guidelines.yaml</code> to the repository and keep
+      every blocking rule falsifiable. “Prefer clean code” is not testable. “Every write
+      under <code>services/payments/**</code> must call the audit logger before commit”
+      names a scope, behavior, and failure condition.
+    </p>
+    <p>
+      Give each rule a stable identifier. When a finding cites the rule, the receipt can
+      record the rule version from the requested commit. That prevents a later policy
+      edit from silently changing the meaning of an older review. Keep formatters,
+      linters, and type checks in deterministic CI instead of asking the review model to
+      reproduce them as prose.
+    </p>
+  </section>
+
+  <section id="step-3">
+    <h2>3. Capture the exact pull-request head before review</h2>
+    <p>
+      Read the current head SHA immediately before the automatic event is handled or the
+      manual command is posted. Store it as <code>requested_sha</code>. If the branch
+      changes before the review completes, mark the result superseded and request a new
+      pass instead of guessing that the comments still apply.
+    </p>
+    <p>
+      Read the head again when the review completes and store it as
+      <code>observed_head_at_completion</code>. Matching values do not make Augment attest
+      the SHA, but they prove the repository did not observe a branch change across the
+      review window. A mismatch requires another review.
+    </p>
+    <p>
+      This is stricter than matching a pull-request number. One pull request can carry
+      many heads. A comment URL and timestamp identify a conversation, not the complete
+      tree that was analyzed. Exact-head binding turns “Augment reviewed PR 42” into the
+      narrower statement “review evidence was requested for commit <code>abc123</code>.”
+    </p>
+  </section>
+
+  <section id="step-4">
+    <h2>4. Accept Augment findings by evidence</h2>
+    <p>
+      A review comment becomes a merge obligation only when it contains four elements:
+      a concrete claim, repository evidence, a causal path, and a consequence. “This
+      may be unsafe” is a question. “This added unauthenticated route calls the account
+      deletion service, so any network client can delete an account” is a finding that
+      can be checked and fixed.
+    </p>
+    <p>
+      Use the disposition contract from the
+      <a href="/blog/pull-request-review-comments">signal-first PR comment guide</a>.
+      Keep valid blockers open. Mark a finding fixed only after the relevant code and
+      tests changed. Reject it only with contradictory repository evidence. Route design
+      ambiguity to a human instead of forcing the model to invent policy.
+    </p>
+  </section>
+
+  <section id="step-5">
+    <h2>5. Invalidate the old review after Fix in Augment</h2>
+    <p>
+      Fix in Augment helps carry a finding into an agent session, but the accepted edit
+      still changes the branch. Capture the new SHA as <code>current_head_sha</code>, run the
+      focused regression for the original consequence, and run the repository's normal
+      required checks. The original review remains useful history; it is no longer a
+      result on the new tree.
+    </p>
+    <p>
+      Apply the review-staleness rule to human edits, rebases, and agent changes that
+      create a new pull-request head. Treat base-branch updates separately: the
+      head-bound review can remain current, but integration CI must rerun when GitHub's
+      applicable test-merge commit changes.
+    </p>
+  </section>
+
+  <section id="step-6">
+    <h2>6. Request follow-up review and reconcile state</h2>
+    <p>
+      Augment documents follow-up review through the same manual commands used for a
+      first manual pass. Request the new review after the fixes and focused tests are on
+      the branch. Do not ask while another writer is still pushing commits; that creates
+      overlapping attempts whose comments are difficult to assign to one head.
+    </p>
+    <p>
+      Reconcile every accepted finding. A stable identifier can be based on rule ID,
+      affected path, and causal consequence rather than exact wording or line number.
+      That lets a moved finding remain open, a verified fix close it, and a recurrence
+      reopen it without counting three comments as three independent defects.
+    </p>
+  </section>
+
+  <section id="step-7">
+    <h2>7. Require an independent current-head repository verdict</h2>
+    <p>
+      Configure branch protection or a ruleset to require the checks that express your
+      policy. GitHub lets a repository require status checks, require the latest
+      reviewable push to be approved, dismiss stale approvals, and require conversation
+      resolution. Use the controls that match the risk of the repository rather than
+      declaring every Augment comment a blocker.
+    </p>
+    <p>
+      A review outage is not a clean result. ReviewGate represents that as
+      <code>review_error</code>, open validated blockers as <code>needs_changes</code>, and
+      a clean current-head result as <code>passed</code>. Require ReviewGate's
+      <code>reviewed_sha</code> to equal the current pull-request head. Separately,
+      require every GitHub check on the latest commit GitHub identifies for that check;
+      depending on repository settings, that can be the head or a test-merge commit.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>Worked example: one finding, two heads, one verdict</h2>
+    <ol>
+      <li>
+        Pull request 42 is ready at head <code>a1b2c3</code>. Automatic Thorough review
+        starts under guideline commit <code>a1b2c3</code>.
+      </li>
+      <li>
+        Augment reports that a new payment retry path can charge twice because the
+        idempotency key is regenerated. The comment cites the path and consequence, so
+        the team accepts it as a blocker.
+      </li>
+      <li>
+        The author opens Fix in Augment, reviews the proposed patch, adds a regression
+        test, and pushes head <code>d4e5f6</code>. The receipt marks the earlier review
+        superseded.
+      </li>
+      <li>
+        Focused tests pass for head <code>d4e5f6</code>, and required integration CI
+        passes on GitHub's applicable head or test-merge commit. The author requests a
+        follow-up review. The finding is closed only after the new code and test refute
+        the original failure path.
+      </li>
+      <li>
+        The ReviewGate check publishes passed for reviewed SHA
+        <code>d4e5f6</code>. GitHub reports the same current head and all required checks
+        pass, so a maintainer can make the merge decision.
+      </li>
+    </ol>
+    <p>
+      If any later push creates <code>g7h8i9</code>, the last step becomes false. The
+      repository does not need to discard the conversation. It needs to withhold the
+      verdict until evidence exists for the new head.
+    </p>
+  </section>
+
+  <section id="decision">
+    <h2>Should you use Augment Code Review, ReviewGate, or both?</h2>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Need</th>
+            <th>Best fit</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Hosted contextual review with GitHub comments and assisted fixes</td>
+            <td>Augment Code Review</td>
+            <td>Its product surface owns review configuration, findings, and fix handoff</td>
+          </tr>
+          <tr>
+            <td>Open-source, CI-owned score and structured exact-head result</td>
+            <td>ReviewGate</td>
+            <td>The repository owns the workflow, model key, 0-5 contract, and JSON</td>
+          </tr>
+          <tr>
+            <td>Hosted review experience plus an independent merge gate</td>
+            <td>Both</td>
+            <td>Use Augment for findings and repair; use repository policy for the verdict</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Do not add two reviewers merely to produce more comments. Use both only when their
+      authorities differ. ReviewGate is review-only: it runs through GitHub Actions,
+      posts one canonical summary, emits structured <code>reviewed_sha</code> output, and
+      uses <code>passed</code>, <code>needs_changes</code>, and <code>review_error</code>
+      states. Augment adds a hosted review and fix workflow. The useful combination is
+      different review inputs plus one clear repository verdict.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Which Augment code review failure modes should you prevent?</h2>
+    <ul>
+      <li>
+        <strong>Relying on the first automatic review after later pushes.</strong> Request
+        a follow-up pass and invalidate the old review.
+      </li>
+      <li>
+        <strong>Counting every comment as a blocker.</strong> Require evidence, causal
+        impact, and an explicit disposition policy.
+      </li>
+      <li>
+        <strong>Resolving the thread without verifying the code.</strong> A UI state is
+        not regression evidence.
+      </li>
+      <li>
+        <strong>Letting guidelines become a style dump.</strong> Put deterministic style
+        checks in CI and reserve review rules for repository-specific risk.
+      </li>
+      <li>
+        <strong>Accepting review unavailability as no findings.</strong> Missing evidence
+        is a review error, not a passing result.
+      </li>
+      <li>
+        <strong>Giving one integration review, mutation, and merge authority.</strong>
+        Keep branch policy and final human judgment independent.
+      </li>
+    </ul>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Augment Code Review</h2>
+    {faqs.map((faq) => (
+      <div class="article-faq">
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </div>
+    ))}
+  </section>
+
+  <section class="article-cta">
+    <h2>Add a repository-owned gate after Augment review</h2>
+    <p>
+      Keep Augment's findings and fix workflow. Add an independent result that fails
+      closed, names the reviewed SHA, and gives humans or repair agents a stable list of
+      what remains.
+    </p>
+    <div class="article-cta-actions">
+      <a class="btn btn-primary" href="/docs/#install">Install ReviewGate</a>
+      <a class="btn btn-secondary" href="/docs/#review-loop">Run the repair loop</a>
+    </div>
+  </section>
+</ArticleLayout>

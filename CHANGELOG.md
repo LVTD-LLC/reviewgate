@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-08-27
+
+- Added “Augment Code Review: Add a Current-Head Gate,” a source-backed workflow for review triggers, repository guidelines, finding evidence, user-mediated fixes, follow-up review, and exact-head merge decisions; included an original review receipt, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-20
 
 - Added “Amazon Mandating AI Code Review? What We Know,” a correction-first analysis that reconciles Amazon's public denial with current AWS, NIST, and DORA guidance; included TRACE risk routing, a five-field exact-head approval contract, BlogPosting/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
