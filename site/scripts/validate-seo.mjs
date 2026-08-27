@@ -74,6 +74,10 @@ const expectedPages = [
     "blog/amazon-mandating-ai-code-review/index.html",
     "https://reviewgate.lvtd.dev/blog/amazon-mandating-ai-code-review/",
   ],
+  [
+    "blog/augment-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/augment-code-review/",
+  ],
 ];
 
 const titles = new Set();
