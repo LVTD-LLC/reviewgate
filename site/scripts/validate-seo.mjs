@@ -78,6 +78,10 @@ const expectedPages = [
     "blog/augment-code-review/index.html",
     "https://reviewgate.lvtd.dev/blog/augment-code-review/",
   ],
+  [
+    "blog/kiro-code-review/index.html",
+    "https://reviewgate.lvtd.dev/blog/kiro-code-review/",
+  ],
 ];
 
 const titles = new Set();
@@ -228,6 +232,22 @@ const amazonSchemaTypes = JSON.parse(amazonJsonLdSource).map(
   (entry) => entry["@type"],
 );
 assert.deepEqual(amazonSchemaTypes, ["BlogPosting", "FAQPage", "BreadcrumbList"]);
+
+const kiroArticle = builtPages.get("/blog/kiro-code-review");
+assert(kiroArticle, "Kiro review article must be present in built pages");
+const kiroJsonLdSource = kiroArticle.match(
+  /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+)?.[1];
+assert(kiroJsonLdSource, "Kiro review article must contain JSON-LD");
+const kiroSchemaTypes = JSON.parse(kiroJsonLdSource).map(
+  (entry) => entry["@type"],
+);
+assert.deepEqual(kiroSchemaTypes, [
+  "BlogPosting",
+  "HowTo",
+  "FAQPage",
+  "BreadcrumbList",
+]);
 
 const robots = await readFile(new URL("../dist/robots.txt", import.meta.url), "utf8");
 assert.match(robots, /^User-agent: \*\nAllow: \//);

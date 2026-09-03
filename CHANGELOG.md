@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-09-03
+
+- Added “Kiro Code Review: Turn Specs Into a Merge Gate,” a source-backed workflow for specs, steering, hooks, headless review, finding admission, and exact-head merge decisions; included an original spec-to-verdict receipt, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-08-27
 
 - Added “Augment Code Review: Add a Current-Head Gate,” a source-backed workflow for review triggers, repository guidelines, finding evidence, user-mediated fixes, follow-up review, and exact-head merge decisions; included an original review receipt, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
