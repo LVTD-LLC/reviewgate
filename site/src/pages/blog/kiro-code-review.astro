@@ -1,0 +1,753 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Kiro Code Review: Turn Specs Into a Merge Gate";
+const description =
+  "Use Kiro specs, steering, and headless review, then require an independent repository verdict tied to the pull request's exact current head.";
+const canonical = "https://reviewgate.lvtd.dev/blog/kiro-code-review/";
+const publishedAt = "2026-09-03";
+
+const workflowSteps = [
+  {
+    name: "Choose the right spec workflow",
+    text: "Use a standard Feature or Bugfix Spec when requirements need scrutiny, and reserve Quick Spec for well-understood work where skipped approval checkpoints are an explicit tradeoff.",
+  },
+  {
+    name: "Turn requirements into reviewable obligations",
+    text: "Give important acceptance criteria stable identifiers, define observable outcomes and failure cases, and resolve ambiguous or conflicting requirements before implementation begins.",
+  },
+  {
+    name: "Version the spec and review policy",
+    text: "Keep the applicable requirements, design, tasks, steering, AGENTS.md rules, and review instructions in a revision that can be associated with the pull request.",
+  },
+  {
+    name: "Run fast feedback with bounded authority",
+    text: "Use Kiro hooks or headless review for early feedback, but grant only the tools required and do not let a completed agent run stand in for an enforceable repository verdict.",
+  },
+  {
+    name: "Capture the pull-request head",
+    text: "Record the exact Git commit SHA when the Kiro-authored pull request is ready for review and bind every review result to that named revision.",
+  },
+  {
+    name: "Admit findings against code and requirements",
+    text: "Track a finding as a merge obligation only when it names the affected code, the violated requirement or repository rule, a causal path, and a concrete consequence.",
+  },
+  {
+    name: "Invalidate evidence after every mutation",
+    text: "When Kiro, a human, or another agent pushes a fix, move prior review evidence to history, rerun focused tests, and review the new head.",
+  },
+  {
+    name: "Require an exact-head repository verdict",
+    text: "Merge only when required CI and the independent review gate pass for the current pull-request head and no admitted blocker remains unresolved.",
+  },
+];
+
+const faqs = [
+  {
+    question: "Can Kiro review code?",
+    answer:
+      "Yes. Kiro documents interactive code-review agents, Agent Stop hooks for post-processing, and a headless CLI that can run code-review prompts in CI. Treat that output as review evidence. Your repository still needs to define which result, commit, tests, and finding states are required before merge.",
+  },
+  {
+    question: "How do you run Kiro code review in CI?",
+    answer:
+      "Use Kiro CLI headless mode with a KIRO_API_KEY, a non-interactive prompt, and the smallest trusted tool set the review needs. Check out the pull request's exact head first, preserve the command's structured output when useful, and publish a separate repository check whose result names that reviewed SHA.",
+  },
+  {
+    question: "Should Kiro specs be committed to the repository?",
+    answer:
+      "Commit the requirements, design, and task artifacts when they are part of the engineering contract and safe to share. If they must stay elsewhere, record an immutable revision or digest in the pull request. A reviewer needs a stable specification reference; a mutable chat link is not enough for an auditable gate.",
+  },
+  {
+    question: "Does a completed Kiro spec prove the code is correct?",
+    answer:
+      "No. A completed task list records workflow progress, not proof that every acceptance criterion holds. Review the implemented behavior, run focused and required tests, inspect admitted findings, and require a verdict for the exact current head. Also review the spec itself because an incomplete requirement can produce compliant but wrong code.",
+  },
+  {
+    question: "Should review run again after Kiro addresses PR feedback?",
+    answer:
+      "Yes. Kiro can respond to pull-request feedback and push updates, which creates a new branch head. The earlier review remains useful history, but its pass state is stale. Rerun the focused regression, required CI, and the review gate on the new commit before merging.",
+  },
+  {
+    question: "Can Kiro merge pull requests automatically?",
+    answer:
+      "Kiro's current web documentation says it opens pull requests but does not merge changes automatically. Review and merge remain in the repository's normal workflow. Keep branch protection or rulesets responsible for required checks, approvals, conversation resolution, and the final authorized merge.",
+  },
+  {
+    question: "Can ReviewGate review a pull request written by Kiro?",
+    answer:
+      "Yes. ReviewGate evaluates the committed pull-request diff in GitHub Actions rather than depending on which agent authored it. It can publish a visible 0-5 score, one canonical summary, and structured findings that include the reviewed SHA for an exact-head repair and merge workflow.",
+  },
+];
+
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: {
+      "@type": "Organization",
+      name: "ReviewGate maintainers",
+      url: "https://github.com/LVTD-LLC/reviewgate",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "LVTD LLC",
+      url: "https://lvtd.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to turn Kiro code review into an exact-head merge gate",
+    description:
+      "An eight-step workflow that connects Kiro specs, repository policy, review findings, tests, branch mutations, and the exact-head merge verdict.",
+    step: workflowSteps.map((step, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      name: step.name,
+      text: step.text,
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: faq.answer,
+      },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "ReviewGate",
+        item: "https://reviewgate.lvtd.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://reviewgate.lvtd.dev/blog/",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: title,
+        item: canonical,
+      },
+    ],
+  },
+];
+---
+
+<ArticleLayout
+  title={title}
+  description={description}
+  publishedAt={publishedAt}
+  readingTime="16 min read"
+  jsonLd={jsonLd}
+>
+  <Fragment slot="title">Kiro Code Review: Turn Specs Into a Merge Gate</Fragment>
+  <Fragment slot="deck">
+    Kiro can carry a change from requirements through implementation and a pull
+    request. A merge-safe review workflow preserves that useful context, but requires
+    fresh evidence for the exact commit that will merge.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#what-kiro-reviews">What Kiro code review covers</a></li>
+    <li><a href="#spec-to-verdict">The spec-to-verdict receipt</a></li>
+    <li><a href="#step-1">1. Choose the spec workflow</a></li>
+    <li><a href="#step-2">2. Write reviewable requirements</a></li>
+    <li><a href="#step-3">3. Version policy and context</a></li>
+    <li><a href="#step-4">4. Bound hooks and headless review</a></li>
+    <li><a href="#step-5">5. Capture the PR head</a></li>
+    <li><a href="#step-6">6. Admit findings</a></li>
+    <li><a href="#step-7">7. Invalidate old evidence</a></li>
+    <li><a href="#step-8">8. Require the repository verdict</a></li>
+    <li><a href="#worked-example">Worked example</a></li>
+    <li><a href="#decision">Kiro, ReviewGate, or both?</a></li>
+    <li><a href="#failure-modes">Failure modes</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should Kiro code review fit into a merge gate?</h2>
+    <p class="article-lead">
+      Use Kiro specs to define intended behavior, steering to supply repository rules,
+      and hooks or headless review for fast feedback. Then bind accepted findings,
+      focused tests, required CI, and an independent review verdict to the pull
+      request's exact current head. Any later commit makes the earlier pass stale.
+    </p>
+    <p>
+      As of September 3, 2026, Kiro spans more of the development lifecycle than a
+      comment-only reviewer. Its current documentation covers structured specs,
+      requirement analysis, steering files, agent hooks, custom agents, headless CI
+      execution, and a web agent that can create branches and pull requests. That range
+      is useful because the agent can retain the reason for a change while it implements
+      and revises the code.
+    </p>
+    <p>
+      It also creates a review problem: intent, authorship, feedback, and repair can all
+      happen in one product. A clean Kiro response cannot by itself show that the
+      repository tested the current revision, that the spec was complete, or that every
+      blocking finding was closed with evidence. The general
+      <a href="/blog/ai-code-review-github">AI code review workflow for GitHub</a>
+      separates intent, execution, evidence, verdict, and merge state. This guide adds a
+      Kiro-specific link between the spec artifacts and that exact-head verdict.
+    </p>
+  </section>
+
+  <section id="what-kiro-reviews">
+    <h2>What does Kiro code review cover?</h2>
+    <p>
+      “Kiro code review” can mean three different jobs. You can ask an interactive or
+      custom Kiro agent to inspect a change. You can trigger post-processing with an
+      agent hook. You can also run Kiro CLI in headless mode inside CI. These surfaces
+      share context and models, but they do not automatically share one enforceable
+      result contract.
+    </p>
+    <p>
+      Kiro's
+      <a href="https://kiro.dev/docs/cli/custom-agents/examples/">custom-agent examples</a>
+      include a code-review agent with read and shell tools, explicit allow and deny
+      rules, repository resources, and a hook that collects changed files. Its
+      <a href="https://kiro.dev/docs/cli/headless/">headless-mode documentation</a>
+      shows a non-interactive GitHub Actions review and supports JSON Lines run events
+      on current engines. That makes Kiro usable as a review worker in a pipeline.
+    </p>
+    <p>
+      A review worker is not yet a merge gate. A repository gate needs a stable pass,
+      needs-changes, and operational-error contract; a reviewed commit identifier; a
+      rule for stale results; and a finding lifecycle that survives comments moving or
+      being resolved. If the job prints persuasive prose but does not identify the code
+      it evaluated, the repository cannot safely require that prose as current evidence.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Kiro surface</th>
+            <th>Useful output</th>
+            <th>What it does not prove alone</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Specs</td>
+            <td>Requirements, design, and implementation tasks</td>
+            <td>That the requirements are complete or implemented correctly</td>
+          </tr>
+          <tr>
+            <td>Steering and AGENTS.md</td>
+            <td>Repository context, constraints, and conventions</td>
+            <td>That every applicable rule was loaded and checked</td>
+          </tr>
+          <tr>
+            <td>Hooks</td>
+            <td>Fast tests, formatting, compilation, or agent feedback</td>
+            <td>That a protected-branch requirement passed for the current head</td>
+          </tr>
+          <tr>
+            <td>Headless CLI review</td>
+            <td>Non-interactive analysis and structured run events</td>
+            <td>That prose findings form a durable exact-head verdict</td>
+          </tr>
+          <tr>
+            <td>Kiro Web pull request</td>
+            <td>Committed changes, a branch, and a PR description</td>
+            <td>That the authored branch is ready to merge</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <a href="https://kiro.dev/docs/web/">Kiro's web documentation</a> is explicit
+      that review and merge stay in the normal repository workflow. The in-session
+      review panel lets you inspect changed files and copy commit SHAs, while comments,
+      approval, and merge happen in GitHub. That boundary is a good starting point. The
+      next step is to make the evidence crossing it inspectable.
+    </p>
+  </section>
+
+  <section id="spec-to-verdict">
+    <h2>Use a spec-to-verdict receipt for Kiro code review</h2>
+    <p>
+      The missing artifact in most Kiro review guides is a <strong>spec-to-verdict
+      receipt</strong>: a compact record connecting the accepted specification to the
+      exact code, review obligations, tests, and repository verdict. Kiro's spec files
+      tell you what the agent intended to build. GitHub and CI tell you what revision was
+      evaluated. The receipt makes the transition between them explicit.
+    </p>
+    <p>
+      This is an operating framework, not a Kiro feature claim. You can keep it in a PR
+      description, a machine-readable review artifact, or a bot-owned summary. The
+      storage matters less than the invariant: every value must refer to a stable
+      revision, and every mutation must produce a new receipt state.
+    </p>
+    <pre><code>{`spec_to_verdict:
+  spec_id: "checkout-tax-fix"
+  requirements_ref: "&lt;commit-or-content-digest&gt;"
+  design_ref: "&lt;commit-or-content-digest&gt;"
+  task_ids: ["2.1", "2.2", "2.3"]
+  authored_head: "&lt;40-character PR head&gt;"
+  review_policy_ref: "&lt;commit containing review rules&gt;"
+  reviewed_head: "&lt;40-character reviewed head&gt;"
+  obligations:
+    open: []
+    closed_with_evidence: ["finding-authz-01"]
+  focused_tests:
+    - requirement: "REQ-3.2"
+      command: "&lt;repository-owned test command&gt;"
+      tested_head: "&lt;40-character tested head&gt;"
+  verdict:
+    status: "passed"
+    head: "&lt;40-character current head&gt;"`}</code></pre>
+    <p>
+      The receipt catches two failures that ordinary review comments miss. First, code
+      can match an incomplete spec. A reviewer should challenge the requirement before
+      congratulating the implementation. Second, a fix can close a comment while
+      invalidating the old tests and review. The receipt refuses to carry the old pass
+      across the new commit.
+    </p>
+    <aside class="article-callout">
+      <strong>The receipt rule</strong>
+      <p>
+        Requirements explain what should hold. Findings explain what appears wrong.
+        Tests and review checks explain what was evaluated. A merge verdict is current
+        only when all four refer to the same applicable specification and branch head.
+      </p>
+    </aside>
+  </section>
+
+  <section id="step-1">
+    <h2>1. Choose the Kiro spec workflow by review risk</h2>
+    <p>
+      Start before the code exists. Kiro
+      <a href="https://kiro.dev/docs/specs/quick-spec/">Quick Spec</a> generates
+      <code>requirements.md</code>, <code>design.md</code>, and <code>tasks.md</code> in
+      one pass, without approval gates between those phases. Kiro recommends it for
+      well-understood work and rapid prototypes. Its standard Feature Spec workflow is
+      the safer default when requirements or design need iteration and review gates add
+      value.
+    </p>
+    <p>
+      Choose by the cost of a wrong assumption, not by the size of the diff. A three-line
+      authorization change can deserve more specification review than a large mechanical
+      rename. Use the standard workflow for security boundaries, billing behavior,
+      migrations, compatibility promises, concurrency, or any change whose missing edge
+      case would be expensive to discover after merge.
+    </p>
+    <ol>
+      <li>Name the user-visible behavior and the behavior that must remain unchanged.</li>
+      <li>List trust boundaries, failure modes, and compatibility constraints.</li>
+      <li>Choose Requirements-First when behavior drives the design.</li>
+      <li>Choose Design-First when an architecture constraint drives feasible behavior.</li>
+      <li>Use Quick Spec only when skipped artifact approvals are an accepted tradeoff.</li>
+    </ol>
+    <p>
+      Done means the pull request can point to a stable spec and explain why that spec
+      workflow matched the change's risk. “Kiro generated a plan” is not the decision.
+    </p>
+  </section>
+
+  <section id="step-2">
+    <h2>2. Make Kiro requirements reviewable</h2>
+    <p>
+      A reviewer cannot prove a vague requirement. Replace “the endpoint should be fast”
+      with an observable threshold and measurement boundary. Replace “authorized users
+      can edit” with named roles, allow paths, deny paths, and tenant boundaries. Give
+      each load-bearing criterion a stable identifier so findings and tests can cite it.
+    </p>
+    <p>
+      Kiro's
+      <a href="https://kiro.dev/docs/specs/analyze-requirements/">Analyze Requirements</a>
+      pass looks across the requirement set for logical inconsistencies, ambiguities,
+      conflicting constraints, unstated assumptions, and missing edge cases. Run it for
+      complex or domain-sensitive work and after material requirement edits. Resolve or
+      explicitly dismiss each question before treating the spec as the review baseline.
+    </p>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Weak requirement</th>
+            <th>Reviewable version</th>
+            <th>Evidence after implementation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Only members can edit projects</td>
+            <td>REQ-3.1: owners and invited members may edit; unrelated users receive 404</td>
+            <td>Allow and deny tests plus the changed authorization path</td>
+          </tr>
+          <tr>
+            <td>Retries must be safe</td>
+            <td>REQ-4.2: the same idempotency key creates at most one charge</td>
+            <td>Repeated-request test and transaction/constraint evidence</td>
+          </tr>
+          <tr>
+            <td>Keep the API compatible</td>
+            <td>REQ-5.3: existing fields retain names, types, and documented nullability</td>
+            <td>Contract fixture and schema diff</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The information-gain principle here is practical: review both directions. Check
+      whether the code satisfies the spec, and whether the spec describes the real
+      contract. An AI reviewer that only asks the first question can confidently approve
+      the wrong behavior.
+    </p>
+  </section>
+
+  <section id="step-3">
+    <h2>3. Version Kiro steering and review policy with the change</h2>
+    <p>
+      Kiro's current
+      <a href="https://kiro.dev/docs/steering/">steering documentation</a> describes
+      project files for product, technology, and structure context, plus custom files
+      for focused standards. It also supports root and directory-scoped
+      <code>AGENTS.md</code> files. These are useful inputs to authorship and review, but
+      only when the reviewer can tell which rules applied.
+    </p>
+    <p>
+      Treat policy changes like code changes. Keep stable product constraints,
+      authorization rules, required test commands, generated-file policy, and
+      compatibility promises in the repository. Put task-specific intent and non-goals
+      in the spec or pull-request description. The
+      <a href="/blog/pr-review-prompts">evidence-bound PR review prompts</a> provide
+      reusable correctness, security, testing, migration, and API-compatibility angles.
+    </p>
+    <p>
+      Custom agents need one extra check. Kiro says steering files are not automatically
+      included for custom agents unless their resource configuration loads them. Do not
+      assume a code-review agent received the same context as the authoring session.
+      Record the agent definition and review-policy revision in the receipt, then inspect
+      the loaded resources before trusting a repository-specific conclusion.
+    </p>
+  </section>
+
+  <section id="step-4">
+    <h2>4. Bound Kiro hooks and headless review</h2>
+    <p>
+      Use hooks for short feedback loops. Kiro documents
+      <a href="https://kiro.dev/docs/hooks/types/">Agent Stop hooks</a> for compilation,
+      tests, formatting, cleanup, and review after an agent turn. Those checks can catch
+      mistakes before a pull request exists. Keep commands deterministic, repository
+      owned, and narrow enough that a developer can reproduce the result outside Kiro.
+    </p>
+    <p>
+      For CI, Kiro's headless mode runs a prompt without an interactive terminal. It
+      requires an API key and supports tool-category allowlists. Prefer read and search
+      access for a reviewer; do not grant write or unrestricted shell authority merely
+      because the example finishes faster with every tool trusted.
+    </p>
+    <pre><code>{`git diff --no-ext-diff "${"$"}{BASE_SHA}" "${"$"}{HEAD_SHA}" |
+  kiro-cli chat \
+    --no-interactive \
+    --trust-tools=read,grep \
+    --output-format stream-json \
+    "Review this pull-request diff against the repository's review rules."`}</code></pre>
+    <p>
+      This command follows the documented headless shape, but it is not a complete gate.
+      A production workflow must define the diff base, check out the exact pull-request
+      head, handle truncation and operational errors, validate the review output, and
+      publish a commit-bound conclusion. Treat model text and pull-request content as
+      untrusted input. Never execute commands copied from a finding.
+    </p>
+  </section>
+
+  <section id="step-5">
+    <h2>5. Capture the exact Kiro-authored pull-request head</h2>
+    <p>
+      Kiro Web can create a feature branch, commit changes, and open a pull request. Its
+      <a href="https://kiro.dev/docs/web/github/">GitHub integration guide</a> also lets
+      the task owner ask Kiro to address all review comments or one conversation and push
+      updates. Every push changes the review target.
+    </p>
+    <p>
+      Read the live PR head SHA immediately before review starts. Store it as
+      <code>authored_head</code> or <code>requested_head</code>. When the review finishes,
+      compare the current PR head again. If the value changed during review, keep the
+      result as historical analysis and request a fresh review. Do not guess that an
+      agent silently incorporated a commit that arrived after its context was assembled.
+    </p>
+    <p>
+      Kiro's in-session PR view exposes commit SHAs for inspection, while GitHub remains
+      the comment, approval, and merge surface. Use GitHub's API or an equivalent trusted
+      repository query as the source of truth for the current head. The authoring chat is
+      context, not repository state.
+    </p>
+  </section>
+
+  <section id="step-6">
+    <h2>6. Convert Kiro code review findings into obligations</h2>
+    <p>
+      A finding becomes a merge obligation only after it passes an evidence threshold.
+      Require the changed file or symbol, the violated requirement or repository rule, a
+      causal path, the concrete consequence, and the correction or evidence needed to
+      close it. Confidence, severity, or forceful wording cannot substitute for those
+      fields.
+    </p>
+    <p>
+      The
+      <a href="/blog/pull-request-review-comments">signal-first review-comment contract</a>
+      separates defects from questions and optional improvements. It also preserves
+      dispositions such as fixed, rejected with evidence, intentional contract, and
+      needs human judgment. Apply the same model to Kiro output whether it appears in a
+      terminal, a CI log, or a GitHub conversation.
+    </p>
+    <p>
+      Tie each admitted finding to both the reviewed head and the applicable requirement
+      ID. If the finding reveals a missing requirement, update the spec first, give the
+      new requirement a stable identity, and then fix the code. This prevents the team
+      from closing a real product gap as an undocumented one-off patch.
+    </p>
+  </section>
+
+  <section id="step-7">
+    <h2>7. Invalidate old evidence after Kiro changes the branch</h2>
+    <p>
+      Kiro can address pull-request feedback and push another commit. A human or another
+      coding agent can do the same. The author does not matter: a new head changes the
+      code under review and may change the relationship between the implementation and
+      the spec.
+    </p>
+    <ol>
+      <li>Capture the old and new head SHAs.</li>
+      <li>Inspect the fix diff against the admitted finding and requirement.</li>
+      <li>Update the spec if the repair changed intended behavior.</li>
+      <li>Run the focused regression on the new head.</li>
+      <li>Run repository-required CI on the new head or applicable test-merge commit.</li>
+      <li>Request a fresh review and reconcile every open obligation.</li>
+      <li>Publish a new verdict only after the reviewed and current heads agree.</li>
+    </ol>
+    <p>
+      <a href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches">GitHub branch protection</a>
+      can dismiss stale approvals, require approval of the latest reviewable push,
+      require conversation resolution, and require status checks before merge. Configure
+      the controls that match the repository's risk. A resolved Kiro thread and a green
+      check answer different questions; neither should silently stand in for the other.
+    </p>
+  </section>
+
+  <section id="step-8">
+    <h2>8. Require an independent exact-head verdict</h2>
+    <p>
+      Keep the final verdict in repository-owned CI. It should distinguish
+      <code>passed</code>, <code>needs_changes</code>, and <code>review_error</code>;
+      name the reviewed SHA; preserve structured findings; and fail closed when the
+      reviewer is unavailable or its output is invalid. Branch protection or a ruleset
+      can then require that check from the intended source.
+    </p>
+    <p>
+      ReviewGate is one open-source implementation of this boundary. It runs in GitHub
+      Actions with a bring-your-own OpenRouter key, publishes a visible 0-5 score in one
+      canonical summary, and emits structured findings for humans or external repair
+      agents. It does not need to replace Kiro's authoring, spec, or feedback surfaces.
+      It evaluates the committed pull-request state and reports the reviewed head.
+    </p>
+    <p>
+      Install the maintained workflow from the
+      <a href="/docs/#install">ReviewGate GitHub Action guide</a>, then configure scoped
+      review angles and severity through the
+      <a href="/docs/configuration/">repository configuration</a>. Use the
+      <a href="/docs/#review-loop">structured repair loop</a> to give Kiro or another
+      agent only the open, evidence-backed findings that remain on the current head.
+    </p>
+    <p>
+      Before requiring any AI review across many repositories, measure it. The
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark scorecard</a>
+      covers recall, false blockers, repeatability, failure handling, latency, cost, and
+      rollout decisions. A gate earns authority through observed reliability, not
+      through the confidence of its prose.
+    </p>
+  </section>
+
+  <section id="worked-example">
+    <h2>A worked Kiro spec-to-verdict transition</h2>
+    <p>
+      Consider a Kiro Bugfix Spec for a project-membership endpoint. This is an
+      illustrative workflow, not a claim about a real customer run.
+    </p>
+    <ol>
+      <li>
+        The bug analysis states that invited members are incorrectly denied. It also
+        states that unrelated users must remain unable to discover the project. The two
+        behaviors become <code>REQ-3.1</code> and <code>REQ-3.2</code>.
+      </li>
+      <li>
+        Kiro's design keeps authorization in the existing policy layer. The task list
+        calls for a predicate fix plus allow and deny regressions. The spec files and
+        steering rules are committed as revision <code>S</code>.
+      </li>
+      <li>
+        Kiro implements the tasks and opens a PR at head <code>A</code>. A headless review
+        finds that the new predicate admits suspended members. The maintainer accepts
+        the finding because it cites the changed branch, the account-status rule, and a
+        reachable consequence.
+      </li>
+      <li>
+        The spec gains <code>REQ-3.3</code> for suspended members. Kiro updates the
+        predicate and adds a regression, creating head <code>B</code>. Review evidence for
+        head <code>A</code> moves to history.
+      </li>
+      <li>
+        Focused authorization tests, required CI, and ReviewGate run on head
+        <code>B</code>. The structured result names <code>B</code>, scores the review 5/5,
+        and has no unresolved blocker. The current PR head is still <code>B</code> when a
+        maintainer merges.
+      </li>
+    </ol>
+    <p>
+      The useful result is not “Kiro fixed its own code.” The repository can show how a
+      discovered gap changed the specification, which commit implemented it, which tests
+      exercised it, and which independent verdict covered the code that merged.
+    </p>
+  </section>
+
+  <section id="decision">
+    <h2>Should you use Kiro, ReviewGate, or both?</h2>
+    <div class="article-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Need</th>
+            <th>Use Kiro</th>
+            <th>Use ReviewGate</th>
+            <th>Use both</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Requirements, design, tasks, and agent implementation</td>
+            <td>Yes</td>
+            <td>No</td>
+            <td>When authored work also needs an independent gate</td>
+          </tr>
+          <tr>
+            <td>Interactive or headless exploratory review</td>
+            <td>Yes</td>
+            <td>Review-only workflow</td>
+            <td>When Kiro feedback helps before the required verdict</td>
+          </tr>
+          <tr>
+            <td>Canonical 0-5 summary and structured reviewed SHA</td>
+            <td>Build a repository contract around the output</td>
+            <td>Built into the product contract</td>
+            <td>Use ReviewGate as the exact-head boundary</td>
+          </tr>
+          <tr>
+            <td>Automatic code fixes</td>
+            <td>Use Kiro's authoring and PR feedback loop</td>
+            <td>Out of scope</td>
+            <td>Rerun the gate after every Kiro push</td>
+          </tr>
+          <tr>
+            <td>Final merge decision</td>
+            <td>Repository workflow and authorized maintainer</td>
+            <td>Human decision remains explicit</td>
+            <td>Require current evidence, then let the maintainer decide</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Kiro is the stronger fit when the job begins with uncertain requirements or needs
+      an agent to plan, implement, and revise a change. ReviewGate is intentionally
+      narrower: it supplies a repository-owned review artifact and visible merge signal.
+      The combination is useful when the same agent can author and repair the code but
+      the repository needs a separate exact-head decision boundary.
+    </p>
+  </section>
+
+  <section id="failure-modes">
+    <h2>Common Kiro code review failure modes</h2>
+    <h3>Reviewing the diff but not the specification</h3>
+    <p>
+      Correct code can implement the wrong requirement. Challenge ambiguous, conflicting,
+      and missing behaviors before treating the spec as authority. Link every important
+      finding and regression to a stable requirement ID.
+    </p>
+    <h3>Assuming a custom reviewer loaded all steering</h3>
+    <p>
+      Kiro custom agents require steering resources to be included explicitly. Inspect
+      the agent definition and record the applicable policy revision. A repository-aware
+      conclusion is not credible when the reviewer never received the repository rules.
+    </p>
+    <h3>Granting broad tool access to a read-only reviewer</h3>
+    <p>
+      Use the smallest tool categories that can inspect the change. A reviewer rarely
+      needs mutation authority. Keep shell commands allowlisted, treat model output as
+      untrusted, and prevent pull-request text from becoming executable instructions.
+    </p>
+    <h3>Treating task completion as test evidence</h3>
+    <p>
+      A checked task records progress. It does not prove an acceptance criterion holds.
+      Run repository-owned focused tests and required CI on the exact current head, then
+      record those results separately from the Kiro task list.
+    </p>
+    <h3>Keeping a green result after Kiro pushes a fix</h3>
+    <p>
+      A new commit creates a new review target. Preserve earlier findings as history,
+      inspect the repair, rerun tests, and publish a fresh verdict. Do not equate a
+      resolved conversation with validated code.
+    </p>
+    <h3>Turning reviewer failure into a clean review</h3>
+    <p>
+      Authentication errors, model timeouts, malformed output, missing context, and
+      truncated diffs are operational failures. Report them as inconclusive and retry;
+      never translate unavailable evidence into a passed gate.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Kiro code review</h2>
+    {faqs.map((faq) => (
+      <section class="article-faq-item">
+        <h3>{faq.question}</h3>
+        <p>{faq.answer}</p>
+      </section>
+    ))}
+  </section>
+
+  <section>
+    <h2>Add an exact-head gate after Kiro</h2>
+    <p>
+      ReviewGate is free and open source. It runs inside GitHub Actions, uses your
+      OpenRouter key, updates one score-centered summary, and emits structured findings
+      for the reviewed head. Keep Kiro for specs, implementation, and repairs; use the
+      independent gate to decide whether the current commit is ready for a human merge
+      decision.
+    </p>
+    <div class="signal-actions">
+      <a
+        class="signal-button signal-button-primary"
+        href="/docs/#install"
+        data-analytics-event="install_intent_clicked"
+        data-analytics-location="kiro_code_review_article"
+      >Install ReviewGate</a>
+      <a
+        class="signal-button signal-button-secondary"
+        href="https://github.com/LVTD-LLC/reviewgate"
+        data-analytics-event="source_intent_clicked"
+        data-analytics-location="kiro_code_review_article"
+      >Inspect the source</a>
+    </div>
+  </section>
+</ArticleLayout>
