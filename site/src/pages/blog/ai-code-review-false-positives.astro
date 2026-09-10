@@ -1,0 +1,362 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "AI Code Review False Positives: Fix the Gate";
+const description =
+  "Handle AI code review false positives with evidence, explicit dispositions, and a clear separation between comment filters and merge blockers.";
+const canonical = "https://reviewgate.lvtd.dev/blog/ai-code-review-false-positives/";
+const publishedAt = "2026-09-10";
+const steps = [
+  { name: "Recover the exact finding", text: "Start with the current reviewed commit, stable finding identity, claim, and repository evidence.", anchor: "recover" },
+  { name: "Classify the disagreement", text: "Separate a disproved defect from optional advice, accepted risk, missing context, and a stale result.", anchor: "classify" },
+  { name: "Inspect the blocking policy", text: "Distinguish severity and comment visibility from evidence admission and the canonical blocking reason.", anchor: "policy" },
+  { name: "Record a bounded disposition", text: "Attach evidence to the finding and state what future change would invalidate the decision.", anchor: "disposition" },
+  { name: "Change the smallest responsible rule", text: "Use the observed root cause to improve context or review instructions without excluding unrelated defects.", anchor: "tune" },
+];
+const faqs = [
+  { question: "Does a high-confidence AI finding have to block a pull request?", answer: "No. In ReviewGate, confidence is one input to finding admission. Eligible classification and severity, repository-evidence validation, and the applicable verification and convergence rules also matter. Use the canonical blocking reason and disposition rather than severity or confident prose alone." },
+  { question: "Does min_severity reduce false-positive blockers?", answer: "Not by itself. ReviewGate uses min_severity to filter inline publication, not to change score computation. A lower-severity validated blocker can still affect the score when its inline comment is hidden. Diagnose the finding's evidence and canonical disposition instead." },
+  { question: "Is an accepted risk a false positive?", answer: "No. Accepting a risk means acknowledging a real issue and deciding how to handle it. A false positive means the alleged defect does not hold under the applicable code and contract. Keep those decisions separate so later maintainers can understand what was actually established." },
+];
+const jsonLd = [
+  {
+    "@context": "https://schema.org", "@type": "BlogPosting",
+    headline: title, description, datePublished: publishedAt, dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: { "@type": "Organization", name: "ReviewGate maintainers", url: "https://github.com/LVTD-LLC/reviewgate" },
+    publisher: { "@type": "Organization", name: "LVTD LLC", url: "https://lvtd.dev" },
+  },
+  {
+    "@context": "https://schema.org", "@type": "HowTo",
+    name: "How to handle a suspected AI code review false positive",
+    description: "An evidence-backed workflow for a contested finding and its merge-blocking state.",
+    step: steps.map((step, index) => ({ "@type": "HowToStep", position: index + 1, name: step.name, text: step.text, url: `${canonical}#${step.anchor}` })),
+  },
+  {
+    "@context": "https://schema.org", "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({ "@type": "Question", name: faq.question, acceptedAnswer: { "@type": "Answer", text: faq.answer } })),
+  },
+  {
+    "@context": "https://schema.org", "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "ReviewGate", item: "https://reviewgate.lvtd.dev/" },
+      { "@type": "ListItem", position: 2, name: "Blog", item: "https://reviewgate.lvtd.dev/blog/" },
+      { "@type": "ListItem", position: 3, name: title, item: canonical },
+    ],
+  },
+];
+---
+
+<ArticleLayout title={title} description={description} publishedAt={publishedAt} readingTime="10 min read" jsonLd={jsonLd}>
+  <Fragment slot="title">AI code review false positives: fix the gate.</Fragment>
+  <Fragment slot="deck">
+    A disputed finding needs a decision backed by code. Hiding its comment, lowering
+    its severity, or asking the model again does not establish that the finding is wrong.
+  </Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Short answer</a></li>
+    <li><a href="#recover">1. Recover the exact finding</a></li>
+    <li><a href="#classify">2. Classify the disagreement</a></li>
+    <li><a href="#policy">3. Inspect the blocking policy</a></li>
+    <li><a href="#disposition">4. Record a bounded disposition</a></li>
+    <li><a href="#tune">5. Change the responsible rule</a></li>
+    <li><a href="#example">Worked example</a></li>
+    <li><a href="#mistakes">Mistakes and trade-offs</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>How should you handle AI code review false positives?</h2>
+    <p class="article-lead">
+      Treat a suspected AI code review false positive as a disputed claim, not a command
+      to rewrite working code. Recover the exact reviewed commit, inspect the claimed
+      failure path, separate advice from defects, and record a disposition with evidence.
+      Change the reviewer only after you know why its claim failed.
+    </p>
+    <p>
+      This tutorial is for a maintainer facing one noisy or contested pull-request
+      review. You need access to the diff, relevant repository contracts, and the review
+      result. The examples use ReviewGate's documented behavior as of September 10, 2026.
+      They are not a benchmark or a claim that ReviewGate eliminates incorrect findings.
+    </p>
+    <ol>
+      {steps.map((step) => <li><strong>{step.name}.</strong> {step.text}</li>)}
+    </ol>
+    <p>
+      AI reviewers can flag nonexistent problems, misunderstand code, or suggest an
+      inaccurate fix. GitHub documents those limitations in its
+      <a href="https://docs.github.com/en/copilot/responsible-use/agents#7-limitations">Copilot Agents application card</a>.
+      The practical response is to keep finding generation separate from the decision
+      that a finding must stop a merge. A reviewer can be useful without being granted
+      the final word on every allegation.
+    </p>
+  </section>
+
+  <section id="recover">
+    <h2>1. Recover the exact finding before changing code</h2>
+    <p>
+      Start with the result for the code you are actually deciding about. An old comment
+      may describe a removed branch, a renamed function, or a guard that was added after
+      the review. That makes the comment stale; it does not tell you whether the original
+      finding was right. Preserve that distinction when recording the outcome.
+    </p>
+    <p>
+      For ReviewGate, use the stable <code>.reviewgate/result.json</code> contract for
+      automation and the full <code>.reviewgate/review.json</code> artifact for deeper
+      diagnostics. Follow the <a href="/docs/artifacts">artifact retrieval guide</a> to
+      obtain a result bound to the repository, pull request, and current
+      <code>reviewed_sha</code>. Do not build a repair queue by scraping comment prose.
+    </p>
+    <p>
+      Once you have that current, validated artifact, this documented filter selects the
+      canonical score-blocking work. It is an inspection example, not a complete merge
+      authorization script:
+    </p>
+    <pre><code>{`jq '
+  [.findings[]
+   | select(.disposition == "still_open"
+            and .blocking_reason != null)]
+' .reviewgate/result.json`}</code></pre>
+    <p>
+      Keep the <code>semantic_fingerprint</code> with each selected finding. It identifies
+      the finding for dispositions even when its wording or line anchor changes. Read
+      the claim and evidence together: what input reaches the changed code, which
+      invariant fails, and what observable consequence follows? A label such as
+      “possible race condition” does not answer those questions.
+    </p>
+    <p>
+      This step is done when you can point to one current claim and its supporting code.
+      If the result is <code>review_error</code> with a null score, stop treating it as a
+      verdict on the diff. The reviewer did not produce a usable completed result;
+      investigate the typed error through the documented retry path.
+    </p>
+  </section>
+
+  <section id="classify">
+    <h2>2. Classify the disagreement, not just the comment</h2>
+    <p>
+      Reserve “false positive” for an allegation that does not hold. A correct defect
+      that the team postpones remains a correct defect. A helpful suggestion that should
+      never have blocked the merge is a policy or classification problem, even if its
+      advice is sound. Separating those cases gives you a useful next action.
+    </p>
+    <table>
+      <thead><tr><th>What you establish</th><th>Decision</th><th>Useful next action</th></tr></thead>
+      <tbody>
+        <tr><td>The claimed failure is reachable and violates the contract</td><td>Real defect</td><td>Repair it or explicitly route the risk decision to its owner</td></tr>
+        <tr><td>A guard or contract disproves the alleged failure</td><td>False positive</td><td>Record the contradicting evidence against this finding</td></tr>
+        <tr><td>The suggestion improves code without correcting a defect</td><td>Advice</td><td>Keep it nonblocking; decide whether it belongs in this PR</td></tr>
+        <tr><td>The relevant business rule is undecided</td><td>Contract ambiguity</td><td>Ask the responsible owner to settle the rule</td></tr>
+        <tr><td>The claim was correct on an earlier head and has been repaired</td><td>Fixed finding</td><td>Record the repair and current-head resolution evidence</td></tr>
+        <tr><td>A real issue is knowingly retained</td><td>Accepted risk</td><td>Record ownership, rationale, and the follow-up boundary</td></tr>
+      </tbody>
+    </table>
+    <p>
+      These are triage categories for this workflow, not a new ReviewGate status enum.
+      <a href="https://docs.semgrep.dev/for-developers/resolve-findings-through-app">Semgrep's triage documentation</a>
+      makes a similar important distinction by offering separate reasons for a false
+      positive, acceptable risk, and lack of time to fix. Do not use the first label to
+      conceal the other two decisions.
+    </p>
+    <p>
+      Optional feedback also deserves an explicit label.
+      <a href="https://google.github.io/eng-practices/review/reviewer/comments.html">Google's code-review guidance</a>
+      distinguishes required changes from optional comments so authors do not mistake
+      every remark for a condition of approval. Our
+      <a href="/blog/pull-request-review-comments">signal-first comment guide</a> covers
+      wording and placement; the job here is deciding what the feedback means for the gate.
+    </p>
+  </section>
+
+  <section id="policy">
+    <h2>3. Diagnose AI code review false positives at the policy layer</h2>
+    <p>
+      ReviewGate does not derive a blocker from severity alone. Its
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/87aa439/docs/finding-policy.md">published finding policy</a>
+      separates classification, severity, confidence, evidence, and blocking disposition.
+      An initial candidate needs an eligible classification, severity from P0 through P3,
+      confidence of at least 0.85, and a passed repository-evidence gate before it can
+      receive a deterministic blocking reason.
+    </p>
+    <p>
+      Eligible classifications are <code>defect</code>, <code>security</code>, and
+      <code>reliability_risk</code>. Suggestions, contract ambiguity, and P4 findings are
+      advisory. The confidence threshold is a policy input; do not read a model's
+      <code>0.85</code> as a demonstrated 85% probability that the defect exists.
+      ReviewGate's <a href="/docs/features">features and scoring documentation</a>
+      describes additional requirements for late blockers, verification, and convergence.
+    </p>
+    <p>
+      The implementation makes the boundary concrete. In
+      <a href="https://github.com/LVTD-LLC/reviewgate/blob/87aa439/crates/reviewgate-core/src/lib.rs">the core finding policy</a>,
+      <code>expected_blocking_reason</code> considers eligibility, evidence-gate success,
+      and any verifier decision. A different helper,
+      <code>is_inline_comment_eligible</code>, considers publication eligibility and the
+      configured severity floor. Those are different decisions, not two names for one setting.
+    </p>
+    <p>
+      Consequently, setting <code>min_severity: P2</code> can hide a P3 inline comment
+      without removing a validated P3 blocker from the score. If the finding is wrong,
+      fix its evidence-backed disposition. If it is right but low priority, make an
+      explicit policy decision. A quieter comment stream is not proof of a better verdict.
+    </p>
+    <p>
+      This step is done when you know whether the problem is a false factual claim,
+      incorrect classification, missing context, or merely unwanted publication. Change
+      the control that owns that problem. Otherwise you can make the symptom disappear
+      while leaving the actual blocking state unchanged.
+    </p>
+  </section>
+
+  <section id="disposition">
+    <h2>4. Record the decision and its limits</h2>
+    <p>
+      Use a compact record for contested findings. The six fields below are an editorial
+      worksheet, not a payload to submit to ReviewGate. They connect the maintainer's
+      reasoning to the product's existing artifact and disposition contracts.
+    </p>
+    <pre><code>{`Reviewed head: <exact commit>
+Finding: <semantic_fingerprint>
+Claim: <one falsifiable statement>
+Evidence: <paths, lines, excerpts, and causal explanation>
+Decision: <disproved, fixed, intentional, or unresolved>
+Revisit when: <specific change that invalidates this evidence>`}</code></pre>
+    <p>
+      The last field prevents a local exception from becoming a permanent exemption.
+      A guard can disprove a claim today and disappear tomorrow. State that dependency
+      rather than adding “never flag this function” to a prompt. Preserve uncertainty
+      where the evidence is incomplete: “I cannot reproduce it” is not equivalent to
+      “this execution path cannot occur.”
+    </p>
+    <p>
+      Submit the actual disposition using the
+      <a href="/docs/artifacts#submit-a-disposition-without-hand-writing-json">documented CLI interface</a>,
+      targeting the semantic fingerprint and supplying evidence. ReviewGate distinguishes
+      submitted statuses from canonical tracked states. Use the documented enum rather
+      than copying the worksheet's shorthand into an API payload.
+    </p>
+    <p>
+      A resolved GitHub thread is also not the same as a resolved finding. The stable
+      artifact can show <code>resolved_externally</code> while canonical state remains
+      open or disputed. Treat that mismatch as work to reconcile, not permission to
+      remove the obligation from an agent's task list. This step ends with a recorded,
+      evidence-backed decision attached to the correct finding and head.
+    </p>
+  </section>
+
+  <section id="tune">
+    <h2>5. Change the smallest rule responsible for the mistake</h2>
+    <p>
+      Group repeated mistakes by the reason they happened. In his April 2026
+      <a href="https://tech.bdigitalmedia.io/blog/diagnosing-ai-review-false-positives/">false-positive diagnosis article</a>,
+      Bob Ulrich distinguishes clustering by root cause from clustering by the symptom
+      a reviewer reported. “Missing validation” is a symptom. “The reviewer never
+      inspected the upstream validator” describes a repairable context failure.
+    </p>
+    <p>
+      For that failure, name the validator and require the review to trace its callers.
+      For a mistaken business rule, supply the accepted contract. For a style preference
+      promoted to a defect, clarify the classification boundary. Do not respond to one
+      mistaken comment in a test file by excluding every test: a broken fixture can
+      still hide a regression, and a helper can still encode the wrong assumption.
+    </p>
+    <p>
+      ReviewGate also supports optional independent blocker verification. If you want
+      that additional model call, merge this setting into your existing
+      <code>.reviewgate.yml</code>:
+    </p>
+    <pre><code>{`verify_blockers: true`}</code></pre>
+    <p>
+      As documented in <a href="/docs/configuration#independently-verify-blocker-candidates">blocker verification configuration</a>,
+      grounded candidates are checked together in at most one extra call. The verifier
+      receives normalized claims and checked evidence, not the discovery model's
+      persuasive title, detail, or repair instruction. Rejected candidates remain
+      auditable in the full artifact; an inconclusive result becomes
+      <code>review_error</code>, not a clean review.
+    </p>
+    <p>
+      This is another model judgment, not an accuracy guarantee. A later rejection does
+      not silently erase an already verified open obligation: the disagreement is
+      retained until convergence accepts resolution evidence. That distinction matters
+      when a team repeatedly reruns review hoping a stubborn finding will disappear.
+      Use evidence to settle the disagreement instead of treating stochastic agreement
+      as proof.
+    </p>
+  </section>
+
+  <section id="example">
+    <h2>Worked example: an alleged duplicate notification</h2>
+    <p>
+      Consider an illustrative PR that moves notification delivery into a background
+      worker. The AI reviewer claims a retry sends the same notification twice. This is
+      a hypothetical triage example, not a reported ReviewGate result or an executed test.
+      Its purpose is to show how the same suspicious line can lead to different honest decisions.
+    </p>
+    <p>
+      First, recover the worker code and exact reviewed head. Locate the retry entry
+      point, the delivery operation, and any deduplication state. Do not assume that a
+      function named <code>send_once</code> enforces the name's promise. Read how its key
+      is constructed, where the state lives, and when it is written relative to delivery.
+    </p>
+    <p>
+      Suppose the finding overlooked a shared delivery service. If that service enforces
+      the relevant deduplication contract across the entire retry path, its implementation
+      can contradict the allegation. Record the service and caller evidence, identify
+      the exact claim it disproves, and submit an evidence-backed rejection. The worksheet's
+      revisit condition should mention changes to that service, its key, or the call path.
+    </p>
+    <p>
+      Now change one fact: the worker writes its “sent” marker only after delivery returns.
+      A crash between those operations may leave a retry path that sends again. The
+      presence of a marker is no longer enough to reject the finding. Establish whether
+      another mechanism covers that window. If not, the alleged failure needs repair or
+      an explicit product decision about duplicate delivery. Calling it a false positive
+      because duplication is rare would record the wrong conclusion.
+    </p>
+    <p>
+      Finally, suppose the intended product behavior is unclear. The maintainer must
+      settle whether duplicate delivery is forbidden, tolerated, or handled elsewhere.
+      Keep that question visible. Do not let the reviewer invent a stricter contract,
+      and do not let an author invent an exception solely to close the thread. The
+      useful outcome is a narrower, documented decision that the next review can reuse.
+    </p>
+  </section>
+
+  <section id="mistakes">
+    <h2>Common mistakes: optimizing for silence</h2>
+    <p>
+      Fewer false positives is a useful goal only alongside retained defect detection.
+      A reviewer that emits nothing produces no false alarms and offers no review value.
+      The strongest argument for tolerating some noise is that investigating an uncertain
+      warning may be cheaper than missing a serious defect. Handle that trade-off by
+      routing uncertain findings appropriately, not by insisting that every concern must
+      either block automatically or disappear.
+    </p>
+    <ul>
+      <li><strong>Do not lower severity to disprove a claim.</strong> Impact and correctness are separate questions.</li>
+      <li><strong>Do not count every rejection as a model error.</strong> Fixed findings, changed contracts, stale heads, and accepted risks need separate labels.</li>
+      <li><strong>Do not suppress an entire path to fix one mistake.</strong> Preserve the ability to find a different defect in the same code.</li>
+      <li><strong>Do not call an inconclusive reviewer clean.</strong> Availability failure supplies no evidence that the code is correct.</li>
+    </ul>
+    <p>
+      If repeated mistakes justify changing prompts, models, or policy, compare both
+      disproved blockers and retained detection on representative changes. Our
+      <a href="/blog/ai-code-review-benchmark">AI code review benchmark guide</a> covers
+      that broader evaluation job. This tutorial deliberately starts smaller: settle
+      one contested finding correctly before generalizing from it.
+    </p>
+    <p>
+      ReviewGate supplies inspectable findings, a deterministic scoring contract, and
+      structured state for that workflow. It does not edit code or merge for you. Start
+      with the <a href="/docs/quickstart">GitHub Actions quickstart</a>, then use the
+      <a href="/docs/agent-workflows">external-agent workflow</a> when you want an agent
+      to act on current, still-open blockers. The goal is a defensible review decision,
+      not an empty comment section.
+    </p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about AI code review false positives</h2>
+    {faqs.map((faq) => <div><h3>{faq.question}</h3><p>{faq.answer}</p></div>)}
+  </section>
+</ArticleLayout>

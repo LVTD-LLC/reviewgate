@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-09-10
+
+- Added “AI Code Review False Positives: Fix the Gate,” an evidence-backed triage tutorial with a six-field contested-finding record, ReviewGate admission and disposition details, a worked example, article/how-to/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
+
 ## 2026-09-03
 
 - Added “Kiro Code Review: Turn Specs Into a Merge Gate,” a source-backed workflow for specs, steering, hooks, headless review, finding admission, and exact-head merge decisions; included an original spec-to-verdict receipt, BlogPosting/HowTo/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.

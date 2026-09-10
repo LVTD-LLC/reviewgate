@@ -127,6 +127,8 @@ For agent automation, the reliable score-blocking predicate is:
 
 Do not infer blocking state from severity alone.
 
+For a contested finding, follow [the evidence-backed false-positive workflow](/blog/ai-code-review-false-positives) to distinguish a disproved claim from advice, accepted risk, and a stale result.
+
 ## Understand evidence validation
 
 Before a high-confidence `P0-P3` claim can block, its grounding must include:
