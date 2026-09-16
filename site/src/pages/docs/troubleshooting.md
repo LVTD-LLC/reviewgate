@@ -202,6 +202,16 @@ Retry only entries with `retryable: true`, and cap retries. A non-retryable arti
 
 Do not change PR code to chase a provider timeout.
 
+### Investigate structured-response failures
+
+The review log records an OpenRouter generation ID (when supplied), the completion finish reason, content byte count, and token counts. Rejected model responses additionally distinguish JSON syntax/EOF errors, JSON schema/type errors (`json_Data`), deterministic artifact validation categories, and incomplete completions. These diagnostics exclude prompts, response content, provider error text, and credentials. Use the generation ID with your own OpenRouter account to investigate a specific request; account-wide activity requires a management key.
+
+A syntactically valid JSON object is not necessarily a valid review artifact. The default request uses JSON-object mode, not provider-enforced JSON Schema. Do not assume every `malformed_response` means a transport outage or fix it by switching models without inspecting diagnostics.
+
+When no complete prior review exists, a retry reviews the full PR diff from the merge base—even on the same head. Only a completed review may become the incremental-review baseline. A same-head retry after a completed review can legitimately have no changed lines; an empty review after a first-run failure is not evidence of coverage. Previously published summaries from an affected runtime are not retroactively revalidated.
+
+Cost accounting uses provider-reported `usage.cost` when available and token-price estimates otherwise. It ignores model-invented accounting fields and retains available usage charges when a returned completion cannot be parsed or is incomplete. Requests that fail before usage arrives (for example, a timeout) can still incur charges that ReviewGate cannot measure; reconcile those against OpenRouter. No automatic paid retry is added.
+
 ## Summary comment is missing
 
 Check:
