@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const expectedPages = [
+  [
+    "blog/ai-code-review-false-positives/index.html",
+    "https://reviewgate.lvtd.dev/blog/ai-code-review-false-positives/",
+  ],
   ["index.html", "https://reviewgate.lvtd.dev/"],
   ["docs/index.html", "https://reviewgate.lvtd.dev/docs/"],
   ["docs/quickstart/index.html", "https://reviewgate.lvtd.dev/docs/quickstart/"],

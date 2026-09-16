@@ -2,6 +2,13 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-09-16
+
+- Retry the complete PR diff after a first review failure instead of treating the failed attempt as a completed incremental baseline.
+- Use provider-reported charges ahead of token estimates, ignore model-invented runtime accounting/state, and retain known charges for malformed or incomplete review completions.
+- Add bounded, content-free OpenRouter generation/finish/usage diagnostics and structured parsing/validation categories; reject incomplete completions even when their JSON parses. Keep existing model selection and explicit retry policy.
+- Registered the existing false-positive guide in the site validation inventory, fixing its pre-existing sitemap-count check failure.
+
 ## 2026-09-10
 
 - Added “AI Code Review False Positives: Fix the Gate,” an evidence-backed triage tutorial with a six-field contested-finding record, ReviewGate admission and disposition details, a worked example, article/how-to/FAQ/breadcrumb schema, contextual inbound links, and SEO inventory registration.
