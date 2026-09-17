@@ -1,0 +1,155 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "Sourcery Code Review: Scope, Reruns, and Merge Checks";
+const description = "Set up Sourcery code review with explicit scope, full-review triggers, and a clear distinction between skipped checks and reviewed changes.";
+const canonical = "https://reviewgate.lvtd.dev/blog/sourcery-code-review/";
+const publishedAt = "2026-09-17";
+const steps = [
+  { name: "Choose repository access", text: "Install the GitHub App for the repositories you intend to review.", anchor: "access" },
+  { name: "Define review scope", text: "Record eligible pull requests, excluded paths, and the contracts your review rules should enforce.", anchor: "scope" },
+  { name: "Choose the right rerun", text: "Distinguish automatic follow-up reviews from an explicit fresh full review.", anchor: "reruns" },
+  { name: "Interpret the check", text: "Read the result and blocking policy without treating skipped or dismissed work as review evidence.", anchor: "checks" },
+  { name: "Record coverage before merging", text: "Bind the reviewed commit, scope, execution kind, result, and finding dispositions in one record.", anchor: "record" },
+];
+const faqs = [
+  { question: "How do I request a fresh Sourcery code review?", answer: "Post @sourcery-ai review as a standalone pull-request comment. Sourcery documents this as a full review that resets the automatic re-review counter. The summary and guide commands refresh those individual outputs instead; they are not substitutes for a fresh full review." },
+  { question: "Can Sourcery block a merge?", answer: "Yes. Sourcery documents that unresolved blocking security findings fail its GitHub review check. Requiring that check through branch protection can block merging. That is narrower than saying every review suggestion is a blocker, or that a green check proves every possible defect has been examined." },
+  { question: "Does ReviewGate turn Sourcery comments into a score?", answer: "Not in this workflow. ReviewGate performs its own review with its own finding-admission policy. Its score is not a translation of Sourcery comments. Use one reviewer if it meets your requirements; add another only for an explicit coverage or machine-readable-output need." },
+];
+const jsonLd = [
+  {
+    "@context": "https://schema.org", "@type": "BlogPosting",
+    headline: title, description, datePublished: publishedAt, dateModified: publishedAt,
+    mainEntityOfPage: canonical,
+    author: { "@type": "Organization", name: "ReviewGate maintainers", url: "https://github.com/LVTD-LLC/reviewgate" },
+    publisher: { "@type": "Organization", name: "LVTD LLC", url: "https://lvtd.dev" },
+  },
+  {
+    "@context": "https://schema.org", "@type": "HowTo", name: "How to operate Sourcery code review with explicit coverage",
+    step: steps.map((step, index) => ({ "@type": "HowToStep", position: index + 1, name: step.name, text: step.text, url: `${canonical}#${step.anchor}` })),
+  },
+  {
+    "@context": "https://schema.org", "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({ "@type": "Question", name: faq.question, acceptedAnswer: { "@type": "Answer", text: faq.answer } })),
+  },
+  {
+    "@context": "https://schema.org", "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "ReviewGate", item: "https://reviewgate.lvtd.dev/" },
+      { "@type": "ListItem", position: 2, name: "Blog", item: "https://reviewgate.lvtd.dev/blog/" },
+      { "@type": "ListItem", position: 3, name: title, item: canonical },
+    ],
+  },
+];
+const coverageRecord = `PR and current head: <PR URL and full commit SHA>
+Expected scope: <paths, eligibility rules, exclusions>
+Review execution: <fresh full review or automatic follow-up>
+Evidence: <review/check URL, reviewed head, relevant findings>
+Outcome: <success, failure, skipped, or incomplete>
+Remaining decisions: <finding disposition, owner, next action>`;
+---
+
+<ArticleLayout title={title} description={description} publishedAt={publishedAt} readingTime="9 min read" jsonLd={jsonLd}>
+  <Fragment slot="title">Sourcery code review: scope, reruns, and merge checks.</Fragment>
+  <Fragment slot="deck">A new commit, an updated comment, and a fresh full review are different events. Keep the distinction visible before deciding to merge.</Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">The operating rule</a></li>
+    {steps.map((step, index) => <li><a href={`#${step.anchor}`}>{index + 1}. {step.name}</a></li>)}
+    <li><a href="#example">Worked example</a></li>
+    <li><a href="#reviewgate">Where ReviewGate fits</a></li>
+    <li><a href="#mistakes">Common mistakes</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>Operate Sourcery code review as a coverage decision</h2>
+    <p class="article-lead">To use Sourcery code review deliberately, define which pull requests and files are in scope, distinguish automatic follow-up reviews from fresh full reviews, and read the check result against your merge policy. An updated check or resolved thread alone does not establish that newly added behavior received a full review.</p>
+    <p>This tutorial is for a GitHub maintainer configuring an AI reviewer or investigating a surprising result after a push. You need repository administration access for installation and merge rules, plus access to the pull request and review outputs. Product behavior below comes from documentation accessed on September 17, 2026, not a hands-on benchmark.</p>
+    <ol>{steps.map((step) => <li><strong>{step.name}.</strong> {step.text}</li>)}</ol>
+    <p>The useful question is specific: which changes did this execution examine, and what does its result authorize us to conclude? Keep that question separate from whether you like the reviewer's suggestions. A helpful suggestion can come from an incomplete review; a complete review can still miss a defect.</p>
+  </section>
+
+  <section id="access">
+    <h2>1. Choose the Sourcery installation you mean</h2>
+    <p>For hosted GitHub pull-request reviews, use Sourcery's GitHub App. Its <a href="https://docs.sourcery.ai/start/quickstart-github/">GitHub quickstart</a> walks through choosing an account or organization and granting repository access. Start with the repositories you intend to include. Installation access is a separate decision from which pull requests qualify for review.</p>
+    <p>Do not copy a configuration example merely because it contains the word Sourcery. Search results also surface an IDE assistant, a Python refactoring CLI, and a separate GitHub Action. Sourcery's <a href="https://github.com/marketplace/actions/sourcery-action">Action listing</a> describes a CLI-backed workflow with inputs such as <code>target</code>, <code>diff_ref</code>, and <code>check</code>. Those inputs are not the hosted App's dashboard controls.</p>
+    <p>Write the chosen surface into your repository's operating notes: “Sourcery GitHub App for PR reviews.” If you also use the IDE or CLI, document its purpose independently. That small distinction prevents someone from changing a local refactoring setting and assuming the pull-request reviewer now follows it. This step is complete when the intended repositories have App access and the team knows which integration owns the PR output.</p>
+  </section>
+
+  <section id="scope">
+    <h2>2. Define scope before reducing review noise</h2>
+    <p>Sourcery's current <a href="https://docs.sourcery.ai/reviews/configure/">Review Settings</a> distinguish organization defaults from repository overrides. They include PR eligibility controls and path exclusions. Label filters are allowlists, base-branch filters use regular expressions, and draft review is a separate choice. A reviewer cannot supply evidence for changes your settings exclude.</p>
+    <p>Make a short scope table before changing settings. For example, your team might include ready PRs targeting its release branch, exclude generated API clients, and retain the generator's source and configuration. That is an illustrative policy, not a Sourcery default. Record why each exclusion exists and who reviews the excluded risk. Generated output may be repetitive, but a generator configuration change can still alter production behavior.</p>
+    <p>Then add rules for contracts that generic review could miss. Sourcery's <a href="https://docs.sourcery.ai/reviews/review-rules/">plain-language review rules</a> use path patterns and apply to changed lines in matching files. They augment ordinary review feedback; they do not customize the fixed rule sets used by security scanners.</p>
+    <blockquote><p>Example team rule for payment-handler paths: when a change affects retries, identify the idempotency key and explain how a repeated request avoids a second charge. Point to the changed behavior and relevant guard; do not request an unrelated rewrite.</p></blockquote>
+    <p>This is an example rule to adapt, not a product capability claim that Sourcery proves payment correctness. Pair it with the repository's actual contract. The scope step is complete when a maintainer can explain which PRs enter review, which files are omitted, and which product rules deserve attention.</p>
+  </section>
+
+  <section id="reruns">
+    <h2>3. Pick the right Sourcery code review rerun</h2>
+    <p>According to Sourcery's <a href="https://docs.sourcery.ai/reviews/anatomy-of-a-review/">review anatomy documentation</a>, automatic re-reviews revisit existing comments and rerun security scans. They do not regenerate the summary, reviewer's guide, or complete inline review. The documented cap is five automatic re-reviews, after which the check is skipped; rate limits are a separate constraint.</p>
+    <p>That makes a follow-up suitable for checking whether earlier feedback was addressed, but you should not infer fresh full coverage of newly introduced behavior. If a repair adds another branch, changes a public contract, or substantially expands the diff, explicitly request the full review your team expects.</p>
+    <pre><code>@sourcery-ai review</code></pre>
+    <p>The <a href="https://docs.sourcery.ai/reviews/commands/">commands reference</a> documents this standalone PR comment as a full review that resets the counter. Commands for <code>summary</code> and <code>guide</code> refresh those outputs separately. Resolving comments or dismissing the check is an administrative action, not a new examination of code.</p>
+    <p>Record the execution kind beside the result. “Reviewed after push” is too vague when two execution kinds cover different work. This step is complete when you can point to the intended full or follow-up execution, rather than only to the command that requested it.</p>
+  </section>
+
+  <section id="checks">
+    <h2>4. Read the check without overstating it</h2>
+    <p>Sourcery already has a GitHub merge-check path. Its dedicated <a href="https://docs.sourcery.ai/security/github-status-checks/">security status-check documentation</a> says unresolved blocking security findings fail the review check; requiring that check in branch protection can block merging. Scheduled default-branch security scans report separately to the dashboard.</p>
+    <p>Do not turn that into “every suggestion blocks” or “success proves the code is safe.” The review's scope and execution kind still matter. Nor should a skipped result be described as a successful examination. It reports that the expected work did not run under the applicable limit, not that the changed behavior passed inspection.</p>
+    <div class="article-table-wrap">
+      <table>
+        <thead><tr><th>Observed evidence</th><th>Maintainer decision</th></tr></thead>
+        <tbody>
+          <tr><td>Blocking security finding</td><td>Inspect and address the finding under the repository's required-check policy.</td></tr>
+          <tr><td>Successful automatic follow-up</td><td>Decide whether follow-up coverage is enough for the latest change.</td></tr>
+          <tr><td>Skipped execution</td><td>Recover review coverage or use the team's explicit exception process.</td></tr>
+          <tr><td>Resolved thread or dismissed check</td><td>Find the supporting decision; do not infer a fresh review.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The table is our operating guidance, not an additional set of Sourcery status values. A required check is useful only when maintainers understand both its failure conditions and its coverage limits. Finish this step with an explicit answer to what must happen next, not a color copied from the PR interface.</p>
+  </section>
+
+  <section id="record">
+    <h2>5. Keep a compact review-coverage record</h2>
+    <p>Use this worksheet in the PR description or your team's review notes. It is an original operating template, not a Sourcery export format or a ReviewGate schema. Keep links to evidence rather than pasting the entire bot conversation.</p>
+    <pre><code>{coverageRecord}</code></pre>
+    <p>The record ties together facts that otherwise live in different places. Scope explains what the reviewer could see. Execution kind explains what work happened. The commit identifies the code under discussion. Outcome and remaining decisions distinguish a finished review from unresolved risk or unavailable coverage.</p>
+    <p>After a new push, reconsider the record. Preserve the old result as history rather than silently relabeling it as current. If the change is small, the team may decide a targeted follow-up is sufficient. If the diff introduces new behavior, request broader review. The value comes from making that choice visible, not from demanding the same expensive sequence for every change.</p>
+  </section>
+
+  <section id="example">
+    <h2>Worked example: a repair adds new behavior</h2>
+    <p>Consider an illustrative payment PR. The first review identifies missing retry protection. The author adds a guard, but also introduces a new fallback route for requests without the usual identifier. An automatic follow-up resolves the original comment. The maintainer now has evidence about that comment, not proof that the new fallback received a full inline review.</p>
+    <p>In the coverage record, write the new head, retain the payment-handler scope, and label the observed execution as an automatic follow-up. List the fallback route as the remaining review question. Request a fresh full review and inspect the repository's tests for both retry protection and the missing-identifier behavior. Do not write that those tests passed until someone has actually observed their results.</p>
+    <p>If the reviewer raises a disputed issue, record why you accept or reject the claim. Our <a href="/blog/ai-code-review-false-positives">false-positive triage guide</a> separates disproved defects from accepted risk and stale findings. The final record should make clear which evidence addressed the original defect and which evidence covered the newly added route. This example illustrates a decision process; it is not a reported Sourcery incident.</p>
+  </section>
+
+  <section id="reviewgate">
+    <h2>Where ReviewGate fits, and where it does not</h2>
+    <p>Choose Sourcery when its hosted review interface, reviewer guides, discussion workflow, or security-scanning surface fits the job. Adding another reviewer is not automatically an improvement. It adds another source of findings to reconcile and another operational dependency.</p>
+    <p>ReviewGate is an option when you want a repository-owned GitHub Actions review with an explicit score and machine-readable result. Its <a href="/docs/configuration">configuration contract</a> separates inline visibility from scoring: <code>min_severity</code> filters comments, not blockers. Its <code>review_angles</code> setting replaces the default angle list rather than extending it.</p>
+    <p>A worked policy example makes the distinction concrete: a validated P3 blocker can yield 4/5 even when <code>min_severity: P2</code> hides its inline comment. The <a href="https://github.com/LVTD-LLC/reviewgate/blob/8d37e8d0bc5f91e4ca855c45502b67290298c910/crates/reviewgate-core/src/lib.rs#L1234-L1241">scoring implementation</a> takes the lowest applicable blocker ceiling. The score is not a percentage or a count of comments.</p>
+    <p>For automation, use the <a href="/docs/artifacts">versioned result artifact</a> and compare <code>reviewed_sha</code> with the current PR head. ReviewGate represents an unavailable review as <code>review_error</code> with a null score, not a code-quality zero. These distinctions let a repair agent separate code work from reviewer recovery.</p>
+    <p>This workflow does not import Sourcery comments into ReviewGate. ReviewGate performs its own review, does not edit the code, and does not merge the PR. If that independent contract is useful, start with the <a href="/docs/quickstart">ReviewGate quickstart</a>. If Sourcery already supplies the evidence your process needs, keep the simpler setup.</p>
+  </section>
+
+  <section id="mistakes">
+    <h2>Common mistakes to avoid</h2>
+    <ul>
+      <li><strong>Changing the wrong surface.</strong> An old CLI configuration example is not evidence for how today's hosted App settings work.</li>
+      <li><strong>Confusing quieter output with narrower risk.</strong> Fewer comments can be easier to read without changing which defects your merge policy should reject.</li>
+      <li><strong>Clearing a thread to clear a decision.</strong> Preserve the reason a finding was fixed, rejected, or accepted instead of treating resolution as self-explanatory.</li>
+      <li><strong>Assuming every push receives the same review.</strong> Record automatic follow-up versus full review when the distinction affects newly added behavior.</li>
+    </ul>
+    <p>The maintainable policy is the one a teammate can explain from the PR itself. Give them the commit, scope, execution, and remaining decision. They should not have to reconstruct your assumptions from a week of bot comments.</p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions about Sourcery code review</h2>
+    {faqs.map((faq) => <div><h3>{faq.question}</h3><p>{faq.answer}</p></div>)}
+  </section>
+</ArticleLayout>

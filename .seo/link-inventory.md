@@ -29,6 +29,7 @@
 | `/blog/devin-code-review` | https://reviewgate.lvtd.dev/blog/devin-code-review/ | Devin code review and four-authority merge contract | E |
 | `/blog/amazon-mandating-ai-code-review` | https://reviewgate.lvtd.dev/blog/amazon-mandating-ai-code-review/ | Amazon AI code review mandate correction and TRACE risk routing | E |
 | `/blog/ai-code-review-false-positives` | https://reviewgate.lvtd.dev/blog/ai-code-review-false-positives/ | Evidence-backed AI code review false-positive workflow | E |
+| `/blog/sourcery-code-review` | https://reviewgate.lvtd.dev/blog/sourcery-code-review/ | Sourcery scope, rereview, and merge-check guide | E |
 
 There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. Do not create links to those paths until the relevant phase ships them.
 
@@ -213,3 +214,9 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 - “evidence-backed blocker triage”
 - “separate comment filters from merge blockers”
 - “record a finding disposition with evidence”
+
+### Sourcery code review field note
+
+- “Sourcery scope, rerun, and merge-check guide”
+- “review-coverage worksheet”
+- “fresh full review versus automatic follow-up”
