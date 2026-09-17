@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-09-17
+
+- Added “Sourcery Code Review: Scope, Reruns, and Merge Checks,” a source-backed tutorial with a review-coverage worksheet, full-versus-automatic rereview guidance, article/how-to/FAQ/breadcrumb schema, contextual inbound links, and content inventory registration.
+
 ## 2026-09-16
 
 - Advance the Action runtime to the published and attestation-verified v0.9.5 reliability release.

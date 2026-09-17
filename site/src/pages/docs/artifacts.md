@@ -414,3 +414,5 @@ The underlying payload uses `reviewgate-agent-dispositions/v1`, pull-request sco
 - [Run the complete external-agent workflow](/docs/agent-workflows).
 - [Understand evidence validation and convergence](/docs/features).
 - [Review the trust boundaries](/docs/security).
+
+For a tool-neutral way to record commit, scope, execution kind, and remaining decisions, see the [review-coverage worksheet in our Sourcery guide](/blog/sourcery-code-review#record). The worksheet is an operating note, not a replacement for ReviewGate's artifact schema.
