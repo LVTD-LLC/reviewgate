@@ -180,6 +180,8 @@ reviewgate check --pr "$PR_NUMBER" \
 
 Do not infer pass from the workflow conclusion alone.
 
+For a PR blocked by an expected, skipped, or mismatched check, use the [GitHub required status checks diagnostic worksheet](/blog/github-required-status-checks). It separates the required name, publisher, evaluated commit, execution, and review outcome before choosing a recovery.
+
 ## Review status is `review_error`
 
 Inspect typed errors:
