@@ -2,6 +2,10 @@
 
 Changes are grouped by calendar date, newest first.
 
+## 2026-09-24
+
+- Added “GitHub Required Status Checks: Diagnose a Stuck PR,” a source-backed tutorial covering check identity, evaluated commits, skipped execution, and ReviewGate verdicts, with a diagnostic worksheet, article/how-to/FAQ/breadcrumb schema, contextual links, and content inventory registration.
+
 ## 2026-09-17
 
 - Added “Sourcery Code Review: Scope, Reruns, and Merge Checks,” a source-backed tutorial with a review-coverage worksheet, full-versus-automatic rereview guidance, article/how-to/FAQ/breadcrumb schema, contextual inbound links, and content inventory registration.

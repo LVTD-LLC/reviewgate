@@ -1,0 +1,175 @@
+---
+import ArticleLayout from "../../layouts/ArticleLayout.astro";
+
+const title = "GitHub Required Status Checks: Diagnose a Stuck PR";
+const description = "Diagnose GitHub required status checks by name, producer, commit, and outcome. Separate missing checks, skipped jobs, and AI reviewer failures.";
+const canonical = "https://reviewgate.lvtd.dev/blog/github-required-status-checks/";
+const publishedAt = "2026-09-24";
+const steps = [
+  { name: "Identify the requirement", text: "Record the exact required name and expected producer, not just the workflow title.", anchor: "identity" },
+  { name: "Find the evaluated commit", text: "Distinguish the PR head, test merge commit, and merge-group commit.", anchor: "commit" },
+  { name: "Trace missing execution", text: "Separate a filtered-out workflow from a job skipped inside an existing run.", anchor: "execution" },
+  { name: "Read the actual verdict", text: "Distinguish a completed review with findings from a reviewer that failed to complete.", anchor: "verdict" },
+  { name: "Choose the narrow recovery", text: "Repair the responsible trigger, identity, publication, or review failure without erasing the requirement.", anchor: "recovery" },
+];
+const faqs = [
+  { question: "Why are my GitHub required status checks not running?", answer: "Start with the workflow trigger, branch and path filters, skip instructions, and job conditions. Then compare the required name with the published name and confirm the evaluated commit. A workflow excluded by filters can leave a required check pending; a skipped job inside an existing workflow has different behavior." },
+  { question: "Does GitHub require status checks to pass before merging?", answer: "When the applicable branch protection or ruleset requires them, the checks must satisfy that rule unless an authorized bypass applies. GitHub accepts success, skipped, and neutral check conclusions in this context. That means a satisfied requirement alone does not prove that every underlying test or review executed." },
+  { question: "What is the difference between GitHub statuses and checks?", answer: "Commit statuses and check runs are separate GitHub API resources. Statuses expose a context and state; check runs expose fields including a name, execution status, conclusion, and GitHub App. Inspect both when a required name is ambiguous. If both resources share a required name, GitHub requires both to pass." },
+];
+const jsonLd = [
+  {
+    "@context": "https://schema.org", "@type": "BlogPosting", headline: title, description,
+    datePublished: publishedAt, dateModified: publishedAt, mainEntityOfPage: canonical,
+    author: { "@type": "Organization", name: "ReviewGate maintainers", url: "https://github.com/LVTD-LLC/reviewgate" },
+    publisher: { "@type": "Organization", name: "LVTD LLC", url: "https://lvtd.dev" },
+  },
+  {
+    "@context": "https://schema.org", "@type": "HowTo", name: "Diagnose a required status check on a GitHub pull request",
+    step: steps.map((step, index) => ({ "@type": "HowToStep", position: index + 1, name: step.name, text: step.text, url: `${canonical}#${step.anchor}` })),
+  },
+  {
+    "@context": "https://schema.org", "@type": "FAQPage",
+    mainEntity: faqs.map((faq) => ({ "@type": "Question", name: faq.question, acceptedAnswer: { "@type": "Answer", text: faq.answer } })),
+  },
+  {
+    "@context": "https://schema.org", "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "ReviewGate", item: "https://reviewgate.lvtd.dev/" },
+      { "@type": "ListItem", position: 2, name: "Blog", item: "https://reviewgate.lvtd.dev/blog/" },
+      { "@type": "ListItem", position: 3, name: title, item: canonical },
+    ],
+  },
+];
+const inspectCommands = `# Replace these example values; commands read GitHub metadata.
+gh pr view 123 --repo OWNER/REPO --json url,headRefOid,baseRefName
+gh pr checks 123 --repo OWNER/REPO --required
+
+# Replace COMMIT_SHA with the commit you are investigating.
+gh api --paginate 'repos/OWNER/REPO/commits/COMMIT_SHA/check-runs?per_page=100' \\
+  --jq '.check_runs[] | {name, head_sha, status, conclusion, app: .app.slug, details_url}'
+gh api --paginate 'repos/OWNER/REPO/commits/COMMIT_SHA/statuses?per_page=100' \\
+  --jq '.[] | {context, state, creator: .creator.login, target_url}'`;
+const worksheet = `Pull request:
+Required check name / expected App:
+Commit GitHub evaluates / current PR head:
+Trigger and execution URL:
+Published check or status / observed conclusion:
+Review outcome, if applicable:
+Missing evidence or failure category:
+Owner / smallest corrective action:
+Replacement execution or result URL:`;
+const queueTrigger = `# Trigger fragment for a compatible CI workflow, not a full job.
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]`;
+---
+
+<ArticleLayout title={title} description={description} publishedAt={publishedAt} readingTime="10 min read" jsonLd={jsonLd}>
+  <Fragment slot="title">GitHub required status checks: diagnose a stuck PR.</Fragment>
+  <Fragment slot="deck">Find the missing evidence before changing the merge rule. A green workflow, a skipped job, and a passing review describe different things.</Fragment>
+  <ol slot="toc">
+    <li><a href="#short-answer">Start with the requirement</a></li>
+    {steps.map((step, index) => <li><a href={`#${step.anchor}`}>{index + 1}. {step.name}</a></li>)}
+    <li><a href="#example">Worked example</a></li>
+    <li><a href="#mistakes">Common mistakes</a></li>
+    <li><a href="#faq">Questions</a></li>
+  </ol>
+
+  <section id="short-answer">
+    <h2>Diagnose GitHub required status checks as evidence</h2>
+    <p class="article-lead">When GitHub required status checks block a pull request, compare the required name, publishing integration, evaluated commit, execution, and conclusion. Locate the mismatch before rerunning anything. A missing workflow needs a different repair from a failed test, and an AI reviewer outage is not evidence that the code contains a defect.</p>
+    <p>This guide is for maintainers who can read the repository's Actions runs, pull-request checks, and applicable merge rules. The command examples assume authenticated GitHub CLI access. Changing repository rules requires appropriate permissions, but reading the evidence does not require changing them.</p>
+    <ol>{steps.map((step) => <li><strong>{step.name}.</strong> {step.text}</li>)}</ol>
+    <p>The procedure combines GitHub documentation accessed September 24, 2026, with ReviewGate's public implementation. The diagnostic worksheet and worked example are our synthesis, not a production incident report or a benchmark. For initial installation rather than an existing failure, start with the <a href="/docs/github-actions">ReviewGate GitHub Actions setup</a>.</p>
+  </section>
+
+  <section id="identity">
+    <h2>1. Identify the required name and producer</h2>
+    <p>Write down the requirement exactly as it appears in the applicable branch protection or ruleset. Then find the check that claims to satisfy it. A workflow display title is not a substitute for a check name. GitHub's <a href="https://docs.github.com/en/enterprise-cloud%40latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/troubleshooting-rules">rules troubleshooting reference</a> distinguishes ordinary job names, reusable-workflow job names, and other check names.</p>
+    <p>Use these read-only commands to collect the first observations. Inspect the PR's Checks panel as well when GitHub reports evaluation of a test merge commit. The commands do not rerun jobs, modify rules, or merge the PR.</p>
+    <pre><code>{inspectCommands}</code></pre>
+    <p>The <a href="https://cli.github.com/manual/gh_pr_checks">GitHub CLI checks command</a> supports <code>--required</code>. It can return a nonzero exit code for an unsatisfied outcome, including code 8 for pending checks. Preserve that output when scripting diagnostics; a pending result is useful evidence, not necessarily a broken CLI installation.</p>
+    <p>Checks and statuses have separate inventories. The <a href="https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference">check-runs API</a> exposes names, conclusions, and the publishing App; the <a href="https://docs.github.com/en/rest/commits/statuses#list-commit-statuses-for-a-reference">commit-status API</a> exposes contexts and states. The status list is newest-first, so an older failing entry in its history is not automatically the current verdict.</p>
+    <p>GitHub recommends unique job names across workflows and allows a required check to be restricted to a specific App. Compare both identity fields before blaming the runner. A result from another integration may look reassuring without satisfying the selected producer. These behaviors are documented in <a href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches">About protected branches</a>.</p>
+    <p>This step is complete when you can name the exact requirement and identify its intended publisher. If two teams both own something called <code>review</code>, settle which output the policy means before scheduling more runs.</p>
+  </section>
+
+  <section id="commit">
+    <h2>2. Find the commit GitHub actually evaluates</h2>
+    <p>A check is evidence about a particular revision. Record the current PR head, then inspect the SHA associated with the result. GitHub's <a href="https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks">required-check troubleshooting guide</a> explains that earlier commit results do not satisfy the latest revision. It also distinguishes a head-commit result from a test merge commit: when that merge commit has a status, its result matters.</p>
+    <p>For diagnosis, keep both values instead of reducing everything to “the latest green run.” The PR head represents the proposed branch change. The test merge commit represents GitHub's candidate combination with the base branch. A result on one does not establish a result on the other. Record which one the PR interface says it is using.</p>
+    <p>A merge queue adds another execution context. GitHub documents a separate <a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group"><code>merge_group</code> event</a> and merge-group SHA. A compatible required CI workflow needs the queue trigger as well as its normal PR trigger:</p>
+    <pre><code>{queueTrigger}</code></pre>
+    <p>This fragment is not a universal patch for third-party actions. Each action must support the event payload and intended commit. ReviewGate's documented installation is PR-oriented; do not assume that adding this trigger gives it merge-queue support. Use the fragment for compatible test workflows and establish a reviewer's queue contract separately.</p>
+    <p>The useful outcome is a clear statement: “This requirement is waiting for this producer on this commit.” Without that statement, rerunning a familiar old workflow can produce another green badge without advancing the blocked PR.</p>
+  </section>
+
+  <section id="execution">
+    <h2>3. Separate a missing workflow from a skipped job</h2>
+    <p>A workflow that never starts and a job skipped inside a workflow are different cases. GitHub's <a href="https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs">workflow-skipping documentation</a> says path filters, branch filters, or skip instructions can leave associated required checks pending. Start with those conditions when there is no execution URL for the expected result.</p>
+    <p>By contrast, GitHub's <a href="https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions">job-condition documentation</a> says a skipped job reports success and does not block merging even when required. That is a policy distinction, not proof that the work happened. If your requirement means “these tests executed,” a job condition that silently excludes them deserves attention.</p>
+    <table>
+      <thead><tr><th>Observed symptom</th><th>First evidence to collect</th><th>Likely recovery category</th></tr></thead>
+      <tbody>
+        <tr><td>Expected check, no run</td><td>Event, filters, workflow file, required name</td><td>Trigger or identity mismatch</td></tr>
+        <tr><td>Run exists, job skipped</td><td>Job condition and prerequisite outcomes</td><td>Eligibility or dependency policy</td></tr>
+        <tr><td>Green run, requirement still waiting</td><td>Published name, App, commit, check/status inventories</td><td>Evidence attached to the wrong identity</td></tr>
+        <tr><td>PR passes, queue stalls</td><td>Merge-group event and result SHA</td><td>Unsupported or missing queue execution</td></tr>
+      </tbody>
+    </table>
+    <p>Treat this table as a routing aid. It does not prove a root cause. Follow the execution link and check the relevant condition before changing anything. For example, a secret-bearing reviewer intentionally excluded from fork PRs is not a broken trigger. ReviewGate documents that boundary in its <a href="/docs/security">security model</a>; preserve it and define the separate review path your contributors need.</p>
+    <p>This step is complete when you know whether the producer never ran, ran but excluded the work, or completed and published elsewhere. Those answers determine who should act: the workflow owner, integration owner, or author of the actual code change.</p>
+  </section>
+
+  <section id="verdict">
+    <h2>4. Read the review verdict, not only the job color</h2>
+    <p>ReviewGate deliberately separates successful process execution from a passing code review. A reviewer can complete its work correctly and find blockers. Conversely, a provider timeout can prevent a trustworthy verdict without demonstrating any code defect. This distinction makes an AI review useful as a repository gate rather than an ambiguous automation badge.</p>
+    <table>
+      <thead><tr><th>ReviewGate result</th><th>Score</th><th>Dedicated <code>ReviewGate</code> check</th><th>Next decision</th></tr></thead>
+      <tbody>
+        <tr><td><code>passed</code></td><td>5</td><td>Success</td><td>Continue with the repository's other requirements</td></tr>
+        <tr><td><code>needs_changes</code></td><td>Below 5</td><td>Failure</td><td>Address or dispute validated blockers with evidence</td></tr>
+        <tr><td><code>review_error</code></td><td><code>null</code></td><td>Failure</td><td>Diagnose review availability or artifact validity</td></tr>
+      </tbody>
+    </table>
+    <p>The mapping is explicit in the <a href="https://github.com/LVTD-LLC/reviewgate/blob/252a0872f39750d1a45b5deb6dc50f4ced8dbbd0/crates/reviewgate-cli/src/main.rs#L4082-L4112">public check-publishing implementation</a>. The <a href="/docs/troubleshooting#a-low-score-has-a-green-workflow-job">troubleshooting reference</a> explains why a completed low-score review can leave the workflow job green while its dedicated check fails. If you intend to require ReviewGate's verdict, identify that dedicated check rather than relying on the surrounding job's completion.</p>
+    <p>Read <code>status</code>, <code>score</code>, <code>reviewed_sha</code>, and typed <code>angle_errors</code> from the <a href="/docs/artifacts">structured result contract</a>. An artifact from another head is not a substitute. For an operational failure, follow the error category and retryability field; repeated model calls are not a repair plan.</p>
+    <p>For a disputed finding, the relevant action is different: inspect its evidence and record a supported disposition. The <a href="/blog/ai-code-review-false-positives">false-positive workflow</a> covers that path. Avoid changing correct application code to appease a timeout, and avoid classifying a genuine blocker as infrastructure trouble merely because the workflow itself completed.</p>
+  </section>
+
+  <section id="recovery">
+    <h2>5. Choose the smallest corrective action</h2>
+    <p>Copy this worksheet into a private issue or your team's operating notes. Keep credentials, private source, and raw provider payloads out of any public report. The record connects the requirement to the missing evidence and assigns one next action.</p>
+    <pre><code>{worksheet}</code></pre>
+    <p>If the workflow never ran, repair the intended trigger or eligibility rule. If a rename left a stale required name, coordinate the producer and policy change. If publication failed, restore the documented permission or integration before rerunning. If the review found a defect, fix the defect and obtain a result for the new revision.</p>
+    <p>Do not start by deleting the requirement. An authorized emergency bypass may be a legitimate maintainer decision, but it changes the decision path; it does not transform missing evidence into a passing check. Record the reason and owner separately from the technical diagnosis.</p>
+    <p>Close the worksheet only when the replacement result answers the original requirement, or when an authorized owner has explicitly changed that requirement. “Rerun requested” is an action taken, not an outcome observed. That distinction is particularly important when a coding agent is waiting for a machine-readable decision.</p>
+  </section>
+
+  <section id="example">
+    <h2>Worked example: a green job and a blocked review</h2>
+    <p>Consider an illustrative same-repository PR with deterministic tests passing and a green review workflow job. The required <code>ReviewGate</code> check is red. The author concludes that GitHub has failed to refresh the page.</p>
+    <p>First, the maintainer records the required name and publisher. Second, they compare the check's commit with the current PR head. Both match, so this is not a stale-check problem. Third, the execution URL shows the review completed. Finally, the structured result says <code>needs_changes</code> with score 3 and an actionable blocking finding.</p>
+    <p>The appropriate recovery is to examine that finding. After a valid repair changes the head, the earlier result becomes historical evidence, and the team needs the new revision's review. Nothing in this example calls for changing GitHub permissions or removing the required check.</p>
+    <p>Now change one observation: the result instead says <code>review_error</code>, score <code>null</code>, with a provider timeout. The PR is still not cleared by ReviewGate, but the owner and next action change. Investigate the review failure and use a bounded retry where supported. A speculative code edit would add risk without addressing the missing review.</p>
+    <p>The example's value is the fork in the decision, not the badge color. Two failing checks can require entirely different work. A maintainer or repair agent should retain that distinction all the way into its task queue.</p>
+  </section>
+
+  <section id="mistakes">
+    <h2>Common mistakes that prolong the blockage</h2>
+    <ul>
+      <li><strong>Using a successful manual run as universal proof.</strong> GitHub documents event restrictions for branch-ruleset required checks; a <code>workflow_dispatch</code> success is not automatically the required PR evidence. External App checks have a different boundary.</li>
+      <li><strong>Inspecting only one output type.</strong> When a check and commit status share a required name, both must pass. Resolve the collision rather than repeatedly rerunning only one producer.</li>
+      <li><strong>Assuming skipped means blocked.</strong> GitHub can accept skipped or neutral conclusions. Decide whether your actual policy requires execution, not merely an accepted conclusion.</li>
+      <li><strong>Turning every failure into an agent repair task.</strong> Identify whether the failed object is application behavior, review availability, or GitHub publication before assigning a fix.</li>
+    </ul>
+    <p>The first three cases follow GitHub's <a href="https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks">required-check troubleshooting rules</a>. The fourth is our operational recommendation. For the wider design, read the <a href="/blog/ai-code-review-github">merge-safe AI review workflow</a>. To adopt the concrete score-and-artifact model used here, follow the <a href="/docs/quickstart">ReviewGate quickstart</a>.</p>
+  </section>
+
+  <section id="faq">
+    <h2>GitHub required status checks: common questions</h2>
+    {faqs.map((faq) => <div class="article-faq"><h3>{faq.question}</h3><p>{faq.answer}</p></div>)}
+  </section>
+</ArticleLayout>

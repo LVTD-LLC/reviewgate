@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 
 const expectedPages = [
   [
+    "blog/github-required-status-checks/index.html",
+    "https://reviewgate.lvtd.dev/blog/github-required-status-checks/",
+  ],
+  [
     "blog/sourcery-code-review/index.html",
     "https://reviewgate.lvtd.dev/blog/sourcery-code-review/",
   ],

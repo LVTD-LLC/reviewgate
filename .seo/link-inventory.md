@@ -14,6 +14,7 @@
 | `/docs#configure` | https://reviewgate.lvtd.dev/docs/#configure | Configure review angles and severity | A, B, C, D, E |
 | `/docs#review-loop` | https://reviewgate.lvtd.dev/docs/#review-loop | Run the ReviewGate repair loop | A, B, C, D, E |
 | `/blog` | https://reviewgate.lvtd.dev/blog/ | ReviewGate engineering field notes | E |
+| `/blog/github-required-status-checks` | https://reviewgate.lvtd.dev/blog/github-required-status-checks/ | GitHub required status checks diagnostic worksheet | E |
 | `/blog/how-to-tell-if-code-is-ai-generated` | https://reviewgate.lvtd.dev/blog/how-to-tell-if-code-is-ai-generated/ | How to review code when AI authorship is uncertain | E |
 | `/blog/best-ai-code-review-tools` | https://reviewgate.lvtd.dev/blog/best-ai-code-review-tools/ | Best AI code review tools for agent-written PRs | E |
 | `/blog/ai-code-review-github` | https://reviewgate.lvtd.dev/blog/ai-code-review-github/ | Merge-safe AI code review on GitHub | E |
@@ -74,6 +75,16 @@ There is currently no `/pricing`, `/about`, `/features/*`, or `/tools/*` route. 
 | `ai-code-review` | 12 | `/playbooks/ai-code-review` | Homepage + resources index, added atomically in Phase 12 | Install, configure, alternatives, use cases |
 
 ## Anchor-text variations
+
+### Required status checks field note
+
+- “GitHub required status checks”
+- “required status checks troubleshooting guide”
+- “diagnose a stuck pull request”
+- “required-check diagnostic worksheet”
+- “separate workflow completion from review outcome”
+
+Inbound locations: blog index, ReviewGate troubleshooting docs, and the GitHub AI review field note.
 
 ### Homepage
 
