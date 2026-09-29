@@ -9835,19 +9835,6 @@ review_angles:
         assert!(action.contains("[ -n \"$created_ms\" ] && [ -n \"$run_started_ms\" ]"));
         assert!(!action.contains("cargo run"));
         assert!(!action.contains("Cargo.toml"));
-
-        let dogfood_workflow = include_str!("../../../.github/workflows/reviewgate.yml");
-        assert!(dogfood_workflow.contains("actions: read"));
-        assert!(dogfood_workflow.contains("attestations: read"));
-        assert!(dogfood_workflow.contains("checks: write"));
-        assert!(dogfood_workflow.contains("pull_request:\n    types:"));
-        assert!(dogfood_workflow.contains("github.run_id"));
-        assert!(dogfood_workflow.contains("timeout-minutes: 20"));
-        assert!(dogfood_workflow.contains("uses: LVTD-LLC/reviewgate@v0"));
-        assert!(!dogfood_workflow.contains("uses: ./"));
-        assert!(!dogfood_workflow.contains("\n          model:"));
-        assert!(dogfood_workflow.contains("min_severity"));
-        assert!(!dogfood_workflow.contains(concat!("fail", "_under")));
     }
 
     #[test]

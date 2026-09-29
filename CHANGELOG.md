@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-29
+
+### Removed
+
+- Remove this repository's ReviewGate PR-review GitHub Actions workflow; retain application CI and deployment workflows.
+
+
 Changes are grouped by calendar date, newest first.
 
 ## 2026-09-24
