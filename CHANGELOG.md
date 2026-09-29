@@ -2,6 +2,10 @@
 
 ## 2026-09-29
 
+### Changed
+
+- Add the maintainer’s archival notice at the top of the README.
+
 ### Removed
 
 - Remove this repository's ReviewGate PR-review GitHub Actions workflow; retain application CI and deployment workflows.
