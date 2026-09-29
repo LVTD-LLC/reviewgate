@@ -1,3 +1,5 @@
+> **Archival notice:** I’m archiving ReviewGate because I don’t find it valuable enough to keep working on. I’ll be focusing on something else. — Rasul
+
 # ReviewGate
 
 <p align="center">
