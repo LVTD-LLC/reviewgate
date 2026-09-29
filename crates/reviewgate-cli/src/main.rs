@@ -9835,7 +9835,6 @@ review_angles:
         assert!(action.contains("[ -n \"$created_ms\" ] && [ -n \"$run_started_ms\" ]"));
         assert!(!action.contains("cargo run"));
         assert!(!action.contains("Cargo.toml"));
-
     }
 
     #[test]
